@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build
+dist/
+**/dist/
+
+# Environment
+.env
+.env.*
+**/.env
+**/.env.*
+
+# Coverage
+coverage/
+
+# Prisma
+.prisma/
+
+# Turbo
+.turbo/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
