@@ -21,6 +21,19 @@ from './modules/health/health.module';
 import { LoggerModule }
 from './infrastructure/logger/logger.module';
 
+import { AuthModule }
+from './modules/auth/auth.module';
+
+import { UsersModule }
+from './modules/users/users.module';
+
+import { RestaurantsModule }
+from './modules/restaurants/restaurants.module';
+
+import { MenuModule } from './modules/menu/menu.module';
+import { OrdersModule } from './modules/orders/orders.module';
+import { DeliveryModule } from './modules/delivery/delivery.module';
+
 @Module({
 
   imports: [
@@ -42,7 +55,19 @@ from './infrastructure/logger/logger.module';
 
     HealthModule,
 
-    LoggerModule
+    LoggerModule,
+
+    AuthModule,
+
+    UsersModule,
+
+    RestaurantsModule,
+
+    MenuModule,
+
+    OrdersModule,
+
+    DeliveryModule
 
   ],
 
