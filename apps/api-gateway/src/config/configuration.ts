@@ -21,4 +21,9 @@ export default () => ({
     kafka: {
       broker: process.env.KAFKA_BROKER,
     },
+    storage: {
+      driver:
+        process.env.STORAGE_DRIVER ||
+        'local',
+    },
   });

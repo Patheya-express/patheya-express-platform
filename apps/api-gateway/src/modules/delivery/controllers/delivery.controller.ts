@@ -243,23 +243,28 @@ export class DeliveryController {
 
   updateDeliveryStatus(
 
+    @CurrentUser()
+    user: any,
+  
     @Param('orderId')
     orderId: string,
-
+  
     @Body()
     dto: UpdateDeliveryStatusDto,
-
+  
   ) {
-
+  
     return this.deliveryService
       .updateDeliveryStatus(
-
+  
         orderId,
-
+  
+        user.userId,
+  
         dto,
-
+  
       );
-
+  
   }
 
 }

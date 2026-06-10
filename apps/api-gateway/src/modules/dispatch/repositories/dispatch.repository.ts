@@ -173,5 +173,66 @@ import {
         });
     
     }
+    async findActiveAssignmentForOrder(
+      orderId: string,
+    ) {
+    
+      return this.prisma
+        .deliveryAssignment
+        .findFirst({
+    
+          where: {
+    
+            orderId,
+    
+            status: {
+    
+              in: [
+                AssignmentStatus.PENDING,
+                AssignmentStatus.ACCEPTED,
+              ],
+    
+            },
+    
+          },
+    
+        });
+    
+    }
+    
+    async findAssignmentsForOrder(
+      orderId: string,
+    ) {
+    
+      return this.prisma
+        .deliveryAssignment
+        .findMany({
+    
+          where: {
+            orderId,
+          },
+    
+          select: {
+            deliveryPartnerId: true,
+            status: true,
+          },
+    
+        });
+    
+    }
+    async findOrderById(
+      orderId: string,
+    ) {
+    
+      return this.prisma.order
+        .findUnique({
+    
+          where: {
+            id: orderId,
+          },
+    
+        });
+    
+    }
   
   }

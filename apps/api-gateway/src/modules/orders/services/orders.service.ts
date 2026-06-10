@@ -28,6 +28,9 @@ import {
   import { OrderReadyEvent }
   from '../../dispatch/events/order-ready.event';
 
+  import { OrderStatusChangedEvent }
+  from '../events/order-status-changed.event';
+
   @Injectable()
   export class OrdersService {
   
@@ -327,6 +330,21 @@ if (
           
               ),
           
+            );
+            await this.eventBus.publish(
+
+              'order.status.changed',
+            
+              new OrderStatusChangedEvent(
+            
+                updatedOrder.id,
+            
+                updatedOrder.customerId,
+            
+                updatedOrder.status,
+            
+              ),
+            
             );
           
           }

@@ -19,6 +19,11 @@ import {
 
   import { PresenceService }
 from '../../presence/services/presence.service';
+import { EventBusService }
+from '../../../core/events/event-bus.service';
+
+import { DeliveryPartnerAssignedEvent }
+from '../events/delivery-partner-assigned.event';
   
   @Injectable()
   export class DispatchService {
@@ -34,95 +39,161 @@ from '../../presence/services/presence.service';
         QueueService,
       private readonly presenceService:
         PresenceService,
+      private readonly eventBus:
+        EventBusService,
   
     ) {}
   
     async assignOrder(
       orderId: string,
     ) {
-  
+    
+      const activeAssignment =
+    
+        await this.dispatchRepository
+          .findActiveAssignmentForOrder(
+            orderId,
+          );
+    
+      if (activeAssignment) {
+    
+        return activeAssignment;
+    
+      }
+    
+      const previousAssignments =
+    
+        await this.dispatchRepository
+          .findAssignmentsForOrder(
+            orderId,
+          );
+    
+      const attemptedPartnerIds =
+    
+        previousAssignments.map(
+    
+          assignment =>
+            assignment.deliveryPartnerId,
+    
+        );
+    
       const partners =
-  
+    
         await this.dispatchRepository
           .findAvailablePartners();
-          const onlinePartners:any[]=[];
-
-          for (const partner of partners) {
-          
-            const isOnline =
-          
-              await this.presenceService
-                .isOnline(
-                  partner.id,
-                );
-          
-            if (isOnline) {
-          
-              onlinePartners.push(
-                partner,
-              );
-          
-            }
-          
-          }
-  
-        if (!onlinePartners.length) {
-  
+    
+      const onlinePartners: any[] = [];
+    
+      for (const partner of partners) {
+    
+        const isOnline =
+    
+          await this.presenceService
+            .isOnline(
+              partner.id,
+            );
+    
+        if (
+    
+          isOnline &&
+    
+          !attemptedPartnerIds.includes(
+            partner.id,
+          )
+    
+        ) {
+    
+          onlinePartners.push(
+            partner,
+          );
+    
+        }
+    
+      }
+    
+      if (!onlinePartners.length) {
+    
         throw new NotFoundException(
           'No delivery partners available',
         );
-  
+    
       }
-  
+    
       const partner =
-      onlinePartners[0];
-  
+        onlinePartners[0];
+    
       const assignment =
-  
+    
         await this.dispatchRepository
           .createAssignment({
-  
+    
             orderId,
-  
+    
             deliveryPartnerId:
               partner.id,
-  
+    
             expiresAt:
               new Date(
-  
+    
                 Date.now() +
                 10 * 60 * 1000,
-  
+    
               ),
-  
+    
           });
-  
+    
       this.realtimeService
         .emitToUser(
-  
+    
           partner.userId,
-  
+    
           'delivery.assignment',
-  
+    
           {
-  
+    
             assignmentId:
               assignment.id,
-  
+    
             orderId,
-  
+    
           },
-  
+    
         );
-        await this.queueService
+    
+      await this.queueService
         .addAssignmentExpiryJob(
-      
           assignment.id,
-      
         );
-  
+    
+      const order =
+    
+        await this.dispatchRepository
+          .findOrderById(
+            orderId,
+          );
+    
+      if (order) {
+    
+        await this.eventBus.publish(
+    
+          'delivery.partner.assigned',
+    
+          new DeliveryPartnerAssignedEvent(
+    
+            order.id,
+    
+            order.customerId,
+    
+            partner.userId,
+    
+          ),
+    
+        );
+    
+      }
+    
       return assignment;
-  
+    
     }
   
     async acceptAssignment(
@@ -277,14 +348,34 @@ from '../../presence/services/presence.service';
     
       }
     
-      return this.dispatchRepository
-        .updateAssignmentStatus(
+      await this.dispatchRepository
+      .updateAssignmentStatus(
     
-          assignmentId,
+        assignmentId,
     
-          AssignmentStatus.REJECTED,
+        AssignmentStatus.REJECTED,
     
-        );
+      );
+    
+    await this.eventBus.publish(
+    
+      'dispatch.assignment.rejected',
+    
+      {
+    
+        orderId:
+          assignment.orderId,
+    
+        assignmentId:
+          assignment.id,
+    
+      },
+    
+    );
+    
+    return {
+      success: true,
+    };
     
     }
   
