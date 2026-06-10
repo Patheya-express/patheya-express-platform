@@ -31,6 +31,29 @@ import {
         });
   
     }
+    async assignOrderToPartner(
+
+      orderId: string,
+    
+      userId: string,
+    
+    ) {
+    
+      return this.prisma.order
+        .update({
+    
+          where: {
+            id: orderId,
+          },
+    
+          data: {
+            deliveryPartnerId:
+              userId,
+          },
+    
+        });
+    
+    }
   
     async findAssignmentById(
       assignmentId: string,
@@ -134,6 +157,21 @@ import {
   
         });
   
+    }
+    async findPartnerByUserId(
+      userId: string,
+    ) {
+    
+      return this.prisma
+        .deliveryPartner
+        .findUnique({
+    
+          where: {
+            userId,
+          },
+    
+        });
+    
     }
   
   }

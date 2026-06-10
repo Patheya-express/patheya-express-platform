@@ -1,6 +1,8 @@
 import {
     Injectable,
     NotFoundException,
+    ForbiddenException,
+    BadRequestException,
   } from '@nestjs/common';
   
   import {
@@ -17,7 +19,6 @@ import {
 
   import { PresenceService }
 from '../../presence/services/presence.service';
-import { any } from 'joi';
   
   @Injectable()
   export class DispatchService {
@@ -125,46 +126,192 @@ import { any } from 'joi';
     }
   
     async acceptAssignment(
+
       assignmentId: string,
+    
+      userId: string,
+    
     ) {
-  
-      return this.dispatchRepository
-        .updateAssignmentStatus(
-  
-          assignmentId,
-  
-          AssignmentStatus
-            .ACCEPTED,
-  
+    
+      const partner =
+    
+        await this.dispatchRepository
+          .findPartnerByUserId(
+            userId,
+          );
+    
+      if (!partner) {
+    
+        throw new NotFoundException(
+          'Delivery partner not found',
         );
-  
+    
+      }
+    
+      const assignment =
+    
+        await this.dispatchRepository
+          .findAssignmentById(
+            assignmentId,
+          );
+    
+      if (!assignment) {
+    
+        throw new NotFoundException(
+          'Assignment not found',
+        );
+    
+      }
+    
+      if (
+    
+        assignment.deliveryPartnerId !==
+        partner.id
+    
+      ) {
+    
+        throw new ForbiddenException(
+          'Assignment does not belong to you',
+        );
+    
+      }
+    
+      if (
+    
+        assignment.status !==
+        AssignmentStatus.PENDING
+    
+      ) {
+    
+        throw new BadRequestException(
+          'Only pending assignments can be accepted',
+        );
+    
+      }
+    
+      await this.dispatchRepository
+      .updateAssignmentStatus(
+    
+        assignmentId,
+    
+        AssignmentStatus.ACCEPTED,
+    
+      );
+    
+    await this.dispatchRepository
+      .assignOrderToPartner(
+    
+        assignment.orderId,
+    
+        partner.userId,
+    
+      );
+    
+    return {
+      success: true,
+    };
+    
     }
   
     async rejectAssignment(
+
       assignmentId: string,
+    
+      userId: string,
+    
     ) {
-  
+    
+      const partner =
+    
+        await this.dispatchRepository
+          .findPartnerByUserId(
+            userId,
+          );
+    
+      if (!partner) {
+    
+        throw new NotFoundException(
+          'Delivery partner not found',
+        );
+    
+      }
+    
+      const assignment =
+    
+        await this.dispatchRepository
+          .findAssignmentById(
+            assignmentId,
+          );
+    
+      if (!assignment) {
+    
+        throw new NotFoundException(
+          'Assignment not found',
+        );
+    
+      }
+    
+      if (
+    
+        assignment.deliveryPartnerId !==
+        partner.id
+    
+      ) {
+    
+        throw new ForbiddenException(
+          'Assignment does not belong to you',
+        );
+    
+      }
+    
+      if (
+    
+        assignment.status !==
+        AssignmentStatus.PENDING
+    
+      ) {
+    
+        throw new BadRequestException(
+          'Only pending assignments can be rejected',
+        );
+    
+      }
+    
       return this.dispatchRepository
         .updateAssignmentStatus(
-  
+    
           assignmentId,
-  
-          AssignmentStatus
-            .REJECTED,
-  
+    
+          AssignmentStatus.REJECTED,
+    
         );
-  
+    
     }
   
     async getAssignments(
-      partnerId: string,
+      userId: string,
     ) {
-  
+    
+      const partner =
+    
+        await this.dispatchRepository
+          .findPartnerByUserId(
+            userId,
+          );
+    
+      if (!partner) {
+    
+        throw new NotFoundException(
+          'Delivery partner not found',
+        );
+    
+      }
+    
       return this.dispatchRepository
         .findPartnerAssignments(
-          partnerId,
+          partner.id,
         );
-  
+    
     }
   
   }

@@ -112,14 +112,18 @@ export class DispatchController {
 
     @Param('id')
     id: string,
-
+  
+    @CurrentUser()
+    user: any,
+  
   ) {
-
+  
     return this.dispatchService
       .acceptAssignment(
         id,
+        user.userId,
       );
-
+  
   }
 
   @UseGuards(JwtAuthGuard)
@@ -162,14 +166,18 @@ export class DispatchController {
 
     @Param('id')
     id: string,
-
+  
+    @CurrentUser()
+    user: any,
+  
   ) {
-
+  
     return this.dispatchService
       .rejectAssignment(
         id,
+        user.userId,
       );
-
+  
   }
 
 }
