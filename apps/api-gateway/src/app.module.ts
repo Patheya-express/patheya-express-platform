@@ -33,6 +33,25 @@ from './modules/restaurants/restaurants.module';
 import { MenuModule } from './modules/menu/menu.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { DeliveryModule } from './modules/delivery/delivery.module';
+import { AuditModule } from './modules/audit/audit.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
+import { EventsModule } from './modules/events/events.module';
+import { StorageModule } from './modules/storage/storage.module';
+import { RealtimeModule } from './modules/realtime/realtime.module';
+import { RedisModule } from './infrastructure/redis/redis.module';
+import { SystemModule } from './modules/system/system.module';
+import { QueuesModule } from './infrastructure/queues/queues.module';
+import { PaymentsModule } from './modules/payments/payments.module';
+import {
+  MiddlewareConsumer,
+  NestModule,
+} from '@nestjs/common';
+
+import {
+  RequestIdMiddleware,
+} from './common/middleware/request-id.middleware';
+import { DispatchModule } from './modules/dispatch/dispatch.module';
+import { PresenceModule } from './modules/presence/presence.module';
 
 @Module({
 
@@ -67,9 +86,50 @@ import { DeliveryModule } from './modules/delivery/delivery.module';
 
     OrdersModule,
 
-    DeliveryModule
+    DeliveryModule,
+
+    AuditModule,
+
+    NotificationsModule,
+
+    EventsModule,
+
+    StorageModule,
+
+    RealtimeModule,
+
+    RedisModule,
+
+    SystemModule,
+
+    QueuesModule,
+
+    PaymentsModule,
+
+    LoggerModule,
+
+    DispatchModule,
+
+    PresenceModule
+
 
   ],
 
 })
-export class AppModule {}
+export class AppModule
+implements NestModule {
+
+  configure(
+    consumer:
+      MiddlewareConsumer,
+  ) {
+
+    consumer
+      .apply(
+        RequestIdMiddleware,
+      )
+      .forRoutes('*');
+
+  }
+
+}

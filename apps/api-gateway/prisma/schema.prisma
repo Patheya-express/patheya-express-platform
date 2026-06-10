@@ -68,7 +68,6 @@ enum PaymentStatus {
 }
 
 enum DeliveryPartnerStatus {
-
   OFFLINE
 
   AVAILABLE
@@ -76,10 +75,9 @@ enum DeliveryPartnerStatus {
   ON_DELIVERY
 
   SUSPENDED
-
 }
-enum VehicleType {
 
+enum VehicleType {
   BIKE
 
   SCOOTER
@@ -87,7 +85,77 @@ enum VehicleType {
   BICYCLE
 
   CAR
+}
 
+enum AuditAction {
+  CREATE
+
+  UPDATE
+
+  DELETE
+
+  LOGIN
+
+  LOGOUT
+
+  STATUS_CHANGE
+
+  APPROVE
+
+  REJECT
+}
+
+enum NotificationChannel {
+  PUSH
+  EMAIL
+  SMS
+  WHATSAPP
+  IN_APP
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+  READ
+}
+
+enum PaymentProvider {
+  RAZORPAY
+
+  STRIPE
+}
+
+enum PaymentMethod {
+  UPI
+
+  CARD
+
+  NETBANKING
+
+  WALLET
+}
+
+enum TransactionStatus {
+  PENDING
+
+  SUCCESS
+
+  FAILED
+
+  REFUNDED
+}
+
+enum AssignmentStatus {
+  PENDING
+
+  ASSIGNED
+
+  ACCEPTED
+
+  REJECTED
+
+  EXPIRED
 }
 
 model User {
@@ -115,9 +183,13 @@ model User {
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
 
-  sessions      Session[]
-  restaurants   Restaurant[]
-  refreshTokens RefreshToken[]
+  sessions               Session[]
+  restaurants            Restaurant[]
+  refreshTokens          RefreshToken[]
+  auditLogs              AuditLog[]
+  notifications          Notification[]
+  notificationPreference NotificationPreference?
+  pushTokens             PushToken[]
 
   customerOrders Order[] @relation("CustomerOrders")
   deliveryOrders Order[] @relation("DeliveryOrders")
@@ -442,6 +514,8 @@ model Order {
 
   deliveryPartnerId String?
 
+  payment Payment?
+
   orderNumber String @unique
 
   status OrderStatus @default(PENDING)
@@ -483,6 +557,8 @@ model Order {
   items OrderItem[]
 
   statusHistory OrderStatusHistory[]
+
+  deliveryAssignments DeliveryAssignment[]
 
   @@index([customerId])
   @@index([restaurantId])
@@ -534,34 +610,226 @@ model OrderStatusHistory {
   @@index([status])
   @@map("order_status_history")
 }
+
 model DeliveryPartner {
+  id String @id @default(uuid())
 
-  id                    String                  @id @default(uuid())
+  userId String @unique
 
-  userId                String                  @unique
+  vehicleType VehicleType
 
-  vehicleType           VehicleType
+  vehicleNumber String
 
-  vehicleNumber         String
+  licenseNumber String?
 
-  licenseNumber         String?
+  status DeliveryPartnerStatus @default(OFFLINE)
 
-  status                DeliveryPartnerStatus   @default(OFFLINE)
+  currentLatitude Float?
 
-  currentLatitude       Float?
+  currentLongitude Float?
 
-  currentLongitude      Float?
+  isVerified Boolean @default(false)
 
-  isVerified            Boolean                 @default(false)
+  createdAt DateTime @default(now())
 
-  createdAt             DateTime                @default(now())
+  updatedAt DateTime @updatedAt
 
-  updatedAt             DateTime                @updatedAt
+  assignments DeliveryAssignment[]
 
-  user                  User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([status])
-
   @@map("delivery_partners")
+}
 
+model AuditLog {
+  id String @id @default(uuid())
+
+  userId String?
+
+  entityType String
+
+  entityId String?
+
+  action AuditAction
+
+  oldValues Json?
+
+  newValues Json?
+
+  ipAddress String?
+
+  userAgent String?
+
+  createdAt DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([entityType])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model Notification {
+  id String @id @default(uuid())
+
+  userId String
+
+  title String
+
+  message String
+
+  channel NotificationChannel
+
+  status NotificationStatus @default(PENDING)
+
+  metadata Json?
+
+  sentAt DateTime?
+
+  readAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([status])
+  @@index([channel])
+  @@map("notifications")
+}
+
+model NotificationPreference {
+  id String @id @default(uuid())
+
+  userId String @unique
+
+  emailEnabled Boolean @default(true)
+
+  smsEnabled Boolean @default(true)
+
+  pushEnabled Boolean @default(true)
+
+  whatsappEnabled Boolean @default(true)
+
+  inAppEnabled Boolean @default(true)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notification_preferences")
+}
+
+model PushToken {
+  id String @id @default(uuid())
+
+  userId String
+
+  token String @unique
+
+  platform String
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("push_tokens")
+}
+
+model Payment {
+  id String @id @default(uuid())
+
+  orderId String @unique
+
+  provider PaymentProvider
+
+  providerOrderId String?
+
+  providerPaymentId String?
+
+  amount Decimal @db.Decimal(10, 2)
+
+  status TransactionStatus @default(PENDING)
+
+  method PaymentMethod?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  refunds Refund[]
+
+  @@index([status])
+  @@index([provider])
+  @@map("payments")
+}
+
+model Refund {
+  id String @id @default(uuid())
+
+  paymentId String
+
+  amount Decimal @db.Decimal(10, 2)
+
+  reason String?
+
+  status TransactionStatus @default(PENDING)
+
+  createdAt DateTime @default(now())
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId])
+  @@map("refunds")
+}
+
+model WebhookEvent {
+  id String @id @default(uuid())
+
+  provider String
+
+  eventType String
+
+  payload Json
+
+  processed Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([provider])
+  @@index([processed])
+  @@map("webhook_events")
+}
+
+model DeliveryAssignment {
+  id String @id @default(uuid())
+
+  orderId String
+
+  deliveryPartnerId String
+
+  status AssignmentStatus @default(PENDING)
+
+  assignedAt DateTime @default(now())
+
+  respondedAt DateTime?
+
+  expiresAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  deliveryPartner DeliveryPartner @relation(fields: [deliveryPartnerId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([deliveryPartnerId])
+  @@index([status])
+  @@map("delivery_assignments")
 }

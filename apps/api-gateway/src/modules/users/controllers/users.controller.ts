@@ -30,7 +30,20 @@ import {
   import {
     UserRole,
   } from '@prisma/client';
+
+  import {
+    ApiBearerAuth,
+    ApiOkResponse,
+    ApiOperation,
+    ApiQuery,
+    ApiTags,
+  } from '@nestjs/swagger';
   
+  import {
+    UserResponseDto,
+  } from '../dto/user-response.dto';
+  
+  @ApiTags('Users')
   @Controller('users')
   export class UsersController {
   
@@ -40,6 +53,17 @@ import {
         UsersService,
   
     ) {}
+
+    @ApiBearerAuth('JWT-auth')
+
+    @ApiOperation({
+      summary: 'Get current user profile',
+    })
+
+    @ApiOkResponse({
+      description: 'User profile retrieved successfully',
+      type: UserResponseDto,
+    })
   
     @UseGuards(JwtAuthGuard)
   
@@ -58,6 +82,16 @@ import {
         );
   
     }
+    @ApiBearerAuth('JWT-auth')
+
+    @ApiOperation({
+      summary: 'Update current user profile',
+    })
+
+    @ApiOkResponse({
+      description: 'Profile updated successfully',
+      type: UserResponseDto,
+    })
   
     @UseGuards(JwtAuthGuard)
   
@@ -83,6 +117,29 @@ import {
         );
   
     }
+    @ApiBearerAuth('JWT-auth')
+
+    @ApiOperation({
+      summary: 'Get all users',
+    })
+    
+    @ApiQuery({
+      name: 'page',
+      required: false,
+      example: 1,
+    })
+    
+    @ApiQuery({
+      name: 'limit',
+      required: false,
+      example: 20,
+    })
+    
+    @ApiOkResponse({
+      description: 'Users retrieved successfully',
+      type: UserResponseDto,
+      isArray: true,
+    })
   
     @UseGuards(
       JwtAuthGuard,

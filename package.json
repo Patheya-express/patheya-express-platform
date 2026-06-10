@@ -19,5 +19,9 @@
   "type": "module",
   "devDependencies": {
     "turbo": "^2.9.15"
+  },
+  "dependencies": {
+    "@nestjs/swagger": "^11.4.4",
+    "swagger-ui-express": "^5.0.1"
   }
 }

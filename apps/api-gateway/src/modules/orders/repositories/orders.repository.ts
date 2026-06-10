@@ -8,6 +8,10 @@ import {
   import {
     BaseRepository,
   } from '../../../infrastructure/database/repositories/base.repository';
+  import {
+    OrderStatus,
+  } from '@prisma/client';
+  
   
   @Injectable()
   export class OrdersRepository
@@ -129,6 +133,94 @@ import {
   
         });
   
+    }
+    async findOrderById(
+      orderId: string,
+    ) {
+    
+      return this.prisma.order.findUnique({
+    
+        where: {
+          id: orderId,
+        },
+    
+        include: {
+    
+          items: true,
+    
+          statusHistory: {
+            orderBy: {
+              createdAt: 'asc',
+            },
+          },
+    
+        },
+    
+      });
+    
+    }
+    
+    async assignDeliveryPartner(
+    
+      orderId: string,
+    
+      deliveryPartnerId: string,
+    
+    ) {
+    
+      return this.prisma.order.update({
+    
+        where: {
+          id: orderId,
+        },
+    
+        data: {
+          deliveryPartnerId,
+        },
+    
+      });
+    
+    }
+    
+    async getOrderTimeline(
+      orderId: string,
+    ) {
+    
+      return this.prisma.orderStatusHistory.findMany({
+    
+        where: {
+          orderId,
+        },
+    
+        orderBy: {
+          createdAt: 'asc',
+        },
+    
+      });
+    
+    }
+    async markDelivered(
+      orderId: string,
+    ) {
+    
+      return this.prisma.order.update({
+    
+        where: {
+          id: orderId,
+        },
+    
+        data: {
+    
+          status:
+            OrderStatus.DELIVERED,
+    
+          deliveredAt:
+            new Date(),
+    
+        },
+    
+      });
+    
     }
   
   }

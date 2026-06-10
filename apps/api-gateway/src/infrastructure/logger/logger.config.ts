@@ -4,7 +4,9 @@ from 'winston';
 export const winstonConfig =
   winston.createLogger({
 
-    level: 'info',
+    level:
+      process.env.LOG_LEVEL ||
+      'info',
 
     format:
       winston.format.combine(
@@ -23,6 +25,25 @@ export const winstonConfig =
 
       new winston
         .transports.Console(),
+
+      new winston
+        .transports.File({
+
+          filename:
+            'logs/error.log',
+
+          level:
+            'error',
+
+        }),
+
+      new winston
+        .transports.File({
+
+          filename:
+            'logs/combined.log',
+
+        }),
 
     ],
 

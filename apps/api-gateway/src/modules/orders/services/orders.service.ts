@@ -1,6 +1,7 @@
 import {
     Injectable,
     NotFoundException,
+    BadRequestException
   } from '@nestjs/common';
   
   import {
@@ -19,6 +20,14 @@ import {
   import { UpdateOrderStatusDto }
   from '../dto/update-order-status.dto';
   
+  import { EventBusService } from 'src/core/events/event-bus.service';
+
+  import { OrderPlacedEvent }
+  from '../events/order-placed.event';
+
+  import { OrderReadyEvent }
+  from '../../dispatch/events/order-ready.event';
+
   @Injectable()
   export class OrdersService {
   
@@ -29,6 +38,8 @@ import {
   
       private readonly ordersRepository:
         OrdersRepository,
+      private readonly eventBus:
+        EventBusService
   
     ) {}
   
@@ -169,6 +180,21 @@ import {
             OrderStatus.PENDING,
   
         });
+      await this.eventBus.publish(
+
+          'order.placed',
+        
+          new OrderPlacedEvent(
+        
+            order.id,
+        
+            customerId,
+        
+            dto.restaurantId,
+        
+          ),
+        
+        );
   
       return order;
   
@@ -202,7 +228,75 @@ import {
   
       dto: UpdateOrderStatusDto,
   
-    ) {
+    ) 
+    
+    {
+      const order =
+  await this.ordersRepository
+    .findOrderById(orderId);
+
+if (!order) {
+
+  throw new NotFoundException(
+    'Order not found',
+  );
+
+}
+
+const allowedTransitions:
+  Record<
+    OrderStatus,
+    OrderStatus[]
+  > = {
+
+  [OrderStatus.PENDING]: [
+    OrderStatus.CONFIRMED,
+    OrderStatus.CANCELLED,
+  ],
+
+  [OrderStatus.CONFIRMED]: [
+    OrderStatus.PREPARING,
+    OrderStatus.CANCELLED,
+  ],
+
+  [OrderStatus.PREPARING]: [
+    OrderStatus.READY_FOR_PICKUP,
+  ],
+
+  [OrderStatus.READY_FOR_PICKUP]: [
+    OrderStatus.OUT_FOR_DELIVERY,
+  ],
+
+  [OrderStatus.OUT_FOR_DELIVERY]: [
+    OrderStatus.DELIVERED,
+  ],
+
+  [OrderStatus.DELIVERED]: [],
+
+  [OrderStatus.CANCELLED]: [],
+
+};
+const allowedStatuses =
+
+  allowedTransitions[
+    order.status
+  ];
+
+if (
+
+  !allowedStatuses.includes(
+    dto.status,
+  )
+
+) {
+
+  throw new BadRequestException(
+
+    `Invalid status transition from ${order.status} to ${dto.status}`,
+
+  );
+
+}
   
       const updatedOrder =
   
@@ -214,6 +308,28 @@ import {
             dto.status,
   
           );
+          if (
+
+            dto.status ===
+            OrderStatus.READY_FOR_PICKUP
+          
+          ) {
+          
+            await this.eventBus.publish(
+          
+              'order.ready',
+          
+              new OrderReadyEvent(
+          
+                updatedOrder.id,
+          
+                updatedOrder.restaurantId,
+          
+              ),
+          
+            );
+          
+          }
   
       await this.ordersRepository
         .createStatusHistory({
@@ -227,6 +343,46 @@ import {
   
       return updatedOrder;
   
+    }
+    async getOrderById(
+      orderId: string,
+    ) {
+    
+      return this.ordersRepository
+        .findOrderById(
+          orderId,
+        );
+    
+    }
+    
+    async getOrderTimeline(
+      orderId: string,
+    ) {
+    
+      return this.ordersRepository
+        .getOrderTimeline(
+          orderId,
+        );
+    
+    }
+    
+    async assignDeliveryPartner(
+    
+      orderId: string,
+    
+      deliveryPartnerId: string,
+    
+    ) {
+    
+      return this.ordersRepository
+        .assignDeliveryPartner(
+    
+          orderId,
+    
+          deliveryPartnerId,
+    
+        );
+    
     }
   
   }

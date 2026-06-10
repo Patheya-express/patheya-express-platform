@@ -1,51 +1,41 @@
 import {
-    IsArray,
-    IsNumber,
-    IsOptional,
-    IsString,
-    ValidateNested,
-  } from 'class-validator';
-  
-  import {
-    Type,
-  } from 'class-transformer';
-  
-  class OrderItemDto {
-  
-    @IsString()
-  
-    menuItemId: string;
-  
-    @IsNumber()
-  
-    quantity: number;
-  
-  }
-  
-  export class CreateOrderDto {
-  
-    @IsString()
-  
-    restaurantId: string;
-  
-    @IsOptional()
-  
-    @IsString()
-  
-    branchId?: string;
-  
-    @IsString()
-  
-    deliveryAddress: string;
-  
-    @IsArray()
-  
-    @ValidateNested({
-      each: true,
-    })
-  
-    @Type(() => OrderItemDto)
-  
-    items: OrderItemDto[];
-  
-  }
+  IsArray,
+  IsOptional,
+  IsString,
+  ValidateNested,
+} from 'class-validator';
+
+import {
+  Type,
+} from 'class-transformer';
+
+import {
+  CreateOrderItemDto,
+} from './create-order-item.dto';
+
+export class CreateOrderDto {
+
+  @IsString()
+  restaurantId: string;
+
+  @IsString()
+  deliveryAddress: string;
+
+  @IsOptional()
+  @IsString()
+  branchId?: string;
+
+  @IsOptional()
+  @IsString()
+  notes?: string;
+
+  @IsArray()
+  @ValidateNested({
+    each: true,
+  })
+  @Type(
+    () => CreateOrderItemDto,
+  )
+  items: CreateOrderItemDto[];
+
+}

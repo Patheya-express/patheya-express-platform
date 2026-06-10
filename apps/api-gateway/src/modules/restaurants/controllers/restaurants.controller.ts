@@ -18,7 +18,22 @@ import {
   
   import { CurrentUser }
   from '../../auth/decorators/current-user.decorator';
+
+  import {
+    ApiBearerAuth,
+    ApiOkResponse,
+    ApiOperation,
+    ApiParam,
+    ApiTags,
+    ApiCreatedResponse,
+    ApiResponse
+  } from '@nestjs/swagger';
   
+  import {
+    RestaurantResponseDto,
+  } from '../dto/restaurant-response.dto';
+  
+  @ApiTags('Restaurants')
   @Controller('restaurants')
   export class RestaurantsController {
   
@@ -28,6 +43,21 @@ import {
         RestaurantsService,
   
     ) {}
+    @ApiBearerAuth('JWT-auth')
+
+    @ApiOperation({
+      summary: 'Create restaurant',
+    })
+
+    @ApiCreatedResponse({
+      description: 'Restaurant created successfully',
+      type: RestaurantResponseDto,
+    })
+
+    @ApiResponse({
+      status: 409,
+      description: 'Restaurant slug already exists',
+    })
   
     @UseGuards(JwtAuthGuard)
   
@@ -53,6 +83,19 @@ import {
         );
   
     }
+    @ApiBearerAuth('JWT-auth')
+
+    @ApiOperation({
+      summary:
+        'Get restaurants owned by current user',
+    })
+
+    @ApiOkResponse({
+      description:
+        'Restaurants retrieved successfully',
+      type: RestaurantResponseDto,
+      isArray: true,
+    })
   
     @UseGuards(JwtAuthGuard)
   
@@ -71,6 +114,27 @@ import {
         );
   
     }
+    @ApiBearerAuth('JWT-auth')
+
+    @ApiOperation({
+      summary: 'Get restaurant by ID',
+    })
+
+    @ApiParam({
+      name: 'id',
+      example:
+        'c7c1f1e2-6f2d-4f77-a111-123456789abc',
+    })
+
+    @ApiOkResponse({
+      description:
+        'Restaurant retrieved successfully',
+      type: RestaurantResponseDto,
+    })
+    @ApiResponse({
+      status: 404,
+      description: 'Restaurant not found',
+    })
   
     @UseGuards(JwtAuthGuard)
   

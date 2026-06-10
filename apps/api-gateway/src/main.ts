@@ -21,6 +21,19 @@ import {
   ResponseInterceptor,
 } from './core/interceptors/response.interceptor';
 
+import {
+  LoggingInterceptor,
+} from './common/interceptors/logging.interceptor';
+
+import {
+  AppLoggerService,
+} from './infrastructure/logger/logger.service';
+
+import {
+  SwaggerModule,
+  DocumentBuilder,
+} from '@nestjs/swagger';
+
 async function bootstrap() {
 
   const app =
@@ -63,6 +76,65 @@ async function bootstrap() {
 
   app.useGlobalInterceptors(
     new ResponseInterceptor(),
+  );
+
+  const logger =
+  app.get(
+    AppLoggerService,
+  );
+
+app.useGlobalInterceptors(
+
+  new LoggingInterceptor(
+    logger,
+  ),
+
+);
+const config =
+
+  new DocumentBuilder()
+
+    .setTitle(
+      'Patheya Express API',
+    )
+
+    .setDescription(
+      'Enterprise Backend APIs',
+    )
+
+    .setVersion('1.0')
+
+    .addBearerAuth(
+
+      {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'JWT',
+        in: 'header',
+      },
+
+      'JWT-auth',
+
+    )
+
+    .build();
+
+const document =
+
+  SwaggerModule.createDocument(
+    app,
+    config,
+  );
+
+  SwaggerModule.setup(
+    'api/docs',
+    app,
+    document,
+    {
+      swaggerOptions: {
+        persistAuthorization: true,
+      },
+    },
   );
 
   await app.listen(

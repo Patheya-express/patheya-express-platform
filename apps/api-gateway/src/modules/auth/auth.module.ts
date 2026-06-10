@@ -31,6 +31,7 @@ import {
   import {
     RolesGuard,
   } from './guards/roles.guard';
+import { AuditModule } from '../audit/audit.module';
   
   @Module({
   
@@ -39,6 +40,8 @@ import {
       PassportModule,
   
       JwtModule.register({}),
+
+      AuditModule
   
     ],
   

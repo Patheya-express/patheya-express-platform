@@ -25,7 +25,10 @@ import {
   
   import {
     UserRole,
+    AuditAction
   } from '@prisma/client';
+  
+  import { AuditService } from 'src/modules/audit/services/audit.service';
   
   @Injectable()
   export class AuthService {
@@ -40,6 +43,8 @@ import {
   
       private readonly tokenService:
         TokenService,
+      private readonly auditService:
+        AuditService
   
     ) {}
   
@@ -135,6 +140,24 @@ import {
             ),
   
         });
+      await this.auditService.log(
+
+          user.id,
+        
+          'User',
+        
+          user.id,
+        
+          AuditAction.CREATE,
+        
+          null,
+        
+          {
+            email:
+              user.email,
+          },
+        
+        );
   
       const {
   
@@ -154,6 +177,7 @@ import {
         refreshToken,
   
       };
+      
   
     }
   
