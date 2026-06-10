@@ -69,24 +69,26 @@ import {
             Date.now() -
             start;
   
-          this.logger.log(
-  
-            JSON.stringify({
-  
-              requestId,
-  
-              method,
-  
-              url,
-  
-              duration:
-                `${duration}ms`,
-  
-            }),
-  
-            'HTTP',
-  
-          );
+            this.logger.log(
+
+              {
+            
+                requestId,
+            
+                method,
+            
+                url,
+            
+                duration,
+            
+                statusCode:
+                  request.res?.statusCode,
+            
+              },
+            
+              'HTTP',
+            
+            );
   
         }),
   

@@ -52,6 +52,12 @@ import {
 } from './common/middleware/request-id.middleware';
 import { DispatchModule } from './modules/dispatch/dispatch.module';
 import { PresenceModule } from './modules/presence/presence.module';
+import { APP_GUARD } from '@nestjs/core';
+
+import {
+  ThrottlerGuard,
+  ThrottlerModule,
+} from '@nestjs/throttler';
 
 @Module({
 
@@ -70,11 +76,17 @@ import { PresenceModule } from './modules/presence/presence.module';
 
     }),
 
+    ThrottlerModule.forRoot([
+      {
+        name: 'default',
+        ttl: 60000,
+        limit: 100,
+      },
+    ]),
+
     PrismaModule,
 
     HealthModule,
-
-    LoggerModule,
 
     AuthModule,
 
@@ -113,6 +125,12 @@ import { PresenceModule } from './modules/presence/presence.module';
     PresenceModule
 
 
+  ],
+  providers: [
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
   ],
 
 })

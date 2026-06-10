@@ -39,6 +39,9 @@ import { CurrentUser } from '../decorators/current-user.decorator';
 
 import { Roles } from '../decorators/roles.decorator';
 import {ProfileResponseDto} from '../dto/profile-response.dto';
+import {
+  Throttle,
+} from '@nestjs/throttler';
 
 @ApiTags('Auth')
 @Controller('auth')
@@ -49,6 +52,12 @@ export class AuthController {
   ) {}
 
   @Post('register')
+  @Throttle({
+    default: {
+      limit: 3,
+      ttl: 60000,
+    },
+  })
   @ApiOperation({
     summary: 'Register a new customer',
   })
@@ -72,6 +81,12 @@ export class AuthController {
   }
 
   @Post('login')
+  @Throttle({
+    default: {
+      limit: 5,
+      ttl: 60000,
+    },
+  })
   @ApiOperation({
     summary: 'Login customer',
   })
@@ -112,6 +127,12 @@ export class AuthController {
   }
 
   @Post('refresh')
+  @Throttle({
+    default: {
+      limit: 20,
+      ttl: 60000,
+    },
+  })
   @ApiOperation({
     summary: 'Generate new access token using refresh token',
   })
@@ -131,6 +152,12 @@ export class AuthController {
   }
 
   @Post('logout')
+  @Throttle({
+    default: {
+      limit: 20,
+      ttl: 60000,
+    },
+  })
   @ApiOperation({
     summary: 'Logout user and revoke refresh token',
   })

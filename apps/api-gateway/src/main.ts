@@ -70,9 +70,6 @@ async function bootstrap() {
 
   );
 
-  app.useGlobalFilters(
-    new GlobalExceptionFilter(),
-  );
 
   app.useGlobalInterceptors(
     new ResponseInterceptor(),
@@ -82,6 +79,12 @@ async function bootstrap() {
   app.get(
     AppLoggerService,
   );
+
+app.useGlobalFilters(
+  new GlobalExceptionFilter(
+    logger,
+  ),
+);
 
 app.useGlobalInterceptors(
 

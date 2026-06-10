@@ -514,7 +514,7 @@ model Order {
 
   deliveryPartnerId String?
 
-  payment Payment?
+  payment Payment[]
 
   orderNumber String @unique
 
@@ -741,11 +741,11 @@ model PushToken {
 model Payment {
   id String @id @default(uuid())
 
-  orderId String @unique
+  orderId String
 
   provider PaymentProvider
 
-  providerOrderId String?
+  providerOrderId String? @unique
 
   providerPaymentId String?
 
@@ -755,6 +755,10 @@ model Payment {
 
   method PaymentMethod?
 
+  attemptNumber Int @default(1)
+
+  isActive Boolean @default(true)
+
   createdAt DateTime @default(now())
 
   updatedAt DateTime @updatedAt
@@ -763,8 +767,11 @@ model Payment {
 
   refunds Refund[]
 
+  @@index([orderId])
   @@index([status])
   @@index([provider])
+  @@index([isActive])
+  @@index([attemptNumber])
   @@map("payments")
 }
 

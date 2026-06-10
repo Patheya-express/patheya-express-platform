@@ -47,7 +47,10 @@ from '../../modules/dispatch/dispatch.module';
        {
         name:
         'dispatch',
-       }
+       },
+       {
+        name: 'payments',
+      },
   
       ),
   
@@ -59,7 +62,7 @@ from '../../modules/dispatch/dispatch.module';
   
       NotificationProcessor,
 
-      AssignmentExpiryProcessor
+      AssignmentExpiryProcessor,
   
     ],
   

@@ -5,6 +5,9 @@ import {
   
   import { HealthService }
   from './health.service';
+  import {
+    SkipThrottle,
+  } from '@nestjs/throttler';
   
   @Controller('health')
   export class HealthController {
@@ -17,6 +20,7 @@ import {
     ) {}
   
     @Get()
+    @SkipThrottle()
     async getHealth() {
     
       return this.healthService

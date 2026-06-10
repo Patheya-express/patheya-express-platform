@@ -27,6 +27,12 @@ import {
   
       private readonly notificationQueue:
         Queue,
+      
+      @InjectQueue(
+          'payments',
+        )
+        private readonly paymentsQueue:
+          Queue,
   
     ) {}
   
@@ -68,6 +74,25 @@ import {
             },
       
           );
+      
+      }
+      async addPaymentReconciliationJob() {
+
+        return this.paymentsQueue.upsertJobScheduler(
+          'payment-reconciliation',
+        
+          {
+            every:
+              5 * 60 * 1000,
+          },
+        
+          {
+            name:
+              'reconcile-pending-payments',
+        
+            data: {},
+          },
+        );
       
       }
   

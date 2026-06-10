@@ -8,6 +8,9 @@ from '../../infrastructure/database/prisma.service';
 import { AppLoggerService }
 from '../../infrastructure/logger/logger.service';
 
+import { RedisService }
+from '../../infrastructure/redis/redis.service';
+
 @Injectable()
 export class HealthService {
 
@@ -19,6 +22,9 @@ export class HealthService {
     private readonly logger:
       AppLoggerService,
 
+    private readonly redis:
+      RedisService,
+
   ) {}
 
   async getHealthStatus() {
@@ -26,9 +32,34 @@ export class HealthService {
     await this.prisma
       .$queryRaw`SELECT 1`;
 
+    const redisClient =
+      this.redis.getClient();
+
+    const redisStatus =
+      await redisClient.ping();
+
+    const memory =
+      process.memoryUsage();
+
+    const uptime =
+      Math.floor(
+        process.uptime(),
+      );
+
     this.logger.log(
 
-      'Health check executed',
+      {
+
+        event:
+          'health_check',
+
+        database:
+          'connected',
+
+        redis:
+          redisStatus,
+
+      },
 
       'HealthService',
 
@@ -38,10 +69,31 @@ export class HealthService {
 
       status: 'ok',
 
-      database: 'connected',
-
       service:
         'Patheya Express API',
+
+      database:
+        'connected',
+
+      redis:
+        redisStatus === 'PONG'
+          ? 'connected'
+          : 'disconnected',
+
+      uptime,
+
+      memory: {
+
+        rss:
+          memory.rss,
+
+        heapUsed:
+          memory.heapUsed,
+
+        heapTotal:
+          memory.heapTotal,
+
+      },
 
       timestamp:
         new Date().toISOString(),

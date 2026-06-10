@@ -13,7 +13,10 @@ import {
   
   import { RazorpayProvider }
   from './providers/razorpay.provider';
-  
+import { PaymentReconciliationBootstrap } from './services/payment-reconciliation.bootstrap';
+import { PaymentReconciliationService } from './services/payment-reconciliation.service';
+import { PaymentReconciliationProcessor }
+from './jobs/payment-reconciliation.processor';
   @Module({
   
     controllers: [
@@ -29,6 +32,12 @@ import {
       PaymentsRepository,
   
       RazorpayProvider,
+
+      PaymentReconciliationBootstrap,
+
+      PaymentReconciliationService,
+
+      PaymentReconciliationProcessor
   
     ],
   

@@ -11,7 +11,7 @@ export class AppLoggerService
 implements LoggerService {
 
   log(
-    message: string,
+    message: any,
     context?: string,
   ) {
 
@@ -19,7 +19,9 @@ implements LoggerService {
 
       context,
 
-      message,
+      ...(typeof message === 'object'
+        ? message
+        : { message }),
 
     });
 
@@ -27,7 +29,7 @@ implements LoggerService {
 
   error(
 
-    message: string,
+    message: any,
 
     trace?: string,
 
@@ -39,16 +41,18 @@ implements LoggerService {
 
       context,
 
-      message,
-
       trace,
+
+      ...(typeof message === 'object'
+        ? message
+        : { message }),
 
     });
 
   }
 
   warn(
-    message: string,
+    message: any,
     context?: string,
   ) {
 
@@ -56,14 +60,16 @@ implements LoggerService {
 
       context,
 
-      message,
+      ...(typeof message === 'object'
+        ? message
+        : { message }),
 
     });
 
   }
 
   debug(
-    message: string,
+    message: any,
     context?: string,
   ) {
 
@@ -71,14 +77,16 @@ implements LoggerService {
 
       context,
 
-      message,
+      ...(typeof message === 'object'
+        ? message
+        : { message }),
 
     });
 
   }
 
   verbose(
-    message: string,
+    message: any,
     context?: string,
   ) {
 
@@ -86,7 +94,9 @@ implements LoggerService {
 
       context,
 
-      message,
+      ...(typeof message === 'object'
+        ? message
+        : { message }),
 
     });
 
