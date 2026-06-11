@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@patheya/core": ["packages/core/src"],
+      "@patheya/auth": ["packages/auth/src"],
+      "@patheya/shared-ui": ["packages/shared-ui/src"],
+      "@patheya/shared-models": ["packages/shared-models/src"],
+      "@patheya/api-sdk": ["packages/api-sdk/src"],
+      "@patheya/realtime": ["packages/realtime/src"],
+      "@patheya/notifications": ["packages/notifications/src"],
+      "@patheya/payments": ["packages/payments/src"],
+      "@patheya/analytics": ["packages/analytics/src"],
+      "@patheya/maps": ["packages/maps/src"]
+    }
+  }
+}

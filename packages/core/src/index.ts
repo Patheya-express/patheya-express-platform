@@ -1,0 +1,1 @@
+export const PATHEYA_CORE = 'PATHEYA_CORE';
