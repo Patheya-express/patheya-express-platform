@@ -358,5 +358,25 @@ import {
       };
   
     }
+    async getProfile(
+      userId: string,
+    ) {
+      const user =
+        await this.authRepository
+          .findUserById(userId);
+
+      if (!user) {
+        throw new UnauthorizedException(
+          'User not found',
+        );
+      }
+
+      const {
+        passwordHash: _passwordHash,
+        ...safeUser
+      } = user;
+
+      return safeUser;
+    }
   
   }

@@ -38,7 +38,8 @@ import { RolesGuard } from '../guards/roles.guard';
 import { CurrentUser } from '../decorators/current-user.decorator';
 
 import { Roles } from '../decorators/roles.decorator';
-import {ProfileResponseDto} from '../dto/profile-response.dto';
+import { AuthUserDto }
+from '../dto/auth-user.dto';
 import {
   Throttle,
 } from '@nestjs/throttler';
@@ -113,18 +114,22 @@ export class AuthController {
   })
   @ApiOkResponse({
     description: 'Authenticated user profile',
-    type:ProfileResponseDto,
+    type:AuthUserDto,
   })
   @ApiResponse({
     status: 401,
     description: 'Unauthorized',
   })
-  getProfile(
-    @CurrentUser()
-    user: any,
-  ) {
-    return user;
-  }
+
+@Get('profile')
+getProfile(
+  @CurrentUser()
+  user: any,
+) {
+  return this.authService.getProfile(
+    user.userId,
+  );
+}
 
   @Post('refresh')
   @Throttle({
