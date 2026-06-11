@@ -20,6 +20,7 @@
   "type": "module",
   "devDependencies": {
     "@angular/cli": "^22.0.0",
+    "@nx/angular": "^22.7.5",
     "@openapitools/openapi-generator-cli": "^2.35.0",
     "eslint": "^9.39.4",
     "eslint-config-prettier": "^10.1.8",
