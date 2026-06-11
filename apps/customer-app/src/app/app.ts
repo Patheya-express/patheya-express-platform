@@ -1,5 +1,8 @@
 import { Component, signal } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
+import * as sdk from '@patheya/api-sdk';
+
+console.log(sdk);
 
 @Component({
   selector: 'app-root',

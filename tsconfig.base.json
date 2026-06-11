@@ -1,17 +1,18 @@
 {
   "compilerOptions": {
+    "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "paths": {
-      "@patheya/core": ["packages/core/src"],
-      "@patheya/auth": ["packages/auth/src"],
-      "@patheya/shared-ui": ["packages/shared-ui/src"],
-      "@patheya/shared-models": ["packages/shared-models/src"],
-      "@patheya/api-sdk": ["packages/api-sdk/src"],
-      "@patheya/realtime": ["packages/realtime/src"],
-      "@patheya/notifications": ["packages/notifications/src"],
-      "@patheya/payments": ["packages/payments/src"],
-      "@patheya/analytics": ["packages/analytics/src"],
-      "@patheya/maps": ["packages/maps/src"]
+      "@patheya/core": ["packages/core/src/index.ts"],
+      "@patheya/auth": ["packages/auth/src/index.ts"],
+      "@patheya/shared-ui": ["packages/shared-ui/src/index.ts"],
+      "@patheya/shared-models": ["packages/shared-models/src/index.ts"],
+      "@patheya/api-sdk": ["packages/api-sdk/src/index.ts"],
+      "@patheya/realtime": ["packages/realtime/src/index.ts"],
+      "@patheya/notifications": ["packages/notifications/src/index.ts"],
+      "@patheya/payments": ["packages/payments/src/index.ts"],
+      "@patheya/analytics": ["packages/analytics/src/index.ts"],
+      "@patheya/maps": ["packages/maps/src/index.ts"]
     }
   }
 }
