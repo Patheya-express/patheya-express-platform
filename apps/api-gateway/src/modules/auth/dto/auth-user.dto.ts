@@ -2,10 +2,8 @@ import { ApiProperty } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 
 export class AuthUserDto {
-
   @ApiProperty({
-    example:
-      'c7c1f1e2-6f2d-4f77-a111-123456789abc',
+    example: 'c7c1f1e2-6f2d-4f77-a111-123456789abc',
   })
   id: string;
 
@@ -30,5 +28,4 @@ export class AuthUserDto {
     example: UserRole.CUSTOMER,
   })
   role: UserRole;
-
 }

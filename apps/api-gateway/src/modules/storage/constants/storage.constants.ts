@@ -1,5 +1,4 @@
-export const STORAGE_PROVIDER =
-  'STORAGE_PROVIDER';
+export const STORAGE_PROVIDER = 'STORAGE_PROVIDER';
 
 export enum StorageDriver {
   LOCAL = 'local',

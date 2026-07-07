@@ -1,15 +1,8 @@
-import {
-  IsOptional,
-  IsString,
-} from 'class-validator';
+import { IsOptional, IsString } from 'class-validator';
 
-import {
-  ApiProperty,
-  ApiPropertyOptional,
-} from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateRestaurantDto {
-
   @ApiProperty({
     example: 'Patheya Express',
     description: 'Restaurant name',
@@ -44,5 +37,4 @@ export class CreateRestaurantDto {
   @IsOptional()
   @IsString()
   email?: string;
-
 }

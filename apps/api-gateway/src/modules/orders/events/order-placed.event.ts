@@ -1,16 +1,9 @@
 export class OrderPlacedEvent {
+  constructor(
+    public readonly orderId: string,
 
-    constructor(
-  
-      public readonly orderId:
-        string,
-  
-      public readonly customerId:
-        string,
-  
-      public readonly restaurantId:
-        string,
-  
-    ) {}
-  
-  }
+    public readonly customerId: string,
+
+    public readonly restaurantId: string,
+  ) {}
+}

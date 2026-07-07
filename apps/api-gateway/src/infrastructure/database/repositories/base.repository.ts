@@ -1,13 +1,5 @@
-import { PrismaService }
-from '../prisma.service';
+import { PrismaService } from '../prisma.service';
 
 export abstract class BaseRepository {
-
-  constructor(
-
-    protected readonly prisma:
-      PrismaService,
-
-  ) {}
-
+  constructor(protected readonly prisma: PrismaService) {}
 }

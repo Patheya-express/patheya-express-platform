@@ -1,238 +1,166 @@
-import {
-    Injectable,
-  } from '@nestjs/common';
-  
-  import { PrismaService }
-  from '../../../infrastructure/database/prisma.service';
-  
-  import {
-    AssignmentStatus,
-    DeliveryPartnerStatus,
-  } from '@prisma/client';
-  
-  @Injectable()
-  export class DispatchRepository {
-  
-    constructor(
-      private readonly prisma:
-        PrismaService,
-    ) {}
-  
-    async createAssignment(
-      data: any,
-    ) {
-  
-      return this.prisma
-        .deliveryAssignment
-        .create({
-  
-          data,
-  
-        });
-  
-    }
-    async assignOrderToPartner(
+import { Injectable } from '@nestjs/common';
 
-      orderId: string,
-    
-      userId: string,
-    
-    ) {
-    
-      return this.prisma.order
-        .update({
-    
-          where: {
-            id: orderId,
-          },
-    
-          data: {
-            deliveryPartnerId:
-              userId,
-          },
-    
-        });
-    
-    }
-  
-    async findAssignmentById(
-      assignmentId: string,
-    ) {
-  
-      return this.prisma
-        .deliveryAssignment
-        .findUnique({
-  
-          where: {
-            id: assignmentId,
-          },
-  
-        });
-  
-    }
-  
-    async updateAssignmentStatus(
-  
-      assignmentId: string,
-  
-      status: AssignmentStatus,
-  
-    ) {
-  
-      return this.prisma
-        .deliveryAssignment
-        .update({
-  
-          where: {
-            id: assignmentId,
-          },
-  
-          data: {
-  
-            status,
-  
-            respondedAt:
-              new Date(),
-  
-          },
-  
-        });
-  
-    }
-  
-    async findAvailablePartners() {
-  
-      return this.prisma
-        .deliveryPartner
-        .findMany({
-  
-          where: {
-  
-            status:
-              DeliveryPartnerStatus
-                .AVAILABLE,
-  
-            isVerified:
-              true,
-  
-          },
-  
-          include: {
-  
-            user: true,
-  
-          },
-  
-        });
-  
-    }
-  
-    async findPartnerAssignments(
-      partnerId: string,
-    ) {
-  
-      return this.prisma
-        .deliveryAssignment
-        .findMany({
-  
-          where: {
-  
-            deliveryPartnerId:
-              partnerId,
-  
-          },
-  
-          include: {
-  
-            order: true,
-  
-          },
-  
-          orderBy: {
-  
-            createdAt:
-              'desc',
-  
-          },
-  
-        });
-  
-    }
-    async findPartnerByUserId(
-      userId: string,
-    ) {
-    
-      return this.prisma
-        .deliveryPartner
-        .findUnique({
-    
-          where: {
-            userId,
-          },
-    
-        });
-    
-    }
-    async findActiveAssignmentForOrder(
-      orderId: string,
-    ) {
-    
-      return this.prisma
-        .deliveryAssignment
-        .findFirst({
-    
-          where: {
-    
-            orderId,
-    
-            status: {
-    
-              in: [
-                AssignmentStatus.PENDING,
-                AssignmentStatus.ACCEPTED,
-              ],
-    
-            },
-    
-          },
-    
-        });
-    
-    }
-    
-    async findAssignmentsForOrder(
-      orderId: string,
-    ) {
-    
-      return this.prisma
-        .deliveryAssignment
-        .findMany({
-    
-          where: {
-            orderId,
-          },
-    
-          select: {
-            deliveryPartnerId: true,
-            status: true,
-          },
-    
-        });
-    
-    }
-    async findOrderById(
-      orderId: string,
-    ) {
-    
-      return this.prisma.order
-        .findUnique({
-    
-          where: {
-            id: orderId,
-          },
-    
-        });
-    
-    }
-  
+import { PrismaService } from '../../../infrastructure/database/prisma.service';
+
+import { AssignmentStatus, DeliveryPartnerStatus } from '@prisma/client';
+
+@Injectable()
+export class DispatchRepository {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async createAssignment(data: any) {
+    return this.prisma.deliveryAssignment.create({
+      data,
+    });
   }
+  async assignOrderToPartner(
+    orderId: string,
+
+    userId: string,
+  ) {
+    return this.prisma.order.update({
+      where: {
+        id: orderId,
+      },
+
+      data: {
+        deliveryPartnerId: userId,
+      },
+    });
+  }
+
+  async findAssignmentById(assignmentId: string) {
+    return this.prisma.deliveryAssignment.findUnique({
+      where: {
+        id: assignmentId,
+      },
+    });
+  }
+
+  async updateAssignmentStatus(
+    assignmentId: string,
+
+    status: AssignmentStatus,
+  ) {
+    return this.prisma.deliveryAssignment.update({
+      where: {
+        id: assignmentId,
+      },
+
+      data: {
+        status,
+
+        respondedAt: new Date(),
+      },
+    });
+  }
+
+  async findAvailablePartners() {
+    return this.prisma.deliveryPartner.findMany({
+      where: {
+        status: DeliveryPartnerStatus.AVAILABLE,
+
+        isVerified: true,
+      },
+
+      include: {
+        user: true,
+      },
+    });
+  }
+
+  async findPartnerAssignments(partnerId: string) {
+    return this.prisma.deliveryAssignment.findMany({
+      where: {
+        deliveryPartnerId: partnerId,
+      },
+
+      include: {
+        order: {
+          include: {
+            customer: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                phone: true,
+              },
+            },
+
+            restaurant: {
+              select: {
+                id: true,
+                name: true,
+                phone: true,
+              },
+            },
+
+            branch: {
+              select: {
+                addressLine1: true,
+                addressLine2: true,
+                city: true,
+                state: true,
+                postalCode: true,
+                latitude: true,
+                longitude: true,
+              },
+            },
+
+            items: {
+              include: {
+                menuItem: {
+                  select: {
+                    name: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      orderBy: {
+        createdAt: 'desc',
+      },
+    });
+  }
+  async findPartnerByUserId(userId: string) {
+    return this.prisma.deliveryPartner.findUnique({
+      where: {
+        userId,
+      },
+    });
+  }
+  async findActiveAssignmentForOrder(orderId: string) {
+    return this.prisma.deliveryAssignment.findFirst({
+      where: {
+        orderId,
+
+        status: {
+          in: [AssignmentStatus.PENDING, AssignmentStatus.ACCEPTED],
+        },
+      },
+    });
+  }
+
+  async findAssignmentsForOrder(orderId: string) {
+    return this.prisma.deliveryAssignment.findMany({
+      where: {
+        orderId,
+      },
+
+      select: {
+        deliveryPartnerId: true,
+        status: true,
+      },
+    });
+  }
+  async findOrderById(orderId: string) {
+    return this.prisma.order.findUnique({
+      where: {
+        id: orderId,
+      },
+    });
+  }
+}

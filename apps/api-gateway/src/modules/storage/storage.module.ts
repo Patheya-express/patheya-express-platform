@@ -1,37 +1,20 @@
-import {
-  Global,
-  Module,
-} from '@nestjs/common';
+import { Global, Module } from '@nestjs/common';
 
-import {
-  ConfigModule,
-} from '@nestjs/config';
+import { ConfigModule } from '@nestjs/config';
 
-import {
-  StorageService,
-} from './services/storage.service';
+import { StorageService } from './services/storage.service';
 
-import {
-  LocalStorageProvider,
-} from './providers/local-storage.provider';
+import { LocalStorageProvider } from './providers/local-storage.provider';
 
-import {
-  S3StorageProvider,
-} from './providers/s3-storage.provider';
+import { S3StorageProvider } from './providers/s3-storage.provider';
 
-import {
-  StorageProviderFactory,
-} from './providers/storage.provider.factory';
+import { StorageProviderFactory } from './providers/storage.provider.factory';
 
 @Global()
 @Module({
-
-  imports: [
-    ConfigModule,
-  ],
+  imports: [ConfigModule],
 
   providers: [
-
     StorageService,
 
     LocalStorageProvider,
@@ -39,12 +22,8 @@ import {
     S3StorageProvider,
 
     StorageProviderFactory,
-
   ],
 
-  exports: [
-    StorageService,
-  ],
-
+  exports: [StorageService],
 })
 export class StorageModule {}

@@ -1,105 +1,66 @@
-import {
-  Injectable,
-} from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
-import { PrismaService }
-from '../../infrastructure/database/prisma.service';
+import { PrismaService } from '../../infrastructure/database/prisma.service';
 
-import { AppLoggerService }
-from '../../infrastructure/logger/logger.service';
+import { AppLoggerService } from '../../infrastructure/logger/logger.service';
 
-import { RedisService }
-from '../../infrastructure/redis/redis.service';
+import { RedisService } from '../../infrastructure/redis/redis.service';
+
+import { HealthResponseDto } from './dto/health-response.dto';
 
 @Injectable()
 export class HealthService {
-
   constructor(
+    private readonly prisma: PrismaService,
 
-    private readonly prisma:
-      PrismaService,
+    private readonly logger: AppLoggerService,
 
-    private readonly logger:
-      AppLoggerService,
-
-    private readonly redis:
-      RedisService,
-
+    private readonly redis: RedisService,
   ) {}
 
-  async getHealthStatus() {
+  async getHealthStatus(): Promise<HealthResponseDto> {
+    await this.prisma.$queryRaw`SELECT 1`;
 
-    await this.prisma
-      .$queryRaw`SELECT 1`;
+    const redisClient = this.redis.getClient();
 
-    const redisClient =
-      this.redis.getClient();
+    const redisStatus = await redisClient.ping();
 
-    const redisStatus =
-      await redisClient.ping();
+    const memory = process.memoryUsage();
 
-    const memory =
-      process.memoryUsage();
-
-    const uptime =
-      Math.floor(
-        process.uptime(),
-      );
+    const uptime = Math.floor(process.uptime());
 
     this.logger.log(
-
       {
+        event: 'health_check',
 
-        event:
-          'health_check',
+        database: 'connected',
 
-        database:
-          'connected',
-
-        redis:
-          redisStatus,
-
+        redis: redisStatus,
       },
 
       'HealthService',
-
     );
 
     return {
-
       status: 'ok',
 
-      service:
-        'Patheya Express API',
+      service: 'Patheya Express API',
 
-      database:
-        'connected',
+      database: 'connected',
 
-      redis:
-        redisStatus === 'PONG'
-          ? 'connected'
-          : 'disconnected',
+      redis: redisStatus === 'PONG' ? 'connected' : 'disconnected',
 
       uptime,
 
       memory: {
+        rss: memory.rss,
 
-        rss:
-          memory.rss,
+        heapUsed: memory.heapUsed,
 
-        heapUsed:
-          memory.heapUsed,
-
-        heapTotal:
-          memory.heapTotal,
-
+        heapTotal: memory.heapTotal,
       },
 
-      timestamp:
-        new Date().toISOString(),
-
+      timestamp: new Date().toISOString(),
     };
-
   }
-
 }

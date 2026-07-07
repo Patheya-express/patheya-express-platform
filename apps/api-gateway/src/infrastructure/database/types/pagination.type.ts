@@ -1,7 +1,5 @@
 export interface PaginationQuery {
+  page?: number;
 
-    page?: number;
-  
-    limit?: number;
-  
-  }
+  limit?: number;
+}

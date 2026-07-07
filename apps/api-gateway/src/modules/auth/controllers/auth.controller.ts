@@ -1,10 +1,4 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Post,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
 
 import {
   ApiBearerAuth,
@@ -38,19 +32,13 @@ import { RolesGuard } from '../guards/roles.guard';
 import { CurrentUser } from '../decorators/current-user.decorator';
 
 import { Roles } from '../decorators/roles.decorator';
-import { AuthUserDto }
-from '../dto/auth-user.dto';
-import {
-  Throttle,
-} from '@nestjs/throttler';
+import { AuthUserDto } from '../dto/auth-user.dto';
+import { Throttle } from '@nestjs/throttler';
 
 @ApiTags('Auth')
 @Controller('auth')
 export class AuthController {
-
-  constructor(
-    private readonly authService: AuthService,
-  ) {}
+  constructor(private readonly authService: AuthService) {}
 
   @Post('register')
   @Throttle({
@@ -79,6 +67,64 @@ export class AuthController {
     dto: RegisterDto,
   ) {
     return this.authService.register(dto);
+  }
+
+  @Post('register/delivery-partner')
+  @Throttle({
+    default: {
+      limit: 3,
+      ttl: 60000,
+    },
+  })
+  @ApiOperation({
+    summary: 'Register a new delivery partner',
+  })
+  @ApiCreatedResponse({
+    description: 'Delivery partner account registered successfully',
+    type: RegisterResponseDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Validation failed',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'User already exists',
+  })
+  registerDeliveryPartner(
+    @Body()
+    dto: RegisterDto,
+  ) {
+    return this.authService.registerDeliveryPartner(dto);
+  }
+
+  @Post('register/restaurant-owner')
+  @Throttle({
+    default: {
+      limit: 3,
+      ttl: 60000,
+    },
+  })
+  @ApiOperation({
+    summary: 'Register a new restaurant owner',
+  })
+  @ApiCreatedResponse({
+    description: 'Restaurant owner account registered successfully',
+    type: RegisterResponseDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Validation failed',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'User already exists',
+  })
+  registerRestaurantOwner(
+    @Body()
+    dto: RegisterDto,
+  ) {
+    return this.authService.registerRestaurantOwner(dto);
   }
 
   @Post('login')
@@ -114,22 +160,19 @@ export class AuthController {
   })
   @ApiOkResponse({
     description: 'Authenticated user profile',
-    type:AuthUserDto,
+    type: AuthUserDto,
   })
   @ApiResponse({
     status: 401,
     description: 'Unauthorized',
   })
-
-@Get('profile')
-getProfile(
-  @CurrentUser()
-  user: any,
-) {
-  return this.authService.getProfile(
-    user.userId,
-  );
-}
+  @Get('profile')
+  getProfile(
+    @CurrentUser()
+    user: any,
+  ) {
+    return this.authService.getProfile(user.userId);
+  }
 
   @Post('refresh')
   @Throttle({
@@ -178,19 +221,12 @@ getProfile(
     @Body()
     dto: RefreshTokenDto,
   ) {
-    return this.authService.logout(
-      dto.refreshToken,
-    );
+    return this.authService.logout(dto.refreshToken);
   }
 
   @Get('admin-only')
-  @UseGuards(
-    JwtAuthGuard,
-    RolesGuard,
-  )
-  @Roles(
-    UserRole.ADMIN,
-  )
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({
     summary: 'Admin protected endpoint',
@@ -204,9 +240,7 @@ getProfile(
   })
   adminOnly() {
     return {
-      message:
-        'Admin access granted',
+      message: 'Admin access granted',
     };
   }
-
 }

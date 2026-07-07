@@ -1,50 +1,29 @@
-import * as winston
-from 'winston';
+import * as winston from 'winston';
 
-export const winstonConfig =
-  winston.createLogger({
+export const winstonConfig = winston.createLogger({
+  level: process.env.LOG_LEVEL || 'info',
 
-    level:
-      process.env.LOG_LEVEL ||
-      'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
 
-    format:
-      winston.format.combine(
+    winston.format.errors({
+      stack: true,
+    }),
 
-        winston.format.timestamp(),
+    winston.format.json(),
+  ),
 
-        winston.format.errors({
-          stack: true,
-        }),
+  transports: [
+    new winston.transports.Console(),
 
-        winston.format.json(),
+    new winston.transports.File({
+      filename: 'logs/error.log',
 
-      ),
+      level: 'error',
+    }),
 
-    transports: [
-
-      new winston
-        .transports.Console(),
-
-      new winston
-        .transports.File({
-
-          filename:
-            'logs/error.log',
-
-          level:
-            'error',
-
-        }),
-
-      new winston
-        .transports.File({
-
-          filename:
-            'logs/combined.log',
-
-        }),
-
-    ],
-
-  });
+    new winston.transports.File({
+      filename: 'logs/combined.log',
+    }),
+  ],
+});

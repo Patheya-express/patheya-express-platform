@@ -1,10 +1,6 @@
-import {
-    IsString,
-  } from 'class-validator';
-  
-  export class AssignDeliveryPartnerDto {
-  
-    @IsString()
-    deliveryPartnerId: string;
-  
-  }
+import { IsString } from 'class-validator';
+
+export class AssignDeliveryPartnerDto {
+  @IsString()
+  deliveryPartnerId: string;
+}

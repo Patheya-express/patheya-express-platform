@@ -105,6 +105,13 @@ enum AuditAction {
   REJECT
 }
 
+enum NotificationType {
+  ORDER_PLACED
+  ORDER_STATUS_CHANGED
+  DELIVERY_PARTNER_ASSIGNED
+  GENERAL
+}
+
 enum NotificationChannel {
   PUSH
   EMAIL
@@ -677,6 +684,8 @@ model Notification {
 
   userId String
 
+  type NotificationType @default(GENERAL)
+
   title String
 
   message String
@@ -687,17 +696,23 @@ model Notification {
 
   metadata Json?
 
+  attempts Int @default(0)
+
+  errorMessage String?
+
   sentAt DateTime?
 
   readAt DateTime?
 
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([status])
   @@index([channel])
+  @@index([type])
   @@map("notifications")
 }
 
