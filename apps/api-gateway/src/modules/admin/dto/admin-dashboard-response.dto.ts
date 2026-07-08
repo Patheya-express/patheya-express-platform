@@ -25,7 +25,8 @@ export class AdminDashboardResponseDto {
 
   @ApiProperty({
     type: [AdminNotificationDto],
-    description: 'Admin-facing notifications. Empty until notification sourcing is implemented.',
+    description:
+      'Admin-facing notifications. Empty until notification sourcing is implemented.',
   })
   notifications: AdminNotificationDto[];
 }

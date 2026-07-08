@@ -32,7 +32,15 @@ export interface DeliveryPartnerStats {
   completedDeliveries: Map<string, number>;
   todaysDeliveries: Map<string, number>;
   estimatedFeesToday: Map<string, number>;
-  currentOrder: Map<string, { id: string; orderNumber: string; status: OrderStatus; restaurantName: string }>;
+  currentOrder: Map<
+    string,
+    {
+      id: string;
+      orderNumber: string;
+      status: OrderStatus;
+      restaurantName: string;
+    }
+  >;
 }
 
 function startOfToday(): Date {
@@ -98,40 +106,6 @@ export class DeliveryRepository extends BaseRepository {
     });
   }
 
-  async findOrderByIdForPartner(
-    orderId: string,
-
-    userId: string,
-  ) {
-    return this.prisma.order.findFirst({
-      where: {
-        id: orderId,
-
-        deliveryPartnerId: userId,
-      },
-    });
-  }
-
-  async updateOrderStatus(
-    orderId: string,
-
-    status: any,
-  ) {
-    return this.prisma.order.update({
-      where: {
-        id: orderId,
-      },
-
-      data: {
-        status,
-
-        ...(status === OrderStatus.DELIVERED
-          ? { deliveredAt: new Date() }
-          : {}),
-      },
-    });
-  }
-
   async countActivePartners(): Promise<number> {
     return this.prisma.deliveryPartner.count({
       where: {
@@ -189,7 +163,9 @@ export class DeliveryRepository extends BaseRepository {
     if (params.availability === true) {
       statusConditions.push({ status: DeliveryPartnerStatus.AVAILABLE });
     } else if (params.availability === false) {
-      statusConditions.push({ status: { not: DeliveryPartnerStatus.AVAILABLE } });
+      statusConditions.push({
+        status: { not: DeliveryPartnerStatus.AVAILABLE },
+      });
     }
 
     if (statusConditions.length === 1) {
@@ -213,8 +189,12 @@ export class DeliveryRepository extends BaseRepository {
     if (params.search) {
       where.OR = [
         { vehicleNumber: { contains: params.search, mode: 'insensitive' } },
-        { user: { firstName: { contains: params.search, mode: 'insensitive' } } },
-        { user: { lastName: { contains: params.search, mode: 'insensitive' } } },
+        {
+          user: { firstName: { contains: params.search, mode: 'insensitive' } },
+        },
+        {
+          user: { lastName: { contains: params.search, mode: 'insensitive' } },
+        },
         { user: { email: { contains: params.search, mode: 'insensitive' } } },
         { user: { phone: { contains: params.search, mode: 'insensitive' } } },
       ];
@@ -254,7 +234,9 @@ export class DeliveryRepository extends BaseRepository {
   }
 
   /** Unpaginated — used only when the `online` filter is active, since live Redis presence can't be filtered in SQL. */
-  async findAllMatchingForAdmin(params: AdminDeliveryFilterParams): Promise<any[]> {
+  async findAllMatchingForAdmin(
+    params: AdminDeliveryFilterParams,
+  ): Promise<any[]> {
     const where = this.buildAdminWhere(params);
 
     return this.prisma.deliveryPartner.findMany({
@@ -275,7 +257,9 @@ export class DeliveryRepository extends BaseRepository {
    * today's fee sum, and the current non-terminal order (if any). Three queries total
    * regardless of how many partners are on the page, not one query per partner.
    */
-  async getDeliveryStatsForUserIds(userIds: string[]): Promise<DeliveryPartnerStats> {
+  async getDeliveryStatsForUserIds(
+    userIds: string[],
+  ): Promise<DeliveryPartnerStats> {
     if (userIds.length === 0) {
       return {
         completedDeliveries: new Map(),
@@ -342,20 +326,34 @@ export class DeliveryRepository extends BaseRepository {
     ]);
 
     const completedDeliveries = new Map(
-      completedGroups.map((group) => [group.deliveryPartnerId as string, group._count._all]),
+      completedGroups.map((group) => [
+        group.deliveryPartnerId as string,
+        group._count._all,
+      ]),
     );
 
     const todaysDeliveries = new Map(
-      todaysGroups.map((group) => [group.deliveryPartnerId as string, group._count._all]),
+      todaysGroups.map((group) => [
+        group.deliveryPartnerId as string,
+        group._count._all,
+      ]),
     );
 
     const estimatedFeesToday = new Map(
-      todaysGroups.map((group) => [group.deliveryPartnerId as string, Number(group._sum.deliveryFee ?? 0)]),
+      todaysGroups.map((group) => [
+        group.deliveryPartnerId as string,
+        Number(group._sum.deliveryFee ?? 0),
+      ]),
     );
 
     const currentOrder = new Map<
       string,
-      { id: string; orderNumber: string; status: OrderStatus; restaurantName: string }
+      {
+        id: string;
+        orderNumber: string;
+        status: OrderStatus;
+        restaurantName: string;
+      }
     >();
 
     for (const order of currentOrders) {
@@ -371,6 +369,11 @@ export class DeliveryRepository extends BaseRepository {
       }
     }
 
-    return { completedDeliveries, todaysDeliveries, estimatedFeesToday, currentOrder };
+    return {
+      completedDeliveries,
+      todaysDeliveries,
+      estimatedFeesToday,
+      currentOrder,
+    };
   }
 }

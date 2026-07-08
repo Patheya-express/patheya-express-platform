@@ -12,7 +12,9 @@ export class NotificationProcessor extends WorkerHost {
 
   async process(job: Job) {
     if (job.data?.type === 'retry-notification') {
-      await this.notificationsService.deliverNotification(job.data.notificationId);
+      await this.notificationsService.deliverNotification(
+        job.data.notificationId,
+      );
 
       return true;
     }

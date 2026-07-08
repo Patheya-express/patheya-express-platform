@@ -208,4 +208,8 @@ export class AuthService {
 
     return safeUser;
   }
+
+  async revokeAllRefreshTokens(userId: string): Promise<void> {
+    await this.authRepository.revokeAllRefreshTokensForUser(userId);
+  }
 }

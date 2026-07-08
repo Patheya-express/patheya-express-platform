@@ -3,6 +3,8 @@ import {
   Injectable,
   ConflictException,
   NotFoundException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 
 import { DeliveryPartnerStatus, OrderStatus } from '@prisma/client';
@@ -18,6 +20,8 @@ import { AdminDeliveryPartnerResponseDto } from '../dto/admin-delivery-partner-r
 
 import { PresenceService } from '../../presence/services/presence.service';
 import { UsersService } from '../../users/services/users.service';
+import { OrdersService } from '../../orders/services/orders.service';
+import { AuthenticatedUser } from '../../../shared/authorization/order-access.util';
 
 /**
  * Flattens the raw Prisma include shape (user as a full User row) into the documented
@@ -31,7 +35,15 @@ function toAdminDeliveryPartner(
     completedDeliveries: Map<string, number>;
     todaysDeliveries: Map<string, number>;
     estimatedFeesToday: Map<string, number>;
-    currentOrder: Map<string, { id: string; orderNumber: string; status: OrderStatus; restaurantName: string }>;
+    currentOrder: Map<
+      string,
+      {
+        id: string;
+        orderNumber: string;
+        status: OrderStatus;
+        restaurantName: string;
+      }
+    >;
   },
 ): AdminDeliveryPartnerResponseDto {
   return {
@@ -65,6 +77,8 @@ export class DeliveryService {
     private readonly deliveryRepository: DeliveryRepository,
     private readonly presenceService: PresenceService,
     private readonly usersService: UsersService,
+    @Inject(forwardRef(() => OrdersService))
+    private readonly ordersService: OrdersService,
   ) {}
 
   async onboardPartner(
@@ -120,44 +134,19 @@ export class DeliveryService {
     return this.deliveryRepository.getAssignedOrders(userId);
   }
 
+  /**
+   * Delegates to OrdersService.updateOrderStatus — the single source of truth for order-status
+   * transitions (validation, OrderStatusHistory, domain events, and realtime push). This used
+   * to update the order directly with none of that side-effect wiring; it no longer does.
+   */
   async updateDeliveryStatus(
     orderId: string,
 
-    userId: string,
+    user: AuthenticatedUser,
 
     dto: UpdateDeliveryStatusDto,
   ) {
-    const order = await this.deliveryRepository.findOrderByIdForPartner(
-      orderId,
-
-      userId,
-    );
-
-    if (!order) {
-      throw new NotFoundException('Order not assigned to you');
-    }
-
-    const allowedTransitions = {
-      [OrderStatus.READY_FOR_PICKUP]: [OrderStatus.OUT_FOR_DELIVERY],
-
-      [OrderStatus.OUT_FOR_DELIVERY]: [OrderStatus.DELIVERED],
-
-      [OrderStatus.DELIVERED]: [],
-    };
-
-    const validStatuses = allowedTransitions[order.status] || [];
-
-    if (!validStatuses.includes(dto.status)) {
-      throw new ConflictException(
-        `Invalid status transition from ${order.status} to ${dto.status}`,
-      );
-    }
-
-    return this.deliveryRepository.updateOrderStatus(
-      orderId,
-
-      dto.status,
-    );
+    return this.ordersService.updateOrderStatus(orderId, dto, user);
   }
 
   async countActivePartners(): Promise<number> {
@@ -169,11 +158,16 @@ export class DeliveryService {
     return this.deliveryRepository.findPartnerByUserId(userId);
   }
 
-  async getAllForAdmin(query: GetAdminDeliveryPartnersQueryDto): Promise<PaginatedAdminDeliveryPartnersResponseDto> {
+  async getAllForAdmin(
+    query: GetAdminDeliveryPartnersQueryDto,
+  ): Promise<PaginatedAdminDeliveryPartnersResponseDto> {
     const filters = {
       search: query.search,
       status: query.status,
-      availability: query.availability === undefined ? undefined : query.availability === 'true',
+      availability:
+        query.availability === undefined
+          ? undefined
+          : query.availability === 'true',
       verified: query.verified,
       dateFrom: query.dateFrom,
       dateTo: query.dateTo,
@@ -185,15 +179,27 @@ export class DeliveryService {
 
     if (query.online === undefined) {
       const skip = (query.page - 1) * query.limit;
-      const result = await this.deliveryRepository.findAllForAdmin({ ...filters, skip, take: query.limit });
+      const result = await this.deliveryRepository.findAllForAdmin({
+        ...filters,
+        skip,
+        take: query.limit,
+      });
       pageItems = result.items;
       total = result.total;
-      onlineMap = await this.buildOnlineMap(pageItems.map((partner) => partner.userId));
+      onlineMap = await this.buildOnlineMap(
+        pageItems.map((partner) => partner.userId),
+      );
     } else {
       const onlineFilter = query.online === 'true';
-      const allMatching = await this.deliveryRepository.findAllMatchingForAdmin(filters);
-      const fullOnlineMap = await this.buildOnlineMap(allMatching.map((partner) => partner.userId));
-      const filtered = allMatching.filter((partner) => (fullOnlineMap.get(partner.userId) ?? false) === onlineFilter);
+      const allMatching =
+        await this.deliveryRepository.findAllMatchingForAdmin(filters);
+      const fullOnlineMap = await this.buildOnlineMap(
+        allMatching.map((partner) => partner.userId),
+      );
+      const filtered = allMatching.filter(
+        (partner) =>
+          (fullOnlineMap.get(partner.userId) ?? false) === onlineFilter,
+      );
 
       total = filtered.length;
       const skip = (query.page - 1) * query.limit;
@@ -201,10 +207,18 @@ export class DeliveryService {
       onlineMap = fullOnlineMap;
     }
 
-    const stats = await this.deliveryRepository.getDeliveryStatsForUserIds(pageItems.map((partner) => partner.userId));
+    const stats = await this.deliveryRepository.getDeliveryStatsForUserIds(
+      pageItems.map((partner) => partner.userId),
+    );
 
     return {
-      items: pageItems.map((partner) => toAdminDeliveryPartner(partner, onlineMap.get(partner.userId) ?? false, stats)),
+      items: pageItems.map((partner) =>
+        toAdminDeliveryPartner(
+          partner,
+          onlineMap.get(partner.userId) ?? false,
+          stats,
+        ),
+      ),
 
       total,
 
@@ -216,9 +230,14 @@ export class DeliveryService {
     };
   }
 
-  private async buildOnlineMap(userIds: string[]): Promise<Map<string, boolean>> {
+  private async buildOnlineMap(
+    userIds: string[],
+  ): Promise<Map<string, boolean>> {
     const entries = await Promise.all(
-      userIds.map(async (userId) => [userId, await this.presenceService.isOnline(userId)] as const),
+      userIds.map(
+        async (userId) =>
+          [userId, await this.presenceService.isOnline(userId)] as const,
+      ),
     );
 
     return new Map(entries);
@@ -254,7 +273,10 @@ export class DeliveryService {
       throw new BadRequestException('Delivery partner is already suspended');
     }
 
-    return this.deliveryRepository.updatePartnerStatusById(deliveryPartnerId, DeliveryPartnerStatus.SUSPENDED);
+    return this.deliveryRepository.updatePartnerStatusById(
+      deliveryPartnerId,
+      DeliveryPartnerStatus.SUSPENDED,
+    );
   }
 
   async restorePartner(deliveryPartnerId: string) {
@@ -264,18 +286,27 @@ export class DeliveryService {
       throw new BadRequestException('Only suspended partners can be restored');
     }
 
-    return this.deliveryRepository.updatePartnerStatusById(deliveryPartnerId, DeliveryPartnerStatus.OFFLINE);
+    return this.deliveryRepository.updatePartnerStatusById(
+      deliveryPartnerId,
+      DeliveryPartnerStatus.OFFLINE,
+    );
   }
 
   /** Admin-scoped variant of goOffline() — targets an arbitrary partner instead of the caller. */
   async forceOffline(deliveryPartnerId: string) {
     const partner = await this.findAdminTarget(deliveryPartnerId);
 
-    if (partner.status !== DeliveryPartnerStatus.AVAILABLE && partner.status !== DeliveryPartnerStatus.ON_DELIVERY) {
+    if (
+      partner.status !== DeliveryPartnerStatus.AVAILABLE &&
+      partner.status !== DeliveryPartnerStatus.ON_DELIVERY
+    ) {
       throw new BadRequestException('Delivery partner is not currently online');
     }
 
-    return this.deliveryRepository.updatePartnerStatusById(deliveryPartnerId, DeliveryPartnerStatus.OFFLINE);
+    return this.deliveryRepository.updatePartnerStatusById(
+      deliveryPartnerId,
+      DeliveryPartnerStatus.OFFLINE,
+    );
   }
 
   /** Account-level block, distinct from suspendPartner()'s operational-level suspension — delegates to UsersService, no duplicated status-transition logic. */

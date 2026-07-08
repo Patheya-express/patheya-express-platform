@@ -11,7 +11,14 @@ import { AdminController } from './controllers/admin.controller';
 import { AdminService } from './services/admin.service';
 
 @Module({
-  imports: [UsersModule, RestaurantsModule, DeliveryModule, OrdersModule, PaymentsModule, HealthModule],
+  imports: [
+    UsersModule,
+    RestaurantsModule,
+    DeliveryModule,
+    OrdersModule,
+    PaymentsModule,
+    HealthModule,
+  ],
 
   controllers: [AdminController],
 

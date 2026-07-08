@@ -1,8 +1,20 @@
-import { IsDateString, IsEnum, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import {
+  IsDateString,
+  IsEnum,
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+} from 'class-validator';
 
 import { Type } from 'class-transformer';
 
-import { PaymentProvider, PaymentMethod, TransactionStatus } from '@prisma/client';
+import {
+  PaymentProvider,
+  PaymentMethod,
+  TransactionStatus,
+} from '@prisma/client';
 
 export class GetAdminPaymentsQueryDto {
   @IsOptional()

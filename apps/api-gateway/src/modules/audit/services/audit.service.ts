@@ -78,7 +78,9 @@ export class AuditService {
     return logs.map(toAdminAuditLog);
   }
 
-  async getAllForAdmin(query: GetAdminAuditLogsQueryDto): Promise<PaginatedAdminAuditLogsResponseDto> {
+  async getAllForAdmin(
+    query: GetAdminAuditLogsQueryDto,
+  ): Promise<PaginatedAdminAuditLogsResponseDto> {
     const skip = (query.page - 1) * query.limit;
 
     const { items, total } = await this.auditRepository.findAllForAdmin({

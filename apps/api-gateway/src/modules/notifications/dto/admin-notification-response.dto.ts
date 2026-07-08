@@ -1,6 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
-import { NotificationChannel, NotificationStatus, NotificationType } from '@prisma/client';
+import {
+  NotificationChannel,
+  NotificationStatus,
+  NotificationType,
+} from '@prisma/client';
 
 import { AdminNotificationRecipientSummaryDto } from './admin-notification-recipient-summary.dto';
 

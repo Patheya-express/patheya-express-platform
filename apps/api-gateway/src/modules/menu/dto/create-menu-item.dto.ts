@@ -28,4 +28,9 @@ export class CreateMenuItemDto {
   @IsOptional()
   @IsBoolean()
   isVegan?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  imageUrl?: string;
 }

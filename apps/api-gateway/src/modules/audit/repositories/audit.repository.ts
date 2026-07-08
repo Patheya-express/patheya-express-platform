@@ -70,8 +70,12 @@ export class AuditRepository {
       where.OR = [
         { entityType: { contains: params.search, mode: 'insensitive' } },
         { entityId: { contains: params.search, mode: 'insensitive' } },
-        { user: { firstName: { contains: params.search, mode: 'insensitive' } } },
-        { user: { lastName: { contains: params.search, mode: 'insensitive' } } },
+        {
+          user: { firstName: { contains: params.search, mode: 'insensitive' } },
+        },
+        {
+          user: { lastName: { contains: params.search, mode: 'insensitive' } },
+        },
         { user: { email: { contains: params.search, mode: 'insensitive' } } },
       ];
     }

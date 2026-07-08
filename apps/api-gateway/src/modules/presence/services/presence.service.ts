@@ -2,6 +2,10 @@ import { Injectable } from '@nestjs/common';
 
 import { RedisService } from '../../../infrastructure/redis/redis.service';
 
+// A partner whose app crashes without ever calling markOffline() should not stay "online"
+// forever — the client is expected to refresh this within the window via periodic pings.
+const PRESENCE_TTL_SECONDS = 2 * 60;
+
 @Injectable()
 export class PresenceService {
   constructor(private readonly redisService: RedisService) {}
@@ -17,6 +21,8 @@ export class PresenceService {
       `driver:online:${partnerId}`,
 
       JSON.stringify(data),
+
+      PRESENCE_TTL_SECONDS,
     );
 
     return data;

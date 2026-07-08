@@ -21,7 +21,8 @@ export class AdminDashboardMetricsDto {
 
   @ApiProperty({
     example: 32,
-    description: 'Number of delivery partners currently AVAILABLE or ON_DELIVERY',
+    description:
+      'Number of delivery partners currently AVAILABLE or ON_DELIVERY',
   })
   activeDeliveryPartners: number;
 

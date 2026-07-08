@@ -1,11 +1,15 @@
 import { Global, Module } from '@nestjs/common';
 
+import { JwtModule } from '@nestjs/jwt';
+
 import { RealtimeGateway } from './gateways/realtime.gateway';
 
 import { RealtimeService } from './services/realtime.service';
 
 @Global()
 @Module({
+  imports: [JwtModule.register({})],
+
   providers: [RealtimeGateway, RealtimeService],
 
   exports: [RealtimeService],

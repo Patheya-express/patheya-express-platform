@@ -5,6 +5,16 @@ import { PrismaService } from '../../../infrastructure/database/prisma.service';
 import { BaseRepository } from '../../../infrastructure/database/repositories/base.repository';
 import { OrderStatus, PaymentStatus } from '@prisma/client';
 
+const ORDER_ITEM_INCLUDE = {
+  menuItem: {
+    select: { name: true },
+  },
+  variant: {
+    select: { name: true },
+  },
+  addonOptions: true,
+} as const;
+
 const ACTIVE_ORDER_STATUSES: OrderStatus[] = [
   OrderStatus.PENDING,
   OrderStatus.CONFIRMED,
@@ -25,6 +35,16 @@ export interface FindAllOrdersForAdminParams {
   dateTo?: string;
 }
 
+export interface FindCustomerOrdersParams {
+  customerId: string;
+  skip: number;
+  take: number;
+  search?: string;
+  status?: OrderStatus;
+  dateFrom?: string;
+  dateTo?: string;
+}
+
 function startOfToday(): Date {
   const now = new Date();
   return new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -41,31 +61,90 @@ export class OrdersRepository extends BaseRepository {
       data,
 
       include: {
-        items: true,
+        items: {
+          include: ORDER_ITEM_INCLUDE,
+        },
       },
     });
   }
 
-  async findCustomerOrders(customerId: string) {
-    return this.prisma.order.findMany({
-      where: {
-        customerId,
-      },
+  /**
+   * Paginated, filterable order history for the customer-facing "my orders" screen — mirrors
+   * the shape of findAllForAdmin but pre-scoped to a single customerId (never accepts one as a
+   * caller-supplied filter, since that's the whole point of this method vs. the admin one).
+   */
+  async findCustomerOrders(
+    params: FindCustomerOrdersParams,
+  ): Promise<{ items: any[]; total: number }> {
+    const where: any = { customerId: params.customerId };
 
-      include: {
-        items: true,
+    if (params.status) {
+      where.status = params.status;
+    }
 
-        restaurant: true,
+    if (params.dateFrom || params.dateTo) {
+      where.placedAt = {
+        ...(params.dateFrom ? { gte: new Date(params.dateFrom) } : {}),
+        ...(params.dateTo ? { lte: new Date(params.dateTo) } : {}),
+      };
+    }
 
-        statusHistory: {
-          orderBy: {
-            createdAt: 'asc',
+    if (params.search) {
+      where.OR = [
+        { orderNumber: { contains: params.search, mode: 'insensitive' } },
+        {
+          restaurant: {
+            name: { contains: params.search, mode: 'insensitive' },
           },
         },
-      },
+      ];
+    }
 
-      orderBy: {
-        createdAt: 'desc',
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.order.findMany({
+        where,
+
+        skip: params.skip,
+
+        take: params.take,
+
+        include: {
+          items: {
+            include: ORDER_ITEM_INCLUDE,
+          },
+
+          restaurant: true,
+
+          statusHistory: {
+            orderBy: {
+              createdAt: 'asc',
+            },
+          },
+        },
+
+        orderBy: {
+          createdAt: 'desc',
+        },
+      }),
+
+      this.prisma.order.count({ where }),
+    ]);
+
+    return { items, total };
+  }
+
+  /** Lightweight ownership projection — used by authorization checks that don't need the full order graph. */
+  async findOrderOwnership(orderId: string) {
+    return this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        id: true,
+        customerId: true,
+        restaurantId: true,
+        deliveryPartnerId: true,
+        status: true,
+        latitude: true,
+        longitude: true,
       },
     });
   }
@@ -78,13 +157,7 @@ export class OrdersRepository extends BaseRepository {
 
       include: {
         items: {
-          include: {
-            menuItem: {
-              select: {
-                name: true,
-              },
-            },
-          },
+          include: ORDER_ITEM_INCLUDE,
         },
 
         customer: {
@@ -135,18 +208,18 @@ export class OrdersRepository extends BaseRepository {
 
       include: {
         items: {
-          include: {
-            menuItem: {
-              select: {
-                name: true,
-              },
-            },
-          },
+          include: ORDER_ITEM_INCLUDE,
         },
 
         statusHistory: {
           orderBy: {
             createdAt: 'asc',
+          },
+        },
+
+        deliveryPartner: {
+          include: {
+            deliveryPartnerProfile: true,
           },
         },
       },
@@ -173,6 +246,19 @@ export class OrdersRepository extends BaseRepository {
     return this.prisma.orderStatusHistory.findMany({
       where: {
         orderId,
+      },
+
+      orderBy: {
+        createdAt: 'asc',
+      },
+    });
+  }
+
+  async findStatusHistoryEntry(orderId: string, status: OrderStatus) {
+    return this.prisma.orderStatusHistory.findFirst({
+      where: {
+        orderId,
+        status,
       },
 
       orderBy: {
@@ -232,7 +318,9 @@ export class OrdersRepository extends BaseRepository {
    * customer/restaurant-scoped queries above fetch, since those callers already know who
    * they are and don't need it echoed back.
    */
-  async findAllForAdmin(params: FindAllOrdersForAdminParams): Promise<{ items: any[]; total: number }> {
+  async findAllForAdmin(
+    params: FindAllOrdersForAdminParams,
+  ): Promise<{ items: any[]; total: number }> {
     const where: any = {};
 
     if (params.status) {
@@ -262,10 +350,24 @@ export class OrdersRepository extends BaseRepository {
     if (params.search) {
       where.OR = [
         { orderNumber: { contains: params.search, mode: 'insensitive' } },
-        { customer: { firstName: { contains: params.search, mode: 'insensitive' } } },
-        { customer: { lastName: { contains: params.search, mode: 'insensitive' } } },
-        { customer: { email: { contains: params.search, mode: 'insensitive' } } },
-        { restaurant: { name: { contains: params.search, mode: 'insensitive' } } },
+        {
+          customer: {
+            firstName: { contains: params.search, mode: 'insensitive' },
+          },
+        },
+        {
+          customer: {
+            lastName: { contains: params.search, mode: 'insensitive' },
+          },
+        },
+        {
+          customer: { email: { contains: params.search, mode: 'insensitive' } },
+        },
+        {
+          restaurant: {
+            name: { contains: params.search, mode: 'insensitive' },
+          },
+        },
       ];
     }
 
@@ -294,13 +396,7 @@ export class OrdersRepository extends BaseRepository {
           deliveryPartner: true,
 
           items: {
-            include: {
-              menuItem: {
-                select: {
-                  name: true,
-                },
-              },
-            },
+            include: ORDER_ITEM_INCLUDE,
           },
 
           statusHistory: {

@@ -5,6 +5,7 @@ import { RestaurantStatus } from '@prisma/client';
 import { RestaurantOwnerDto } from './restaurant-owner.dto';
 import { RestaurantCuisineSummaryDto } from './restaurant-cuisine-summary.dto';
 import { RestaurantBranchSummaryDto } from './restaurant-branch-summary.dto';
+import { OfferResponseDto } from '../../offers/dto/offer-response.dto';
 
 export class RestaurantResponseDto {
   @ApiProperty({
@@ -63,6 +64,16 @@ export class RestaurantResponseDto {
   isActive: boolean;
 
   @ApiProperty({
+    example: 4.3,
+  })
+  avgRating: number;
+
+  @ApiProperty({
+    example: 128,
+  })
+  ratingCount: number;
+
+  @ApiProperty({
     example: '2026-05-29T10:00:00.000Z',
   })
   createdAt: Date;
@@ -87,4 +98,9 @@ export class RestaurantResponseDto {
     type: [RestaurantBranchSummaryDto],
   })
   branches?: RestaurantBranchSummaryDto[];
+
+  @ApiPropertyOptional({
+    type: [OfferResponseDto],
+  })
+  offers?: OfferResponseDto[];
 }

@@ -27,6 +27,8 @@ export class OrderNotificationListener implements OnModuleInit {
           'Order Placed',
 
           `Order ${event.orderId} has been placed.`,
+
+          { referenceType: 'ORDER', referenceId: event.orderId },
         );
       },
     );
@@ -63,6 +65,8 @@ export class OrderNotificationListener implements OnModuleInit {
           'Order Update',
 
           message,
+
+          { referenceType: 'ORDER', referenceId: event.orderId },
         );
       },
     );
@@ -79,6 +83,8 @@ export class OrderNotificationListener implements OnModuleInit {
           'Delivery Partner Assigned',
 
           'A delivery partner has been assigned to your order.',
+
+          { referenceType: 'ORDER', referenceId: event.orderId },
         );
       },
     );

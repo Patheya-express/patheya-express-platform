@@ -1,4 +1,18 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
+
+import { FileInterceptor } from '@nestjs/platform-express';
+
+import type { UploadFile } from '../../../shared/types/upload-file.type';
 
 import { MenuService } from '../services/menu.service';
 
@@ -31,10 +45,13 @@ import { CreateAddonOptionDto } from '../dto/create-addon-option.dto';
 import { UpdateAddonOptionDto } from '../dto/update-addon-option.dto';
 import {
   ApiBearerAuth,
+  ApiConsumes,
+  ApiBody,
   ApiCreatedResponse,
   ApiOkResponse,
   ApiOperation,
   ApiParam,
+  ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
 
@@ -419,12 +436,18 @@ export class MenuController {
     return this.menuService.getAddonOptionById(optionId);
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: 'Get complete restaurant menu',
+    description:
+      "Public — no authentication required, so anonymous customers can browse a restaurant's menu. Only active categories and available items are returned.",
   })
   @ApiParam({
     name: 'restaurantId',
+  })
+  @ApiQuery({
+    name: 'search',
+    required: false,
+    description: 'Matches menu item name within the restaurant',
   })
   @ApiOkResponse({
     type: MenuCategoryResponseDto,
@@ -434,7 +457,44 @@ export class MenuController {
   getRestaurantMenu(
     @Param('restaurantId')
     restaurantId: string,
+
+    @Query('search')
+    search?: string,
   ) {
-    return this.menuService.getRestaurantMenu(restaurantId);
+    return this.menuService.getRestaurantMenu(restaurantId, search);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({
+    summary: 'Upload menu item image',
+  })
+  @ApiParam({
+    name: 'id',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+        },
+      },
+    },
+  })
+  @ApiOkResponse({
+    type: MenuItemResponseDto,
+  })
+  @UseInterceptors(FileInterceptor('file'))
+  @Post('items/:id/image')
+  uploadMenuItemImage(
+    @Param('id')
+    id: string,
+
+    @UploadedFile()
+    file: UploadFile,
+  ) {
+    return this.menuService.uploadMenuItemImage(id, file);
   }
 }

@@ -8,12 +8,18 @@ import {
   Patch,
   Post,
   Query,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+
+import { FileInterceptor } from '@nestjs/platform-express';
 
 import {
   ApiBearerAuth,
   ApiBadRequestResponse,
+  ApiBody,
+  ApiConsumes,
   ApiCreatedResponse,
   ApiOkResponse,
   ApiOperation,
@@ -22,6 +28,8 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+
+import type { UploadFile } from '../../../shared/types/upload-file.type';
 
 import { UserRole, RestaurantStatus } from '@prisma/client';
 
@@ -32,6 +40,7 @@ import { GetRestaurantsQueryDto } from '../dto/get-restaurants-query.dto';
 import { GetAdminRestaurantsQueryDto } from '../dto/get-admin-restaurants-query.dto';
 import { RestaurantResponseDto } from '../dto/restaurant-response.dto';
 import { PaginatedRestaurantsResponseDto } from '../dto/paginated-restaurants-response.dto';
+import { PaginatedRestaurantSummariesResponseDto } from '../dto/paginated-restaurant-summaries-response.dto';
 
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../auth/guards/roles.guard';
@@ -50,7 +59,7 @@ export class RestaurantsController {
   })
   @ApiOkResponse({
     description: 'Restaurants retrieved successfully.',
-    type: PaginatedRestaurantsResponseDto,
+    type: PaginatedRestaurantSummariesResponseDto,
   })
   @ApiQuery({
     name: 'page',
@@ -167,7 +176,8 @@ export class RestaurantsController {
   @ApiQuery({
     name: 'search',
     required: false,
-    description: 'Matches restaurant name, owner first name, owner last name, or owner email',
+    description:
+      'Matches restaurant name, owner first name, owner last name, or owner email',
   })
   @ApiQuery({
     name: 'city',
@@ -308,9 +318,10 @@ export class RestaurantsController {
     return this.restaurantsService.restoreRestaurant(id);
   }
 
-  @ApiBearerAuth('JWT-auth')
   @ApiOperation({
     summary: 'Get restaurant by ID',
+    description:
+      'Public — no authentication required, so anonymous customers can browse restaurant detail pages.',
   })
   @ApiParam({
     name: 'id',
@@ -324,12 +335,91 @@ export class RestaurantsController {
     status: 404,
     description: 'Restaurant not found',
   })
-  @UseGuards(JwtAuthGuard)
   @Get(':id')
   getRestaurantById(
     @Param('id')
     id: string,
   ) {
     return this.restaurantsService.getRestaurantById(id);
+  }
+
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'Upload restaurant logo',
+  })
+  @ApiParam({
+    name: 'id',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+        },
+      },
+    },
+  })
+  @ApiOkResponse({
+    description: 'Logo uploaded successfully',
+    type: RestaurantResponseDto,
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Restaurant not found',
+  })
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(FileInterceptor('file'))
+  @Post(':id/logo')
+  uploadLogo(
+    @Param('id')
+    id: string,
+
+    @UploadedFile()
+    file: UploadFile,
+  ) {
+    return this.restaurantsService.uploadLogo(id, file);
+  }
+
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'Upload restaurant banner',
+  })
+  @ApiParam({
+    name: 'id',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+        },
+      },
+    },
+  })
+  @ApiOkResponse({
+    description: 'Banner uploaded successfully',
+    type: RestaurantResponseDto,
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Restaurant not found',
+  })
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(FileInterceptor('file'))
+  @Post(':id/banner')
+  uploadBanner(
+    @Param('id')
+    id: string,
+
+    @UploadedFile()
+    file: UploadFile,
+  ) {
+    return this.restaurantsService.uploadBanner(id, file);
   }
 }

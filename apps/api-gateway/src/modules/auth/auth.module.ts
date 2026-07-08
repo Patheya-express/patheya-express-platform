@@ -38,6 +38,6 @@ import { AuditModule } from '../audit/audit.module';
     RolesGuard,
   ],
 
-  exports: [PasswordService, TokenService, JwtModule],
+  exports: [PasswordService, TokenService, JwtModule, AuthService],
 })
 export class AuthModule {}

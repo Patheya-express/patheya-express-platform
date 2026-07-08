@@ -31,7 +31,8 @@ export class AdminDeliveryPartnerResponseDto {
 
   @ApiProperty({
     enum: DeliveryPartnerStatus,
-    description: 'Durable operational status, toggled by the partner (available/offline) or an admin (suspend/restore).',
+    description:
+      'Durable operational status, toggled by the partner (available/offline) or an admin (suspend/restore).',
   })
   status: DeliveryPartnerStatus;
 
@@ -39,13 +40,14 @@ export class AdminDeliveryPartnerResponseDto {
   isVerified: boolean;
 
   @ApiProperty({
-    description: 'Live presence from Redis — distinct from `status`, which is the durable DB flag. The two can disagree.',
+    description:
+      'Live presence from Redis — distinct from `status`, which is the durable DB flag. The two can disagree.',
   })
   online: boolean;
 
   @ApiPropertyOptional({
     type: AdminDeliveryCurrentOrderSummaryDto,
-    description: 'The partner\'s current non-terminal order, if any.',
+    description: "The partner's current non-terminal order, if any.",
   })
   currentOrder?: AdminDeliveryCurrentOrderSummaryDto;
 
@@ -60,7 +62,7 @@ export class AdminDeliveryPartnerResponseDto {
   todaysDeliveries: number;
 
   @ApiProperty({
-    description: 'Sum of deliveryFee across today\'s completed deliveries.',
+    description: "Sum of deliveryFee across today's completed deliveries.",
   })
   estimatedFeesToday: number;
 

@@ -36,6 +36,12 @@ import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { DispatchModule } from './modules/dispatch/dispatch.module';
 import { PresenceModule } from './modules/presence/presence.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { CustomerModule } from './modules/customer/customer.module';
+import { CartModule } from './modules/cart/cart.module';
+import { AddressesModule } from './modules/addresses/addresses.module';
+import { TrackingModule } from './modules/tracking/tracking.module';
+import { FavoritesModule } from './modules/favorites/favorites.module';
+import { OffersModule } from './modules/offers/offers.module';
 import { APP_GUARD } from '@nestjs/core';
 
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
@@ -99,6 +105,18 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
     PresenceModule,
 
     AdminModule,
+
+    CustomerModule,
+
+    CartModule,
+
+    AddressesModule,
+
+    TrackingModule,
+
+    FavoritesModule,
+
+    OffersModule,
   ],
   providers: [
     {

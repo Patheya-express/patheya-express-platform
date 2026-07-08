@@ -2,6 +2,10 @@ import { ValidationPipe } from '@nestjs/common';
 
 import { NestFactory } from '@nestjs/core';
 
+import { NestExpressApplication } from '@nestjs/platform-express';
+
+import { join } from 'path';
+
 import helmet from 'helmet';
 
 import compression from 'compression';
@@ -19,9 +23,16 @@ import { AppLoggerService } from './infrastructure/logger/logger.service';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    rawBody: true,
+  });
 
   app.setGlobalPrefix('api/v1');
+
+  // Serves files written by LocalStorageProvider (e.g. restaurant logos/banners) at the same
+  // `/uploads/...` path it returns as the stored URL — outside the `api/v1` prefix, since it's
+  // static file serving via Express middleware, not a routed controller.
+  app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads/' });
 
   app.use(helmet());
 

@@ -26,6 +26,8 @@ import { AssignDeliveryPartnerDto } from '../dto/assign-delivery-partner.dto';
 import { CancelOrderDto } from '../dto/cancel-order.dto';
 
 import { GetAdminOrdersQueryDto } from '../dto/get-admin-orders-query.dto';
+import { GetCustomerOrdersQueryDto } from '../dto/get-customer-orders-query.dto';
+import { PaginatedOrdersResponseDto } from '../dto/paginated-orders-response.dto';
 import { ForceCompleteOrderDto } from '../dto/force-complete-order.dto';
 import { RefundOrderDto } from '../dto/refund-order.dto';
 
@@ -79,24 +81,40 @@ export class OrdersController {
 
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
-    summary: 'Get customer orders',
+    summary: 'Get my order history',
+    description:
+      "Returns a paginated, filterable, searchable list of the current customer's own orders.",
   })
   @ApiOkResponse({
     description: 'Customer orders retrieved',
-    type: OrderResponseDto,
-    isArray: true,
+    type: PaginatedOrdersResponseDto,
   })
+  @ApiQuery({ name: 'page', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiQuery({
+    name: 'search',
+    required: false,
+    description: 'Matches order number or restaurant name',
+  })
+  @ApiQuery({ name: 'status', required: false, enum: OrderStatus })
+  @ApiQuery({ name: 'dateFrom', required: false })
+  @ApiQuery({ name: 'dateTo', required: false })
   @Get('me')
   getCustomerOrders(
     @CurrentUser()
     user: any,
+
+    @Query()
+    query: GetCustomerOrdersQueryDto,
   ) {
-    return this.ordersService.getCustomerOrders(user.userId);
+    return this.ordersService.getCustomerOrders(user.userId, query);
   }
 
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: 'Get restaurant orders',
+    description:
+      "Restricted to the restaurant's own owner/manager, or an admin.",
   })
   @ApiParam({
     name: 'restaurantId',
@@ -108,10 +126,13 @@ export class OrdersController {
   })
   @Get('restaurant/:restaurantId')
   getRestaurantOrders(
+    @CurrentUser()
+    user: any,
+
     @Param('restaurantId')
     restaurantId: string,
   ) {
-    return this.ordersService.getRestaurantOrders(restaurantId);
+    return this.ordersService.getRestaurantOrders(restaurantId, user);
   }
 
   @ApiOperation({
@@ -136,7 +157,8 @@ export class OrdersController {
   @ApiQuery({
     name: 'search',
     required: false,
-    description: 'Matches order number, customer name/email, or restaurant name',
+    description:
+      'Matches order number, customer name/email, or restaurant name',
   })
   @ApiQuery({
     name: 'status',
@@ -188,6 +210,9 @@ export class OrdersController {
   })
   @Patch(':orderId/status')
   updateOrderStatus(
+    @CurrentUser()
+    user: any,
+
     @Param('orderId')
     orderId: string,
 
@@ -198,6 +223,8 @@ export class OrdersController {
       orderId,
 
       dto,
+
+      user,
     );
   }
   @UseGuards(JwtAuthGuard)
@@ -214,10 +241,13 @@ export class OrdersController {
   })
   @Get(':id/timeline')
   getOrderTimeline(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     orderId: string,
   ) {
-    return this.ordersService.getOrderTimeline(orderId);
+    return this.ordersService.getOrderTimeline(orderId, user);
   }
   @UseGuards(JwtAuthGuard)
   @Get(':id')
@@ -232,10 +262,13 @@ export class OrdersController {
     type: OrderResponseDto,
   })
   getOrderById(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     orderId: string,
   ) {
-    return this.ordersService.getOrderById(orderId);
+    return this.ordersService.getOrderById(orderId, user);
   }
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
@@ -250,6 +283,9 @@ export class OrdersController {
   })
   @Post(':id/accept')
   acceptOrder(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     orderId: string,
   ) {
@@ -259,6 +295,8 @@ export class OrdersController {
       {
         status: OrderStatus.CONFIRMED,
       },
+
+      user,
     );
   }
   @UseGuards(JwtAuthGuard)
@@ -274,6 +312,9 @@ export class OrdersController {
   })
   @Post(':id/reject')
   rejectOrder(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     orderId: string,
   ) {
@@ -283,6 +324,8 @@ export class OrdersController {
       {
         status: OrderStatus.CANCELLED,
       },
+
+      user,
     );
   }
   @UseGuards(JwtAuthGuard)
@@ -298,6 +341,9 @@ export class OrdersController {
   })
   @Post(':id/prepare')
   prepareOrder(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     orderId: string,
   ) {
@@ -307,6 +353,8 @@ export class OrdersController {
       {
         status: OrderStatus.PREPARING,
       },
+
+      user,
     );
   }
   @UseGuards(JwtAuthGuard)
@@ -322,6 +370,9 @@ export class OrdersController {
   })
   @Post(':id/ready')
   readyOrder(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     orderId: string,
   ) {
@@ -331,6 +382,8 @@ export class OrdersController {
       {
         status: OrderStatus.READY_FOR_PICKUP,
       },
+
+      user,
     );
   }
   @UseGuards(JwtAuthGuard)
@@ -346,6 +399,9 @@ export class OrdersController {
   })
   @Post(':id/picked-up')
   pickedUp(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     orderId: string,
   ) {
@@ -355,6 +411,8 @@ export class OrdersController {
       {
         status: OrderStatus.OUT_FOR_DELIVERY,
       },
+
+      user,
     );
   }
   @UseGuards(JwtAuthGuard)
@@ -370,6 +428,9 @@ export class OrdersController {
   })
   @Post(':id/delivered')
   delivered(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     orderId: string,
   ) {
@@ -379,6 +440,8 @@ export class OrdersController {
       {
         status: OrderStatus.DELIVERED,
       },
+
+      user,
     );
   }
   @UseGuards(JwtAuthGuard)
@@ -394,6 +457,9 @@ export class OrdersController {
   })
   @Post(':id/cancel')
   cancelOrder(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     orderId: string,
   ) {
@@ -403,11 +469,14 @@ export class OrdersController {
       {
         status: OrderStatus.CANCELLED,
       },
+
+      user,
     );
   }
   @ApiOperation({
     summary: 'Assign or reassign delivery partner',
-    description: 'Admin-only. Validates the target user is a real delivery partner and the order is not in a terminal status.',
+    description:
+      'Admin-only. Validates the target user is a real delivery partner and the order is not in a terminal status.',
   })
   @ApiParam({
     name: 'id',
@@ -442,7 +511,8 @@ export class OrdersController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({
     summary: 'Cancel order (admin)',
-    description: 'Admin-only. Cancels an order from any non-terminal status, unlike the customer/restaurant-facing cancel endpoint.',
+    description:
+      'Admin-only. Cancels an order from any non-terminal status, unlike the customer/restaurant-facing cancel endpoint.',
   })
   @ApiParam({
     name: 'id',
@@ -473,7 +543,8 @@ export class OrdersController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({
     summary: 'Force complete order',
-    description: 'Admin-only. Marks an order delivered directly, skipping the normal status pipeline.',
+    description:
+      'Admin-only. Marks an order delivered directly, skipping the normal status pipeline.',
   })
   @ApiParam({
     name: 'id',
@@ -504,7 +575,8 @@ export class OrdersController {
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({
     summary: 'Refund order',
-    description: 'Admin-only. Resolves the order\'s active payment and refunds it via the payment provider.',
+    description:
+      "Admin-only. Resolves the order's active payment and refunds it via the payment provider.",
   })
   @ApiParam({
     name: 'id',

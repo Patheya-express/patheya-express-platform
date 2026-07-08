@@ -1,6 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
-import { TransactionStatus, PaymentProvider, PaymentMethod } from '@prisma/client';
+import {
+  TransactionStatus,
+  PaymentProvider,
+  PaymentMethod,
+} from '@prisma/client';
 
 export class AdminOrderPaymentSummaryDto {
   @ApiProperty({

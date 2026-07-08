@@ -1,6 +1,10 @@
 import { Injectable } from '@nestjs/common';
 
-import { TransactionStatus, PaymentProvider, PaymentMethod } from '@prisma/client';
+import {
+  TransactionStatus,
+  PaymentProvider,
+  PaymentMethod,
+} from '@prisma/client';
 
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
 
@@ -167,11 +171,39 @@ export class PaymentsRepository {
       where.OR = [
         { providerOrderId: { contains: params.search, mode: 'insensitive' } },
         { providerPaymentId: { contains: params.search, mode: 'insensitive' } },
-        { order: { orderNumber: { contains: params.search, mode: 'insensitive' } } },
-        { order: { customer: { firstName: { contains: params.search, mode: 'insensitive' } } } },
-        { order: { customer: { lastName: { contains: params.search, mode: 'insensitive' } } } },
-        { order: { customer: { email: { contains: params.search, mode: 'insensitive' } } } },
-        { order: { customer: { phone: { contains: params.search, mode: 'insensitive' } } } },
+        {
+          order: {
+            orderNumber: { contains: params.search, mode: 'insensitive' },
+          },
+        },
+        {
+          order: {
+            customer: {
+              firstName: { contains: params.search, mode: 'insensitive' },
+            },
+          },
+        },
+        {
+          order: {
+            customer: {
+              lastName: { contains: params.search, mode: 'insensitive' },
+            },
+          },
+        },
+        {
+          order: {
+            customer: {
+              email: { contains: params.search, mode: 'insensitive' },
+            },
+          },
+        },
+        {
+          order: {
+            customer: {
+              phone: { contains: params.search, mode: 'insensitive' },
+            },
+          },
+        },
       ];
     }
 

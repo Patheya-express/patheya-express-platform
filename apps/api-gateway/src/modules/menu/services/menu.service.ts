@@ -1,6 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 
 import { MenuRepository } from '../repositories/menu.repository';
+
+import { StorageService } from '../../storage/services/storage.service';
+import { UploadFile } from '../../../shared/types/upload-file.type';
 
 import { CreateCategoryDto } from '../dto/create-category.dto';
 
@@ -16,7 +19,22 @@ import { UpdateAddonOptionDto } from '../dto/update-addon-option.dto';
 
 @Injectable()
 export class MenuService {
-  constructor(private readonly menuRepository: MenuRepository) {}
+  constructor(
+    private readonly menuRepository: MenuRepository,
+    private readonly storageService: StorageService,
+  ) {}
+
+  async uploadMenuItemImage(menuItemId: string, file: UploadFile) {
+    const menuItem = await this.menuRepository.getMenuItemById(menuItemId);
+
+    if (!menuItem) {
+      throw new NotFoundException('Menu item not found');
+    }
+
+    const imageUrl = await this.storageService.upload(file, 'menu-items');
+
+    return this.menuRepository.updateMenuItem(menuItemId, { imageUrl });
+  }
 
   async createCategory(dto: CreateCategoryDto) {
     return this.menuRepository.createCategory(dto);
@@ -26,8 +44,8 @@ export class MenuService {
     return this.menuRepository.createMenuItem(dto);
   }
 
-  async getRestaurantMenu(restaurantId: string) {
-    return this.menuRepository.getRestaurantMenu(restaurantId);
+  async getRestaurantMenu(restaurantId: string, search?: string) {
+    return this.menuRepository.getRestaurantMenu(restaurantId, search);
   }
   async getMenuItemById(menuItemId: string) {
     return this.menuRepository.getMenuItemById(menuItemId);

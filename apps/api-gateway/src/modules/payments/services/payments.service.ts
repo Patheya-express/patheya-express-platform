@@ -2,6 +2,7 @@ import {
   Injectable,
   ConflictException,
   NotFoundException,
+  UnauthorizedException,
 } from '@nestjs/common';
 
 import {
@@ -99,7 +100,9 @@ export class PaymentsService {
 
     await this.paymentsRepository.deactivateOrderAttempts(orderId);
 
-    const receipt = `order_${orderId}_attempt_${attemptNumber}`;
+    // Razorpay rejects receipts over 40 characters — a full UUID orderId plus prefix/suffix
+    // already exceeds that, so this keeps just enough of the order id to stay unique in practice.
+    const receipt = `ord_${orderId.slice(0, 28)}_${attemptNumber}`;
 
     const providerOrder = await this.razorpayProvider.createOrder(
       amount,
@@ -239,6 +242,16 @@ export class PaymentsService {
 
       entity.id,
     );
+
+    await this.eventBus.publish(
+      'payment.failed',
+
+      {
+        paymentId: payment.id,
+
+        orderId: payment.orderId,
+      },
+    );
   }
   private async transitionPaymentStatus(
     paymentId: string,
@@ -306,7 +319,16 @@ export class PaymentsService {
     return refund;
   }
 
-  async processWebhook(payload: any) {
+  async processWebhook(payload: any, rawBody: string, signature: string) {
+    const isValid = this.razorpayProvider.verifyWebhookSignature(
+      rawBody,
+      signature,
+    );
+
+    if (!isValid) {
+      throw new UnauthorizedException('Invalid webhook signature');
+    }
+
     switch (payload.event) {
       case PAYMENT_EVENTS.CAPTURED:
         await this.handlePaymentCaptured(payload);
@@ -342,7 +364,9 @@ export class PaymentsService {
     return this.paymentsRepository.findActivePaymentForOrder(orderId);
   }
 
-  async getAllForAdmin(query: GetAdminPaymentsQueryDto): Promise<PaginatedAdminPaymentsResponseDto> {
+  async getAllForAdmin(
+    query: GetAdminPaymentsQueryDto,
+  ): Promise<PaginatedAdminPaymentsResponseDto> {
     const skip = (query.page - 1) * query.limit;
 
     const { items, total } = await this.paymentsRepository.findAllForAdmin({

@@ -21,7 +21,8 @@ export class AdminDeliveryPartnerUserSummaryDto {
 
   @ApiProperty({
     enum: UserStatus,
-    description: 'The underlying account status — distinct from DeliveryPartner.status. BLOCKED here means the partner cannot log in at all.',
+    description:
+      'The underlying account status — distinct from DeliveryPartner.status. BLOCKED here means the partner cannot log in at all.',
   })
   status: UserStatus;
 }

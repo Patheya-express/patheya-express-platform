@@ -4,7 +4,8 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 
 export class RefundOrderDto {
   @ApiPropertyOptional({
-    description: 'Amount to refund. Defaults to the full payment amount when omitted.',
+    description:
+      'Amount to refund. Defaults to the full payment amount when omitted.',
   })
   @IsOptional()
   @IsNumber()

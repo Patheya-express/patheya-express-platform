@@ -6,7 +6,12 @@ import { UsersService } from './services/users.service';
 
 import { UsersRepository } from './repositories/users.repository';
 
+import { AuthModule } from '../auth/auth.module';
+import { AuditModule } from '../audit/audit.module';
+
 @Module({
+  imports: [AuthModule, AuditModule],
+
   controllers: [UsersController],
 
   providers: [UsersService, UsersRepository],

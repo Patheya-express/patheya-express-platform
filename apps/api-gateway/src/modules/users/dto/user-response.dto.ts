@@ -1,6 +1,11 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
-import { UserRole, UserStatus, AuthProvider } from '@prisma/client';
+import {
+  UserRole,
+  UserStatus,
+  AuthProvider,
+  ThemePreference,
+} from '@prisma/client';
 
 export class UserResponseDto {
   @ApiProperty({
@@ -48,6 +53,40 @@ export class UserResponseDto {
     example: AuthProvider.EMAIL,
   })
   provider: AuthProvider;
+
+  @ApiProperty({
+    example: '/uploads/users/avatars/1234-photo.jpg',
+    required: false,
+  })
+  avatarUrl?: string;
+
+  @ApiProperty({
+    example: 'en',
+  })
+  preferredLanguage: string;
+
+  @ApiProperty({
+    enum: ThemePreference,
+    example: ThemePreference.SYSTEM,
+  })
+  themePreference: ThemePreference;
+
+  @ApiProperty({
+    example: false,
+  })
+  marketingOptIn: boolean;
+
+  @ApiProperty({
+    example: 'Asia/Kolkata',
+  })
+  timezone: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Percentage (0-100) of optional profile fields that have been filled in. Only populated on "my own profile" responses (GET/PATCH/avatar upload on /users/me), omitted on admin listing endpoints.',
+    example: 75,
+  })
+  profileCompletion?: number;
 
   @ApiProperty({
     example: '2026-05-29T10:00:00.000Z',

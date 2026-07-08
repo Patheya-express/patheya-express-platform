@@ -2,9 +2,17 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 
-import { OrderStatus, PaymentStatus, TransactionStatus } from '@prisma/client';
+import {
+  OrderStatus,
+  PaymentStatus,
+  PaymentMode,
+  TransactionStatus,
+} from '@prisma/client';
 
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
 
@@ -15,7 +23,9 @@ import { CreateOrderDto } from '../dto/create-order.dto';
 import { UpdateOrderStatusDto } from '../dto/update-order-status.dto';
 
 import { GetAdminOrdersQueryDto } from '../dto/get-admin-orders-query.dto';
+import { GetCustomerOrdersQueryDto } from '../dto/get-customer-orders-query.dto';
 import { PaginatedAdminOrdersResponseDto } from '../dto/paginated-admin-orders-response.dto';
+import { PaginatedOrdersResponseDto } from '../dto/paginated-orders-response.dto';
 import { AdminOrderResponseDto } from '../dto/admin-order-response.dto';
 import { CancelOrderDto } from '../dto/cancel-order.dto';
 import { ForceCompleteOrderDto } from '../dto/force-complete-order.dto';
@@ -31,8 +41,59 @@ import { OrderStatusChangedEvent } from '../events/order-status-changed.event';
 
 import { DeliveryService } from '../../delivery/services/delivery.service';
 import { PaymentsService } from '../../payments/services/payments.service';
+import { RestaurantsService } from '../../restaurants/services/restaurants.service';
+import {
+  AddressesService,
+  formatAddressForOrder,
+} from '../../addresses/services/addresses.service';
+import { RealtimeService } from '../../realtime/services/realtime.service';
+import {
+  AuthenticatedUser,
+  canAccessOrder,
+  canAccessRestaurant,
+} from '../../../shared/authorization/order-access.util';
 
-const TERMINAL_ORDER_STATUSES: OrderStatus[] = [OrderStatus.DELIVERED, OrderStatus.CANCELLED];
+const TERMINAL_ORDER_STATUSES: OrderStatus[] = [
+  OrderStatus.DELIVERED,
+  OrderStatus.CANCELLED,
+];
+
+/**
+ * Single order-status state machine, shared by every caller (restaurant/admin-facing
+ * PATCH .../status and delivery-partner-facing PATCH /delivery/orders/:id/status) so there is
+ * exactly one place that defines what transitions are legal.
+ */
+const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
+  [OrderStatus.PENDING]: [OrderStatus.CONFIRMED, OrderStatus.CANCELLED],
+  [OrderStatus.CONFIRMED]: [OrderStatus.PREPARING, OrderStatus.CANCELLED],
+  [OrderStatus.PREPARING]: [OrderStatus.READY_FOR_PICKUP],
+  [OrderStatus.READY_FOR_PICKUP]: [OrderStatus.OUT_FOR_DELIVERY],
+  [OrderStatus.OUT_FOR_DELIVERY]: [OrderStatus.DELIVERED],
+  [OrderStatus.DELIVERED]: [],
+  [OrderStatus.CANCELLED]: [],
+};
+
+/**
+ * Flattens the raw Prisma include shape (menuItem/variant as nested rows, addonOptions as join
+ * rows) into the flat, documented OrderItemResponseDto shape.
+ */
+function flattenOrderItems(items: any[]) {
+  return items.map((item) => ({
+    ...item,
+
+    menuItemName: item.menuItem?.name,
+    menuItem: undefined,
+
+    variantName: item.variant?.name,
+    variant: undefined,
+
+    addonOptions: (item.addonOptions ?? []).map((option: any) => ({
+      addonOptionId: option.addonOptionId,
+      name: option.name,
+      price: Number(option.price),
+    })),
+  }));
+}
 
 /**
  * Flattens the raw Prisma include shape (customer/deliveryPartner as full User rows) into the
@@ -86,15 +147,7 @@ function toAdminOrder(order: any): AdminOrderResponseDto {
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,
     deliveredAt: order.deliveredAt,
-    items: order.items.map((item: any) => ({
-      id: item.id,
-      menuItemId: item.menuItemId,
-      menuItemName: item.menuItem?.name,
-      quantity: item.quantity,
-      unitPrice: item.unitPrice,
-      totalPrice: item.totalPrice,
-      specialInstructions: item.specialInstructions,
-    })),
+    items: flattenOrderItems(order.items),
     statusHistory: order.statusHistory,
   };
 }
@@ -106,19 +159,105 @@ export class OrdersService {
 
     private readonly ordersRepository: OrdersRepository,
     private readonly eventBus: EventBusService,
+    @Inject(forwardRef(() => DeliveryService))
     private readonly deliveryService: DeliveryService,
     private readonly paymentsService: PaymentsService,
+    private readonly restaurantsService: RestaurantsService,
+    private readonly addressesService: AddressesService,
+    private readonly realtimeService: RealtimeService,
   ) {}
+
+  /** Throws unless the acting user is this order's customer, its assigned delivery partner, its restaurant's owner/manager, or an admin. */
+  private async assertOrderAccess(
+    order: {
+      customerId: string;
+      restaurantId: string;
+      deliveryPartnerId: string | null;
+    },
+    user: AuthenticatedUser,
+  ): Promise<void> {
+    const allowed = await canAccessOrder(this.prisma, order, user);
+
+    if (!allowed) {
+      throw new ForbiddenException('You do not have access to this order');
+    }
+  }
+
+  private async assertRestaurantAccess(
+    restaurantId: string,
+    user: AuthenticatedUser,
+  ): Promise<void> {
+    const allowed = await canAccessRestaurant(this.prisma, restaurantId, user);
+
+    if (!allowed) {
+      throw new ForbiddenException(
+        "You do not have access to this restaurant's orders",
+      );
+    }
+  }
+
+  /** Lightweight ownership lookup reused by other modules (e.g. tracking) that need to authorize against an order without fetching its full item graph. */
+  async getOrderOwnership(orderId: string) {
+    const order = await this.ordersRepository.findOrderOwnership(orderId);
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    return order;
+  }
+
+  /** Throws unless the user can access the given order; returns the ownership record so callers can reuse it. */
+  async assertOrderAccessById(orderId: string, user: AuthenticatedUser) {
+    const order = await this.getOrderOwnership(orderId);
+
+    await this.assertOrderAccess(order, user);
+
+    return order;
+  }
 
   async placeOrder(
     customerId: string,
 
     dto: CreateOrderDto,
   ) {
+    let deliveryAddress: string;
+    let latitude: number | undefined;
+    let longitude: number | undefined;
+    let addressId: string | undefined;
+
+    if (dto.addressId) {
+      const address = await this.addressesService.findByIdForCustomer(
+        dto.addressId,
+        customerId,
+      );
+
+      deliveryAddress = formatAddressForOrder(address);
+      latitude = address.latitude ?? undefined;
+      longitude = address.longitude ?? undefined;
+      addressId = address.id;
+    } else if (dto.deliveryAddress) {
+      deliveryAddress = dto.deliveryAddress;
+    } else {
+      throw new BadRequestException(
+        'Either addressId or deliveryAddress must be provided',
+      );
+    }
+
     const menuItems = await this.prisma.menuItem.findMany({
       where: {
         id: {
           in: dto.items.map((item) => item.menuItemId),
+        },
+      },
+
+      include: {
+        category: true,
+        variants: true,
+        addons: {
+          include: {
+            options: true,
+          },
         },
       },
     });
@@ -132,20 +271,96 @@ export class OrdersService {
         throw new NotFoundException('Menu item not found');
       }
 
-      const unitPrice = Number(menuItem.basePrice);
+      if (menuItem.category.restaurantId !== dto.restaurantId) {
+        throw new BadRequestException(
+          'All items must belong to the selected restaurant',
+        );
+      }
 
-      const totalPrice = unitPrice * item.quantity;
+      let unitPrice = Number(menuItem.basePrice);
+
+      if (item.variantId) {
+        const variant = menuItem.variants.find((v) => v.id === item.variantId);
+
+        if (!variant) {
+          throw new BadRequestException(
+            `Variant not found for item "${menuItem.name}"`,
+          );
+        }
+
+        unitPrice = Number(variant.price);
+      }
+
+      const optionIndex = new Map(
+        menuItem.addons.flatMap((addon) =>
+          addon.options.map(
+            (option) => [option.id, { option, addon }] as const,
+          ),
+        ),
+      );
+
+      const addonOptionsData = (item.addonOptionIds ?? []).map((optionId) => {
+        const entry = optionIndex.get(optionId);
+
+        if (!entry) {
+          throw new BadRequestException(
+            `Addon option not found for item "${menuItem.name}"`,
+          );
+        }
+
+        if (!entry.option.isAvailable) {
+          throw new BadRequestException(
+            `Addon option "${entry.option.name}" is currently unavailable`,
+          );
+        }
+
+        return {
+          addonOptionId: entry.option.id,
+          name: entry.option.name,
+          price: Number(entry.option.price),
+        };
+      });
+
+      for (const addon of menuItem.addons) {
+        const selectedCount = addonOptionsData.filter((selected) =>
+          addon.options.some((option) => option.id === selected.addonOptionId),
+        ).length;
+
+        if (
+          selectedCount < addon.minSelection ||
+          selectedCount > addon.maxSelection
+        ) {
+          throw new BadRequestException(
+            `"${addon.name}" requires between ${addon.minSelection} and ${addon.maxSelection} selections for "${menuItem.name}"`,
+          );
+        }
+      }
+
+      const addonsTotal = addonOptionsData.reduce(
+        (sum, option) => sum + option.price,
+        0,
+      );
+
+      const totalPrice = (unitPrice + addonsTotal) * item.quantity;
 
       subtotal += totalPrice;
 
       return {
         menuItemId: item.menuItemId,
 
+        variantId: item.variantId,
+
         quantity: item.quantity,
 
         unitPrice,
 
         totalPrice,
+
+        specialInstructions: item.specialInstructions,
+
+        addonOptions: {
+          create: addonOptionsData,
+        },
       };
     });
 
@@ -164,6 +379,10 @@ export class OrdersService {
 
       branchId: dto.branchId,
 
+      addressId,
+
+      paymentMode: dto.paymentMode ?? PaymentMode.ONLINE,
+
       orderNumber,
 
       subtotalAmount: subtotal,
@@ -174,7 +393,13 @@ export class OrdersService {
 
       totalAmount,
 
-      deliveryAddress: dto.deliveryAddress,
+      deliveryAddress,
+
+      latitude,
+
+      longitude,
+
+      notes: dto.notes,
 
       items: {
         create: orderItems,
@@ -198,34 +423,120 @@ export class OrdersService {
       ),
     );
 
-    return order;
+    return {
+      ...order,
+
+      items: flattenOrderItems(order.items),
+    };
   }
 
-  async getCustomerOrders(customerId: string) {
-    return this.ordersRepository.findCustomerOrders(customerId);
+  /** Invoked by OrderPaymentListener when a Razorpay payment succeeds. Idempotent — safe to call more than once. */
+  async markOrderPaid(orderId: string) {
+    const order = await this.ordersRepository.findOrderById(orderId);
+
+    if (!order || order.paymentStatus === PaymentStatus.PAID) {
+      return;
+    }
+
+    await this.ordersRepository.updatePaymentStatus(
+      orderId,
+      PaymentStatus.PAID,
+    );
+
+    if (order.status === OrderStatus.PENDING) {
+      const updatedOrder = await this.ordersRepository.updateOrderStatus(
+        orderId,
+        OrderStatus.CONFIRMED,
+      );
+
+      await this.ordersRepository.createStatusHistory({
+        orderId,
+
+        status: OrderStatus.CONFIRMED,
+      });
+
+      await this.eventBus.publish(
+        'order.status.changed',
+
+        new OrderStatusChangedEvent(
+          updatedOrder.id,
+          updatedOrder.customerId,
+          updatedOrder.status,
+        ),
+      );
+    }
   }
 
-  async getRestaurantOrders(restaurantId: string) {
+  /** Invoked by OrderPaymentListener when a Razorpay payment fails. */
+  async markOrderPaymentFailed(orderId: string) {
+    const order = await this.ordersRepository.findOrderById(orderId);
+
+    if (!order || order.paymentStatus === PaymentStatus.PAID) {
+      return;
+    }
+
+    await this.ordersRepository.updatePaymentStatus(
+      orderId,
+      PaymentStatus.FAILED,
+    );
+  }
+
+  async getCustomerOrders(
+    customerId: string,
+    query: GetCustomerOrdersQueryDto,
+  ): Promise<PaginatedOrdersResponseDto> {
+    const skip = (query.page - 1) * query.limit;
+
+    const { items, total } = await this.ordersRepository.findCustomerOrders({
+      customerId,
+      skip,
+      take: query.limit,
+      search: query.search,
+      status: query.status,
+      dateFrom: query.dateFrom,
+      dateTo: query.dateTo,
+    });
+
+    return {
+      items: items.map((order: any) => ({
+        ...order,
+        restaurantName: order.restaurant?.name,
+        restaurant: undefined,
+        items: flattenOrderItems(order.items),
+      })),
+      total,
+      page: query.page,
+      limit: query.limit,
+      totalPages: Math.ceil(total / query.limit),
+    };
+  }
+
+  async getRestaurantOrders(restaurantId: string, user: AuthenticatedUser) {
+    await this.assertRestaurantAccess(restaurantId, user);
+
     const orders =
       await this.ordersRepository.findRestaurantOrders(restaurantId);
 
     return orders.map((order: any) => ({
       ...order,
 
-      items: order.items.map((item: any) => ({
-        ...item,
-
-        menuItemName: item.menuItem?.name,
-
-        menuItem: undefined,
-      })),
+      items: flattenOrderItems(order.items),
     }));
   }
 
+  /**
+   * The single order-status transition path. Validates the transition, writes the
+   * OrderStatusHistory entry, publishes `order.status.changed` for every transition (not just
+   * some), and pushes a realtime update to the order's room — used identically whether the
+   * caller is the restaurant/admin-facing controller or the delivery-partner-facing one
+   * (DeliveryService.updateDeliveryStatus delegates here rather than updating the order itself).
+   */
   async updateOrderStatus(
     orderId: string,
 
     dto: UpdateOrderStatusDto,
+
+    user: AuthenticatedUser,
   ) {
     const order = await this.ordersRepository.findOrderById(orderId);
 
@@ -233,22 +544,9 @@ export class OrdersService {
       throw new NotFoundException('Order not found');
     }
 
-    const allowedTransitions: Record<OrderStatus, OrderStatus[]> = {
-      [OrderStatus.PENDING]: [OrderStatus.CONFIRMED, OrderStatus.CANCELLED],
+    await this.assertOrderAccess(order, user);
 
-      [OrderStatus.CONFIRMED]: [OrderStatus.PREPARING, OrderStatus.CANCELLED],
-
-      [OrderStatus.PREPARING]: [OrderStatus.READY_FOR_PICKUP],
-
-      [OrderStatus.READY_FOR_PICKUP]: [OrderStatus.OUT_FOR_DELIVERY],
-
-      [OrderStatus.OUT_FOR_DELIVERY]: [OrderStatus.DELIVERED],
-
-      [OrderStatus.DELIVERED]: [],
-
-      [OrderStatus.CANCELLED]: [],
-    };
-    const allowedStatuses = allowedTransitions[order.status];
+    const allowedStatuses = ORDER_STATUS_TRANSITIONS[order.status];
 
     if (!allowedStatuses.includes(dto.status)) {
       throw new BadRequestException(
@@ -261,6 +559,31 @@ export class OrdersService {
 
       dto.status,
     );
+
+    await this.ordersRepository.createStatusHistory({
+      orderId,
+
+      status: dto.status,
+    });
+
+    await this.eventBus.publish(
+      'order.status.changed',
+
+      new OrderStatusChangedEvent(
+        updatedOrder.id,
+
+        updatedOrder.customerId,
+
+        updatedOrder.status,
+      ),
+    );
+
+    this.realtimeService.emitToOrder(orderId, 'order.status.changed', {
+      orderId,
+      status: updatedOrder.status,
+      updatedAt: updatedOrder.updatedAt,
+    });
+
     if (dto.status === OrderStatus.READY_FOR_PICKUP) {
       await this.eventBus.publish(
         'order.ready',
@@ -271,48 +594,84 @@ export class OrdersService {
           updatedOrder.restaurantId,
         ),
       );
-      await this.eventBus.publish(
-        'order.status.changed',
-
-        new OrderStatusChangedEvent(
-          updatedOrder.id,
-
-          updatedOrder.customerId,
-
-          updatedOrder.status,
-        ),
-      );
     }
 
-    await this.ordersRepository.createStatusHistory({
-      orderId,
-
-      status: dto.status,
-    });
+    if (dto.status === OrderStatus.DELIVERED) {
+      await this.recordDeliveryTiming(order.placedAt, updatedOrder);
+    }
 
     return updatedOrder;
   }
-  async getOrderById(orderId: string) {
+
+  /**
+   * Feeds real fulfillment timing back into the restaurant's running averages. Only hooked
+   * into the normal status-transition path (not forceCompleteOrder) — a force-completed order
+   * is an admin override, not a representative timing sample.
+   */
+  private async recordDeliveryTiming(
+    placedAt: Date,
+    order: { id: string; restaurantId: string; deliveredAt: Date | null },
+  ): Promise<void> {
+    if (!order.deliveredAt) {
+      return;
+    }
+
+    const deliveryMinutes = Math.round(
+      (order.deliveredAt.getTime() - placedAt.getTime()) / 60000,
+    );
+
+    const readyEntry = await this.ordersRepository.findStatusHistoryEntry(
+      order.id,
+      OrderStatus.READY_FOR_PICKUP,
+    );
+
+    const prepMinutes = readyEntry
+      ? Math.round(
+          (readyEntry.createdAt.getTime() - placedAt.getTime()) / 60000,
+        )
+      : null;
+
+    await this.restaurantsService.recordOrderTiming(
+      order.restaurantId,
+      prepMinutes,
+      deliveryMinutes,
+    );
+  }
+
+  async getOrderById(orderId: string, user: AuthenticatedUser) {
     const order = await this.ordersRepository.findOrderById(orderId);
 
     if (!order) {
-      return order;
+      throw new NotFoundException('Order not found');
     }
+
+    await this.assertOrderAccess(order, user);
 
     return {
       ...order,
 
-      items: order.items.map((item: any) => ({
-        ...item,
+      items: flattenOrderItems(order.items),
 
-        menuItemName: item.menuItem?.name,
-
-        menuItem: undefined,
-      })),
+      deliveryPartner: (order as any).deliveryPartner
+        ? {
+            id: (order as any).deliveryPartner.id,
+            firstName: (order as any).deliveryPartner.firstName,
+            lastName: (order as any).deliveryPartner.lastName ?? undefined,
+            phone: (order as any).deliveryPartner.phone ?? undefined,
+            vehicleType: (order as any).deliveryPartner.deliveryPartnerProfile
+              ?.vehicleType,
+            vehicleNumber: (order as any).deliveryPartner.deliveryPartnerProfile
+              ?.vehicleNumber,
+          }
+        : undefined,
     };
   }
 
-  async getOrderTimeline(orderId: string) {
+  async getOrderTimeline(orderId: string, user: AuthenticatedUser) {
+    const order = await this.getOrderOwnership(orderId);
+
+    await this.assertOrderAccess(order, user);
+
     return this.ordersRepository.getOrderTimeline(orderId);
   }
 
@@ -328,10 +687,13 @@ export class OrdersService {
     }
 
     if (TERMINAL_ORDER_STATUSES.includes(order.status)) {
-      throw new BadRequestException(`Orders with status ${order.status} cannot be reassigned`);
+      throw new BadRequestException(
+        `Orders with status ${order.status} cannot be reassigned`,
+      );
     }
 
-    const partner = await this.deliveryService.findPartnerByUserId(deliveryPartnerId);
+    const partner =
+      await this.deliveryService.findPartnerByUserId(deliveryPartnerId);
 
     if (!partner) {
       throw new NotFoundException('Delivery partner not found');
@@ -349,16 +711,20 @@ export class OrdersService {
     activeOrders: number;
     completedOrdersToday: number;
   }> {
-    const [ordersToday, activeOrders, completedOrdersToday] = await Promise.all([
-      this.ordersRepository.countPlacedToday(),
-      this.ordersRepository.countActive(),
-      this.ordersRepository.countDeliveredToday(),
-    ]);
+    const [ordersToday, activeOrders, completedOrdersToday] = await Promise.all(
+      [
+        this.ordersRepository.countPlacedToday(),
+        this.ordersRepository.countActive(),
+        this.ordersRepository.countDeliveredToday(),
+      ],
+    );
 
     return { ordersToday, activeOrders, completedOrdersToday };
   }
 
-  async getAllForAdmin(query: GetAdminOrdersQueryDto): Promise<PaginatedAdminOrdersResponseDto> {
+  async getAllForAdmin(
+    query: GetAdminOrdersQueryDto,
+  ): Promise<PaginatedAdminOrdersResponseDto> {
     const skip = (query.page - 1) * query.limit;
 
     const { items, total } = await this.ordersRepository.findAllForAdmin({
@@ -403,10 +769,15 @@ export class OrdersService {
     }
 
     if (TERMINAL_ORDER_STATUSES.includes(order.status)) {
-      throw new BadRequestException(`Orders with status ${order.status} cannot be cancelled`);
+      throw new BadRequestException(
+        `Orders with status ${order.status} cannot be cancelled`,
+      );
     }
 
-    const updatedOrder = await this.ordersRepository.updateOrderStatus(orderId, OrderStatus.CANCELLED);
+    const updatedOrder = await this.ordersRepository.updateOrderStatus(
+      orderId,
+      OrderStatus.CANCELLED,
+    );
 
     await this.ordersRepository.createStatusHistory({
       orderId,
@@ -428,7 +799,9 @@ export class OrdersService {
     }
 
     if (TERMINAL_ORDER_STATUSES.includes(order.status)) {
-      throw new BadRequestException(`Orders with status ${order.status} cannot be force completed`);
+      throw new BadRequestException(
+        `Orders with status ${order.status} cannot be force completed`,
+      );
     }
 
     const updatedOrder = await this.ordersRepository.markDelivered(orderId);
@@ -452,16 +825,26 @@ export class OrdersService {
       throw new NotFoundException('Order not found');
     }
 
-    const payment = await this.paymentsService.findActivePaymentForOrder(orderId);
+    const payment =
+      await this.paymentsService.findActivePaymentForOrder(orderId);
 
     if (!payment || payment.status !== TransactionStatus.SUCCESS) {
-      throw new BadRequestException('This order has no successful payment to refund');
+      throw new BadRequestException(
+        'This order has no successful payment to refund',
+      );
     }
 
     const refundAmount = dto.amount ?? Number(payment.amount);
 
-    await this.paymentsService.refundPayment(payment.id, refundAmount, dto.reason);
+    await this.paymentsService.refundPayment(
+      payment.id,
+      refundAmount,
+      dto.reason,
+    );
 
-    return this.ordersRepository.updatePaymentStatus(orderId, PaymentStatus.REFUNDED);
+    return this.ordersRepository.updatePaymentStatus(
+      orderId,
+      PaymentStatus.REFUNDED,
+    );
   }
 }

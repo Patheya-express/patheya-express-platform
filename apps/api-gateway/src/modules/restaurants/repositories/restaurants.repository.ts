@@ -44,6 +44,12 @@ export class RestaurantsRepository extends BaseRepository {
       where: {
         id: restaurantId,
       },
+
+      include: {
+        cuisines: { include: { cuisine: true } },
+
+        branches: { include: { operatingHours: true } },
+      },
     });
   }
 
@@ -71,8 +77,14 @@ export class RestaurantsRepository extends BaseRepository {
     if (params.search) {
       where.OR = [
         { name: { contains: params.search, mode: 'insensitive' } },
-        { owner: { firstName: { contains: params.search, mode: 'insensitive' } } },
-        { owner: { lastName: { contains: params.search, mode: 'insensitive' } } },
+        {
+          owner: {
+            firstName: { contains: params.search, mode: 'insensitive' },
+          },
+        },
+        {
+          owner: { lastName: { contains: params.search, mode: 'insensitive' } },
+        },
         { owner: { email: { contains: params.search, mode: 'insensitive' } } },
       ];
     }
@@ -140,6 +152,73 @@ export class RestaurantsRepository extends BaseRepository {
 
       data: {
         status,
+      },
+    });
+  }
+
+  async updateImages(
+    restaurantId: string,
+
+    data: { logoUrl?: string; bannerUrl?: string },
+  ) {
+    return this.prisma.restaurant.update({
+      where: {
+        id: restaurantId,
+      },
+
+      data,
+    });
+  }
+
+  /**
+   * Incremental mean update (avgNew = avgOld + (value - avgOld) / newCount) — avoids
+   * re-aggregating every historical order's timing on each delivery, which would get more
+   * expensive as order history grows. `deliveredOrderCount` is the running sample size backing
+   * both averages.
+   */
+  async recordOrderTiming(
+    restaurantId: string,
+
+    prepMinutes: number | null,
+
+    deliveryMinutes: number,
+  ) {
+    const restaurant = await this.prisma.restaurant.findUnique({
+      where: { id: restaurantId },
+      select: {
+        avgPreparationTimeMinutes: true,
+        avgDeliveryTimeMinutes: true,
+        deliveredOrderCount: true,
+      },
+    });
+
+    if (!restaurant) {
+      return;
+    }
+
+    const newCount = restaurant.deliveredOrderCount + 1;
+
+    const newAvgDelivery =
+      (restaurant.avgDeliveryTimeMinutes ?? deliveryMinutes) +
+      (deliveryMinutes -
+        (restaurant.avgDeliveryTimeMinutes ?? deliveryMinutes)) /
+        newCount;
+
+    const newAvgPrep =
+      prepMinutes === null
+        ? restaurant.avgPreparationTimeMinutes
+        : (restaurant.avgPreparationTimeMinutes ?? prepMinutes) +
+          (prepMinutes -
+            (restaurant.avgPreparationTimeMinutes ?? prepMinutes)) /
+            newCount;
+
+    return this.prisma.restaurant.update({
+      where: { id: restaurantId },
+      data: {
+        deliveredOrderCount: newCount,
+        avgDeliveryTimeMinutes: Math.round(newAvgDelivery),
+        avgPreparationTimeMinutes:
+          newAvgPrep === null ? null : Math.round(newAvgPrep),
       },
     });
   }

@@ -31,6 +31,12 @@ enum AuthProvider {
   PHONE
 }
 
+enum ThemePreference {
+  LIGHT
+  DARK
+  SYSTEM
+}
+
 enum RestaurantStatus {
   PENDING
 
@@ -109,7 +115,17 @@ enum NotificationType {
   ORDER_PLACED
   ORDER_STATUS_CHANGED
   DELIVERY_PARTNER_ASSIGNED
+  OFFER
   GENERAL
+}
+
+enum OfferType {
+  PERCENTAGE_OFF
+  FLAT_OFF
+  FREE_DELIVERY
+  BUY_ONE_GET_ONE
+  CASHBACK
+  OTHER
 }
 
 enum NotificationChannel {
@@ -141,6 +157,22 @@ enum PaymentMethod {
   NETBANKING
 
   WALLET
+
+  COD
+}
+
+enum PaymentMode {
+  ONLINE
+
+  COD
+}
+
+enum AddressLabel {
+  HOME
+
+  WORK
+
+  OTHER
 }
 
 enum TransactionStatus {
@@ -186,6 +218,16 @@ model User {
 
   lastLoginAt DateTime?
 
+  avatarUrl String?
+
+  preferredLanguage String @default("en")
+
+  themePreference ThemePreference @default(SYSTEM)
+
+  marketingOptIn Boolean @default(false)
+
+  timezone String @default("Asia/Kolkata")
+
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
@@ -197,16 +239,129 @@ model User {
   notifications          Notification[]
   notificationPreference NotificationPreference?
   pushTokens             PushToken[]
+  reviews                Review[]
+  restaurantFavorites    RestaurantFavorite[]
+  menuItemFavorites      MenuItemFavorite[]
 
   customerOrders Order[] @relation("CustomerOrders")
   deliveryOrders Order[] @relation("DeliveryOrders")
 
   deliveryPartnerProfile DeliveryPartner?
 
+  addresses Address[]
+
+  cart Cart?
+
   @@index([email])
   @@index([phone])
   @@index([role])
   @@map("users")
+}
+
+model Address {
+  id String @id @default(uuid())
+
+  customerId String
+
+  label AddressLabel @default(HOME)
+
+  customLabel String?
+
+  addressLine1 String
+
+  addressLine2 String?
+
+  city String
+
+  state String
+
+  postalCode String
+
+  landmark String?
+
+  deliveryInstructions String?
+
+  latitude Float?
+
+  longitude Float?
+
+  isDefault Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  customer User @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  orders Order[]
+
+  @@index([customerId])
+  @@map("addresses")
+}
+
+model Cart {
+  id String @id @default(uuid())
+
+  customerId String @unique
+
+  restaurantId String?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  customer User @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  restaurant Restaurant? @relation(fields: [restaurantId], references: [id])
+
+  items CartItem[]
+
+  @@map("carts")
+}
+
+model CartItem {
+  id String @id @default(uuid())
+
+  cartId String
+
+  menuItemId String
+
+  variantId String?
+
+  quantity Int
+
+  specialInstructions String?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  cart Cart @relation(fields: [cartId], references: [id], onDelete: Cascade)
+
+  menuItem MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+
+  variant MenuItemVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  addonOptions CartItemAddonOption[]
+
+  @@index([cartId])
+  @@index([menuItemId])
+  @@map("cart_items")
+}
+
+model CartItemAddonOption {
+  id String @id @default(uuid())
+
+  cartItemId String
+
+  addonOptionId String
+
+  cartItem CartItem @relation(fields: [cartItemId], references: [id], onDelete: Cascade)
+
+  addonOption MenuItemAddonOption @relation(fields: [addonOptionId], references: [id], onDelete: Cascade)
+
+  @@index([cartItemId])
+  @@map("cart_item_addon_options")
 }
 
 model Session {
@@ -292,6 +447,18 @@ model Restaurant {
 
   isActive Boolean @default(true)
 
+  featured Boolean @default(false)
+
+  avgRating Float @default(0)
+
+  ratingCount Int @default(0)
+
+  avgPreparationTimeMinutes Int?
+
+  avgDeliveryTimeMinutes Int?
+
+  deliveredOrderCount Int @default(0)
+
   createdAt DateTime @default(now())
 
   updatedAt DateTime @updatedAt
@@ -308,8 +475,17 @@ model Restaurant {
 
   orders Order[]
 
+  reviews Review[]
+
+  offers Offer[]
+
+  carts Cart[]
+
+  favoritedBy RestaurantFavorite[]
+
   @@index([ownerId])
   @@index([status])
+  @@index([featured])
   @@map("restaurants")
 }
 
@@ -395,6 +571,99 @@ model OperatingHour {
   @@map("operating_hours")
 }
 
+model Review {
+  id String @id @default(uuid())
+
+  restaurantId String
+
+  customerId String
+
+  rating Int
+
+  comment String?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  customer User @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([restaurantId, customerId])
+  @@index([restaurantId])
+  @@map("reviews")
+}
+
+model RestaurantFavorite {
+  id String @id @default(uuid())
+
+  customerId String
+
+  restaurantId String
+
+  createdAt DateTime @default(now())
+
+  customer User @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, restaurantId])
+  @@index([restaurantId])
+  @@map("restaurant_favorites")
+}
+
+model MenuItemFavorite {
+  id String @id @default(uuid())
+
+  customerId String
+
+  menuItemId String
+
+  createdAt DateTime @default(now())
+
+  customer User @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  menuItem MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, menuItemId])
+  @@index([menuItemId])
+  @@map("menu_item_favorites")
+}
+
+model Offer {
+  id String @id @default(uuid())
+
+  restaurantId String?
+
+  title String
+
+  description String?
+
+  imageUrl String?
+
+  linkUrl String?
+
+  type OfferType?
+
+  isActive Boolean @default(true)
+
+  startsAt DateTime?
+
+  endsAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant? @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@index([restaurantId])
+  @@index([isActive])
+  @@index([type])
+  @@map("offers")
+}
+
 model MenuCategory {
   id String @id @default(uuid())
 
@@ -453,6 +722,10 @@ model MenuItem {
 
   orderItems OrderItem[]
 
+  cartItems CartItem[]
+
+  favoritedBy MenuItemFavorite[]
+
   @@index([categoryId])
   @@map("menu_items")
 }
@@ -469,6 +742,10 @@ model MenuItemVariant {
   isDefault Boolean @default(false)
 
   menuItem MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+
+  orderItems OrderItem[]
+
+  cartItems CartItem[]
 
   @@index([menuItemId])
   @@map("menu_item_variants")
@@ -506,6 +783,10 @@ model MenuItemAddonOption {
 
   addon MenuItemAddon @relation(fields: [addonId], references: [id], onDelete: Cascade)
 
+  orderItemAddonOptions OrderItemAddonOption[]
+
+  cartItemAddonOptions CartItemAddonOption[]
+
   @@index([addonId])
   @@map("menu_item_addon_options")
 }
@@ -528,6 +809,10 @@ model Order {
   status OrderStatus @default(PENDING)
 
   paymentStatus PaymentStatus @default(PENDING)
+
+  paymentMode PaymentMode @default(ONLINE)
+
+  addressId String?
 
   subtotalAmount Decimal @db.Decimal(10, 2)
 
@@ -561,6 +846,8 @@ model Order {
 
   deliveryPartner User? @relation("DeliveryOrders", fields: [deliveryPartnerId], references: [id])
 
+  address Address? @relation(fields: [addressId], references: [id])
+
   items OrderItem[]
 
   statusHistory OrderStatusHistory[]
@@ -581,6 +868,8 @@ model OrderItem {
 
   menuItemId String
 
+  variantId String?
+
   quantity Int
 
   unitPrice Decimal @db.Decimal(10, 2)
@@ -595,9 +884,32 @@ model OrderItem {
 
   menuItem MenuItem @relation(fields: [menuItemId], references: [id])
 
+  variant MenuItemVariant? @relation(fields: [variantId], references: [id])
+
+  addonOptions OrderItemAddonOption[]
+
   @@index([orderId])
   @@index([menuItemId])
   @@map("order_items")
+}
+
+model OrderItemAddonOption {
+  id String @id @default(uuid())
+
+  orderItemId String
+
+  addonOptionId String
+
+  name String
+
+  price Decimal @db.Decimal(10, 2)
+
+  orderItem OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+
+  addonOption MenuItemAddonOption @relation(fields: [addonOptionId], references: [id])
+
+  @@index([orderItemId])
+  @@map("order_item_addon_options")
 }
 
 model OrderStatusHistory {
@@ -730,6 +1042,30 @@ model NotificationPreference {
   whatsappEnabled Boolean @default(true)
 
   inAppEnabled Boolean @default(true)
+
+  orderUpdatesEmail Boolean @default(true)
+
+  orderUpdatesSms Boolean @default(true)
+
+  orderUpdatesPush Boolean @default(true)
+
+  promotionsEmail Boolean @default(false)
+
+  promotionsSms Boolean @default(false)
+
+  promotionsPush Boolean @default(false)
+
+  reviewsEmail Boolean @default(true)
+
+  reviewsSms Boolean @default(false)
+
+  reviewsPush Boolean @default(true)
+
+  systemEmail Boolean @default(true)
+
+  systemSms Boolean @default(false)
+
+  systemPush Boolean @default(true)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 

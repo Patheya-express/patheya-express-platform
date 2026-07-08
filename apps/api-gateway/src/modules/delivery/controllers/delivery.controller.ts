@@ -274,7 +274,7 @@ export class DeliveryController {
     return this.deliveryService.updateDeliveryStatus(
       orderId,
 
-      user.userId,
+      user,
 
       dto,
     );
@@ -282,7 +282,8 @@ export class DeliveryController {
 
   @ApiOperation({
     summary: 'Approve delivery partner',
-    description: 'Sets isVerified to true. There is no separate pending/rejected state — this is a direct boolean set.',
+    description:
+      'Sets isVerified to true. There is no separate pending/rejected state — this is a direct boolean set.',
   })
   @ApiParam({
     name: 'id',
@@ -330,7 +331,8 @@ export class DeliveryController {
 
   @ApiOperation({
     summary: 'Suspend delivery partner',
-    description: 'Operational-level suspension — the partner cannot go available or receive assignments.',
+    description:
+      'Operational-level suspension — the partner cannot go available or receive assignments.',
   })
   @ApiParam({
     name: 'id',
@@ -384,7 +386,7 @@ export class DeliveryController {
 
   @ApiOperation({
     summary: 'Force delivery partner offline',
-    description: 'Admin-scoped variant of the partner\'s own go-offline toggle.',
+    description: "Admin-scoped variant of the partner's own go-offline toggle.",
   })
   @ApiParam({
     name: 'id',
@@ -411,7 +413,8 @@ export class DeliveryController {
 
   @ApiOperation({
     summary: 'Block delivery partner',
-    description: 'Account-level block via the underlying user record — the partner cannot log in at all.',
+    description:
+      'Account-level block via the underlying user record — the partner cannot log in at all.',
   })
   @ApiParam({
     name: 'id',
@@ -441,7 +444,8 @@ export class DeliveryController {
 
   @ApiOperation({
     summary: 'Unblock delivery partner',
-    description: 'Restores the underlying user account from blocked (or suspended) back to active.',
+    description:
+      'Restores the underlying user account from blocked (or suspended) back to active.',
   })
   @ApiParam({
     name: 'id',

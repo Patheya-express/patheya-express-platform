@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 import { MenuItemVariantResponseDto } from './menu-item-variant-response.dto';
 
@@ -26,6 +26,9 @@ export class MenuItemResponseDto {
   })
   basePrice: number;
 
+  @ApiPropertyOptional()
+  imageUrl?: string;
+
   @ApiProperty()
   isVegetarian: boolean;
 
@@ -44,4 +47,16 @@ export class MenuItemResponseDto {
     type: [MenuAddonResponseDto],
   })
   addons: MenuAddonResponseDto[];
+
+  @ApiPropertyOptional({
+    description:
+      'Populated when the item is returned outside its own category listing (e.g. favorites).',
+  })
+  restaurantId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Populated when the item is returned outside its own category listing (e.g. favorites).',
+  })
+  restaurantName?: string;
 }

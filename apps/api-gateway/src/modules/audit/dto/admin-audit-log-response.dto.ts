@@ -14,7 +14,8 @@ export class AdminAuditLogResponseDto {
 
   @ApiPropertyOptional({
     type: AdminAuditActorSummaryDto,
-    description: 'The user who performed the action. Absent for system-initiated events with no actor.',
+    description:
+      'The user who performed the action. Absent for system-initiated events with no actor.',
   })
   actor?: AdminAuditActorSummaryDto;
 

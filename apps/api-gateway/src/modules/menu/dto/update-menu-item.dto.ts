@@ -26,4 +26,9 @@ export class UpdateMenuItemDto {
   @IsOptional()
   @IsBoolean()
   isVegan?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  imageUrl?: string;
 }

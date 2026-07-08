@@ -1,4 +1,18 @@
-import { Body, Controller, Get, Param, Patch, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
+
+import { FileInterceptor } from '@nestjs/platform-express';
 
 import { UsersService } from '../services/users.service';
 
@@ -16,6 +30,8 @@ import { UserRole } from '@prisma/client';
 
 import {
   ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
   ApiOkResponse,
   ApiOperation,
   ApiParam,
@@ -24,6 +40,7 @@ import {
   ApiBadRequestResponse,
   ApiForbiddenResponse,
   ApiNotFoundResponse,
+  ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 
 import { UserStatus } from '@prisma/client';
@@ -31,6 +48,12 @@ import { UserStatus } from '@prisma/client';
 import { UserResponseDto } from '../dto/user-response.dto';
 import { GetUsersQueryDto } from '../dto/get-users-query.dto';
 import { PaginatedUsersResponseDto } from '../dto/paginated-users-response.dto';
+import { ChangePasswordDto } from '../dto/change-password.dto';
+import { UpdatePreferencesDto } from '../dto/update-preferences.dto';
+import { NotificationPreferencesResponseDto } from '../dto/notification-preferences-response.dto';
+import { SuccessResponseDto } from '../dto/success-response.dto';
+
+import type { UploadFile } from '../../../shared/types/upload-file.type';
 
 @ApiTags('Users')
 @Controller('users')
@@ -76,6 +99,124 @@ export class UsersController {
       dto,
     );
   }
+
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'Change current user password',
+    description:
+      'Requires the current password. The new password must meet the strong-password policy. Existing JWT access tokens remain valid until they expire; refresh tokens are not revoked.',
+  })
+  @ApiOkResponse({
+    description: 'Password changed successfully',
+    type: SuccessResponseDto,
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Current password is incorrect',
+  })
+  @ApiBadRequestResponse({
+    description: 'Password login is not enabled for this account',
+  })
+  @UseGuards(JwtAuthGuard)
+  @Patch('me/password')
+  changePassword(
+    @CurrentUser()
+    user: any,
+
+    @Body()
+    dto: ChangePasswordDto,
+  ) {
+    return this.usersService.changePassword(user.userId, dto);
+  }
+
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'Upload current user avatar',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+        },
+      },
+    },
+  })
+  @ApiOkResponse({
+    description: 'Avatar uploaded successfully',
+    type: UserResponseDto,
+  })
+  @UseGuards(JwtAuthGuard)
+  @UseInterceptors(FileInterceptor('file'))
+  @Post('me/avatar')
+  uploadAvatar(
+    @CurrentUser()
+    user: any,
+
+    @UploadedFile()
+    file: UploadFile,
+  ) {
+    return this.usersService.uploadAvatar(user.userId, file);
+  }
+
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'Get current user notification preferences',
+  })
+  @ApiOkResponse({
+    description: 'Notification preferences retrieved successfully',
+    type: NotificationPreferencesResponseDto,
+  })
+  @UseGuards(JwtAuthGuard)
+  @Get('me/preferences')
+  getPreferences(
+    @CurrentUser()
+    user: any,
+  ) {
+    return this.usersService.getPreferences(user.userId);
+  }
+
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'Update current user notification preferences',
+  })
+  @ApiOkResponse({
+    description: 'Notification preferences updated successfully',
+    type: NotificationPreferencesResponseDto,
+  })
+  @UseGuards(JwtAuthGuard)
+  @Patch('me/preferences')
+  updatePreferences(
+    @CurrentUser()
+    user: any,
+
+    @Body()
+    dto: UpdatePreferencesDto,
+  ) {
+    return this.usersService.updatePreferences(user.userId, dto);
+  }
+
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'Delete current user account',
+    description:
+      'Soft deletes the account (never a hard delete), revokes all active refresh tokens, and records an audit log entry.',
+  })
+  @ApiOkResponse({
+    description: 'Account deleted successfully',
+    type: SuccessResponseDto,
+  })
+  @UseGuards(JwtAuthGuard)
+  @Delete('me')
+  deleteAccount(
+    @CurrentUser()
+    user: any,
+  ) {
+    return this.usersService.deleteAccount(user.userId);
+  }
+
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({
     summary: 'Get all users',

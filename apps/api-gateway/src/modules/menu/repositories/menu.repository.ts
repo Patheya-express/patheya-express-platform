@@ -22,14 +22,34 @@ export class MenuRepository extends BaseRepository {
     });
   }
 
-  async getRestaurantMenu(restaurantId: string) {
+  async getRestaurantMenu(restaurantId: string, search?: string) {
     return this.prisma.menuCategory.findMany({
       where: {
         restaurantId,
+
+        isActive: true,
+      },
+
+      orderBy: {
+        sortOrder: 'asc',
       },
 
       include: {
         menuItems: {
+          where: {
+            isAvailable: true,
+
+            ...(search
+              ? {
+                  name: {
+                    contains: search,
+
+                    mode: 'insensitive',
+                  },
+                }
+              : {}),
+          },
+
           include: {
             variants: true,
 

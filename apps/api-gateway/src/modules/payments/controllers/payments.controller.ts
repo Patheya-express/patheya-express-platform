@@ -1,4 +1,17 @@
-import { Body, Controller, Get, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Post,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
+
+import type { RawBodyRequest } from '@nestjs/common';
+
+import type { Request } from 'express';
 
 import {
   ApiTags,
@@ -10,7 +23,12 @@ import {
   ApiQuery,
 } from '@nestjs/swagger';
 
-import { UserRole, TransactionStatus, PaymentProvider, PaymentMethod } from '@prisma/client';
+import {
+  UserRole,
+  TransactionStatus,
+  PaymentProvider,
+  PaymentMethod,
+} from '@prisma/client';
 
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../auth/guards/roles.guard';
@@ -174,7 +192,7 @@ export class PaymentsController {
   @ApiOperation({
     summary: 'Razorpay webhook',
     description:
-      'Receives asynchronous payment status events from Razorpay. Payload shape is defined by Razorpay and is not validated against a fixed contract.',
+      'Receives asynchronous payment status events from Razorpay. Payload shape is defined by Razorpay and is not validated against a fixed contract. The request signature is verified against the raw body before processing.',
   })
   @ApiBody({
     description: 'Raw Razorpay webhook event payload',
@@ -187,7 +205,17 @@ export class PaymentsController {
   processWebhook(
     @Body()
     payload: any,
+
+    @Req()
+    req: RawBodyRequest<Request>,
+
+    @Headers('x-razorpay-signature')
+    signature: string,
   ) {
-    return this.paymentsService.processWebhook(payload);
+    return this.paymentsService.processWebhook(
+      payload,
+      req.rawBody?.toString('utf8') ?? '',
+      signature,
+    );
   }
 }

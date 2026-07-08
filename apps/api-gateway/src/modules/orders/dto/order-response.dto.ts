@@ -1,12 +1,14 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
-import { OrderStatus, PaymentStatus } from '@prisma/client';
+import { OrderStatus, PaymentStatus, PaymentMode } from '@prisma/client';
 
 import { OrderItemResponseDto } from './order-item-response.dto';
 
 import { OrderStatusHistoryResponseDto } from './order-status-history-response.dto';
 
 import { OrderCustomerSummaryResponseDto } from './order-customer-summary-response.dto';
+
+import { OrderDeliveryPartnerSummaryDto } from './order-delivery-partner-summary.dto';
 
 export class OrderResponseDto {
   @ApiProperty()
@@ -27,10 +29,23 @@ export class OrderResponseDto {
   @ApiProperty()
   restaurantId: string;
 
+  @ApiPropertyOptional({
+    description:
+      'Only populated by endpoints that already join the restaurant (e.g. order history)',
+  })
+  restaurantName?: string;
+
   @ApiProperty({
     required: false,
   })
   deliveryPartnerId?: string;
+
+  @ApiPropertyOptional({
+    type: () => OrderDeliveryPartnerSummaryDto,
+    description:
+      'Only populated once a delivery partner is assigned, by endpoints that join it (e.g. order detail)',
+  })
+  deliveryPartner?: OrderDeliveryPartnerSummaryDto;
 
   @ApiProperty({
     enum: OrderStatus,
@@ -41,6 +56,14 @@ export class OrderResponseDto {
     enum: PaymentStatus,
   })
   paymentStatus: PaymentStatus;
+
+  @ApiProperty({
+    enum: PaymentMode,
+  })
+  paymentMode: PaymentMode;
+
+  @ApiPropertyOptional()
+  addressId?: string;
 
   @ApiProperty()
   subtotalAmount: number;
@@ -56,6 +79,18 @@ export class OrderResponseDto {
 
   @ApiProperty()
   deliveryAddress: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Delivery destination latitude, resolved from the saved address at order placement',
+  })
+  latitude?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'Delivery destination longitude, resolved from the saved address at order placement',
+  })
+  longitude?: number;
 
   @ApiProperty({
     required: false,

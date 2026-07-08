@@ -1,6 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
-import { NotificationChannel, NotificationStatus } from '@prisma/client';
+import {
+  NotificationChannel,
+  NotificationStatus,
+  NotificationType,
+} from '@prisma/client';
 
 export class NotificationResponseDto {
   @ApiProperty({
@@ -12,6 +16,11 @@ export class NotificationResponseDto {
     example: 'c7c1f1e2-6f2d-4f77-a111-123456789abc',
   })
   userId: string;
+
+  @ApiProperty({
+    enum: NotificationType,
+  })
+  type: NotificationType;
 
   @ApiProperty({
     example: 'Order confirmed',
@@ -34,7 +43,12 @@ export class NotificationResponseDto {
   status: NotificationStatus;
 
   @ApiPropertyOptional({
-    example: { orderId: 'c7c1f1e2-6f2d-4f77-a111-123456789abc' },
+    description:
+      'Deep-link target, when applicable. referenceType is one of ORDER, RESTAURANT, REVIEW, OFFER.',
+    example: {
+      referenceType: 'ORDER',
+      referenceId: 'c7c1f1e2-6f2d-4f77-a111-123456789abc',
+    },
   })
   metadata?: Record<string, unknown>;
 

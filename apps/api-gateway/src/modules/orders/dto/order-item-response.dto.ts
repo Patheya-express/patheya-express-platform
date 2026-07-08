@@ -1,5 +1,19 @@
 import { ApiProperty } from '@nestjs/swagger';
 
+export class OrderItemAddonOptionResponseDto {
+  @ApiProperty({
+    description:
+      'The current menu addon option this selection was made from — used to reconstruct a cart line when reordering.',
+  })
+  addonOptionId: string;
+
+  @ApiProperty()
+  name: string;
+
+  @ApiProperty()
+  price: number;
+}
+
 export class OrderItemResponseDto {
   @ApiProperty()
   id: string;
@@ -11,6 +25,21 @@ export class OrderItemResponseDto {
     required: false,
   })
   menuItemName?: string;
+
+  @ApiProperty({
+    required: false,
+  })
+  variantId?: string;
+
+  @ApiProperty({
+    required: false,
+  })
+  variantName?: string;
+
+  @ApiProperty({
+    type: [OrderItemAddonOptionResponseDto],
+  })
+  addonOptions: OrderItemAddonOptionResponseDto[];
 
   @ApiProperty({
     example: 2,

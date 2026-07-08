@@ -11,9 +11,10 @@ export class AuthRepository extends BaseRepository {
   }
 
   async findUserByEmail(email: string) {
-    return this.prisma.user.findUnique({
+    return this.prisma.user.findFirst({
       where: {
         email,
+        deletedAt: null,
       },
     });
   }
@@ -53,9 +54,23 @@ export class AuthRepository extends BaseRepository {
     });
   }
   async findUserById(userId: string) {
-    return this.prisma.user.findUnique({
+    return this.prisma.user.findFirst({
       where: {
         id: userId,
+        deletedAt: null,
+      },
+    });
+  }
+
+  async revokeAllRefreshTokensForUser(userId: string) {
+    return this.prisma.refreshToken.updateMany({
+      where: {
+        userId,
+        revokedAt: null,
+      },
+
+      data: {
+        revokedAt: new Date(),
       },
     });
   }
