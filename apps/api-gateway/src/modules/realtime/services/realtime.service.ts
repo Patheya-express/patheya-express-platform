@@ -47,4 +47,9 @@ export class RealtimeService {
       payload,
     );
   }
+
+  /** Generic room emitter for rooms without a dedicated helper above (e.g. `ticket:<id>`, `support-queue`). */
+  emitToRoom(room: string, event: string, payload: any) {
+    this.gateway.server.to(room).emit(event, payload);
+  }
 }

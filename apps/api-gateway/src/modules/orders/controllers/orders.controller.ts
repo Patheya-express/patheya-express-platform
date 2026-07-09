@@ -36,6 +36,7 @@ import { OrderStatus, UserRole } from '@prisma/client';
 import {
   ApiBearerAuth,
   ApiBadRequestResponse,
+  ApiBody,
   ApiCreatedResponse,
   ApiNotFoundResponse,
   ApiOkResponse,
@@ -455,6 +456,7 @@ export class OrdersController {
     description: 'Order cancelled',
     type: OrderResponseDto,
   })
+  @ApiBody({ type: CancelOrderDto, required: false })
   @Post(':id/cancel')
   cancelOrder(
     @CurrentUser()
@@ -462,12 +464,16 @@ export class OrdersController {
 
     @Param('id')
     orderId: string,
+
+    @Body()
+    dto: CancelOrderDto,
   ) {
     return this.ordersService.updateOrderStatus(
       orderId,
 
       {
         status: OrderStatus.CANCELLED,
+        reason: dto.reason,
       },
 
       user,

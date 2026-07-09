@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   ConflictException,
   NotFoundException,
@@ -7,9 +8,12 @@ import {
 
 import {
   TransactionStatus,
+  PaymentStatus,
   PaymentProvider as ProviderType,
   PaymentMethod,
 } from '@prisma/client';
+
+import { PrismaService } from '../../../infrastructure/database/prisma.service';
 
 import { PaymentsRepository } from '../repositories/payments.repository';
 
@@ -23,6 +27,9 @@ import { PaymentStatusValidator } from '../Validators/payment-status.validator';
 import { GetAdminPaymentsQueryDto } from '../dto/get-admin-payments-query.dto';
 import { PaginatedAdminPaymentsResponseDto } from '../dto/paginated-admin-payments-response.dto';
 import { AdminPaymentResponseDto } from '../dto/admin-payment-response.dto';
+
+/** Amounts within a paisa of each other are treated as equal — avoids float-rounding false negatives. */
+const AMOUNT_TOLERANCE = 0.01;
 
 /** Razorpay's captured-payment webhook entity uses lowercase method names — map onto our enum. */
 const RAZORPAY_METHOD_MAP: Record<string, string> = {
@@ -83,9 +90,39 @@ export class PaymentsService {
     private readonly eventBus: EventBusService,
 
     private readonly queueService: QueueService,
+
+    private readonly prisma: PrismaService,
   ) {}
 
   async createPayment(orderId: string, amount: number) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        paymentStatus: true,
+        totalAmount: true,
+        walletAmountUsed: true,
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    if (order.paymentStatus === PaymentStatus.PAID) {
+      throw new ConflictException('Order already paid');
+    }
+
+    // The order may already be partially paid via wallet (C9 mixed payment) — the Razorpay leg
+    // must cover exactly what's left, never an amount the client made up.
+    const expectedAmount =
+      Number(order.totalAmount) - Number(order.walletAmountUsed);
+
+    if (Math.abs(amount - expectedAmount) > AMOUNT_TOLERANCE) {
+      throw new BadRequestException(
+        `Payment amount must equal the order's remaining payable amount (${expectedAmount.toFixed(2)})`,
+      );
+    }
+
     const activePayment =
       await this.paymentsRepository.findActivePaymentForOrder(orderId);
 

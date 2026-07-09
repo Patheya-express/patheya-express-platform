@@ -47,6 +47,18 @@ export class MenuService {
   async getRestaurantMenu(restaurantId: string, search?: string) {
     return this.menuRepository.getRestaurantMenu(restaurantId, search);
   }
+
+  async searchMenuItemsAcrossRestaurants(params: {
+    search: string;
+    skip: number;
+    take: number;
+  }) {
+    return this.menuRepository.searchMenuItemsAcrossRestaurants(params);
+  }
+
+  async findMenuItemNameMatches(search: string, limit: number) {
+    return this.menuRepository.findMenuItemNameMatches(search, limit);
+  }
   async getMenuItemById(menuItemId: string) {
     return this.menuRepository.getMenuItemById(menuItemId);
   }

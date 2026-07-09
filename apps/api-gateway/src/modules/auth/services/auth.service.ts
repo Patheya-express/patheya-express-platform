@@ -62,7 +62,27 @@ export class AuthService {
       passwordHash,
 
       role,
+
+      referredByCode: dto.referralCode,
     });
+
+    // Every user gets their own referral code to share — derived from their (already-unique)
+    // id rather than generated randomly, so there's no collision-retry to worry about.
+    const referralCode = user.id.replace(/-/g, '').slice(0, 8).toUpperCase();
+
+    await this.authRepository.setReferralCode(user.id, referralCode);
+
+    user.referralCode = referralCode;
+
+    if (role === UserRole.CUSTOMER && dto.referralCode) {
+      const referrer = await this.authRepository.findUserByReferralCode(
+        dto.referralCode,
+      );
+
+      if (referrer && referrer.id !== user.id) {
+        await this.authRepository.createReferral(referrer.id, user.id);
+      }
+    }
 
     const payload = {
       sub: user.id,

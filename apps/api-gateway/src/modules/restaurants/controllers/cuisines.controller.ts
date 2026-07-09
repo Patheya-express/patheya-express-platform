@@ -1,6 +1,11 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 
-import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiOkResponse,
+  ApiOperation,
+  ApiQuery,
+  ApiTags,
+} from '@nestjs/swagger';
 
 import { CuisinesService } from '../services/cuisines.service';
 import { CuisineResponseDto } from '../dto/cuisine-response.dto';
@@ -13,15 +18,19 @@ export class CuisinesController {
   @ApiOperation({
     summary: 'Get all cuisines',
     description:
-      'Public — returns the full cuisine taxonomy, used for discovery filter chips.',
+      'Public — returns the cuisine taxonomy, used for discovery filter chips and typeahead. Optionally filtered by a search prefix/substring.',
   })
+  @ApiQuery({ name: 'search', required: false })
   @ApiOkResponse({
     description: 'Cuisines retrieved successfully',
     type: CuisineResponseDto,
     isArray: true,
   })
   @Get()
-  findAll() {
-    return this.cuisinesService.findAll();
+  findAll(
+    @Query('search')
+    search?: string,
+  ) {
+    return this.cuisinesService.findAll(search);
   }
 }

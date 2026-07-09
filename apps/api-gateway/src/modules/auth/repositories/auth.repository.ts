@@ -74,4 +74,33 @@ export class AuthRepository extends BaseRepository {
       },
     });
   }
+
+  async findUserByReferralCode(referralCode: string) {
+    return this.prisma.user.findUnique({
+      where: { referralCode },
+      select: { id: true },
+    });
+  }
+
+  async setReferralCode(userId: string, referralCode: string) {
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: { referralCode },
+    });
+  }
+
+  /** No-op (returns null) if the referee has already been referred by someone — refereeId is unique. */
+  async createReferral(referrerId: string, refereeId: string) {
+    const existing = await this.prisma.referral.findUnique({
+      where: { refereeId },
+    });
+
+    if (existing) {
+      return null;
+    }
+
+    return this.prisma.referral.create({
+      data: { referrerId, refereeId },
+    });
+  }
 }

@@ -145,6 +145,12 @@ export class RealtimeGateway
       return true;
     }
 
+    // Broadcast room for the support-agent console — any staff member can join to receive
+    // live new-ticket/ticket-updated pushes for the queue view.
+    if (room === 'support-queue') {
+      return user.role === UserRole.SUPPORT_AGENT;
+    }
+
     const separatorIndex = room.indexOf(':');
 
     if (separatorIndex === -1) {
@@ -181,6 +187,19 @@ export class RealtimeGateway
 
     if (prefix === 'restaurant') {
       return canAccessRestaurant(this.prisma, id, user);
+    }
+
+    if (prefix === 'ticket') {
+      if (user.role === UserRole.SUPPORT_AGENT) {
+        return true;
+      }
+
+      const ticket = await this.prisma.supportTicket.findUnique({
+        where: { id },
+        select: { customerId: true },
+      });
+
+      return ticket?.customerId === user.userId;
     }
 
     return false;

@@ -7,7 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
-import { RestaurantStatus } from '@prisma/client';
+import { Prisma, RestaurantStatus } from '@prisma/client';
 
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
 
@@ -31,6 +31,7 @@ import { UploadFile } from '../../../shared/types/upload-file.type';
 
 import { OffersService } from '../../offers/services/offers.service';
 import { OfferResponseDto } from '../../offers/dto/offer-response.dto';
+import { buildActiveOfferWhere } from '../../offers/utils/offer-active-where.util';
 
 export const RESTAURANT_SUMMARY_INCLUDE = {
   cuisines: { include: { cuisine: true } },
@@ -82,6 +83,8 @@ export function toRestaurantSummary(
     avgDeliveryTimeMinutes: restaurant.avgDeliveryTimeMinutes ?? undefined,
     isOpenNow: computeIsOpenNow(operatingHours),
     featured: restaurant.featured,
+    hasVegOptions: restaurant.hasVegOptions,
+    hasVeganOptions: restaurant.hasVeganOptions,
     distanceKm,
   };
 }
@@ -266,11 +269,12 @@ export class RestaurantsService {
   }
 
   /**
-   * Public, customer-facing restaurant listing. `openNow` cannot be expressed as a Prisma
-   * `where` clause (it depends on OperatingHour rows evaluated against the current time in
-   * application code), so when it's requested this fetches a bounded candidate set, filters
-   * in memory, and paginates the filtered result. Without `openNow`, pagination stays fully
-   * DB-side as before — no behavior change for the common case.
+   * Public, customer-facing restaurant listing. `openNow` and `distance` (sort or filter)
+   * cannot be expressed as a Prisma `where`/`orderBy` — `openNow` depends on OperatingHour rows
+   * evaluated against the current time, and distance is computed from lat/lng in application
+   * code — so whenever either is requested this fetches a bounded candidate set, filters/sorts
+   * in memory, and paginates the resulting array. Without them, pagination stays fully DB-side
+   * as before — no behavior change for the common case.
    */
   async findAll(
     query: GetRestaurantsQueryDto,
@@ -283,11 +287,27 @@ export class RestaurantsService {
       cuisine,
       featured,
       openNow,
+      veg,
+      vegan,
+      offers,
+      minRating,
+      maxDeliveryTimeMinutes,
+      maxDistanceKm,
+      latitude,
+      longitude,
       sortBy,
       sortOrder,
     } = query;
 
-    const where: any = {
+    const needsDistance = sortBy === 'distance' || maxDistanceKm !== undefined;
+
+    if (needsDistance && (latitude === undefined || longitude === undefined)) {
+      throw new BadRequestException(
+        'latitude and longitude are required when sorting or filtering by distance',
+      );
+    }
+
+    const where: Prisma.RestaurantWhereInput = {
       status: 'APPROVED',
       isActive: true,
     };
@@ -315,32 +335,91 @@ export class RestaurantsService {
       where.featured = featured === 'true';
     }
 
-    const sortColumn = sortBy === 'rating' ? 'avgRating' : sortBy;
-    const orderBy = { [sortColumn]: sortOrder };
+    if (veg === 'true') {
+      where.hasVegOptions = true;
+    }
 
-    if (openNow === 'true') {
+    if (vegan === 'true') {
+      where.hasVeganOptions = true;
+    }
+
+    if (offers === 'true') {
+      where.offers = { some: buildActiveOfferWhere() };
+    }
+
+    if (minRating !== undefined) {
+      where.avgRating = { gte: minRating };
+    }
+
+    if (maxDeliveryTimeMinutes !== undefined) {
+      where.avgDeliveryTimeMinutes = { lte: maxDeliveryTimeMinutes };
+    }
+
+    const SORT_COLUMN_MAP: Record<string, string> = {
+      rating: 'avgRating',
+      popularity: 'deliveredOrderCount',
+      deliveryTime: 'avgDeliveryTimeMinutes',
+      preparationTime: 'avgPreparationTimeMinutes',
+    };
+
+    const sortColumn = SORT_COLUMN_MAP[sortBy] ?? sortBy;
+    const orderBy =
+      sortBy === 'distance'
+        ? { createdAt: 'desc' as const }
+        : { [sortColumn]: sortOrder };
+
+    if (openNow === 'true' || needsDistance) {
       const CANDIDATE_LIMIT = 500;
 
-      const candidates = await this.prisma.restaurant.findMany({
+      let candidates = await this.prisma.restaurant.findMany({
         where,
         take: CANDIDATE_LIMIT,
         orderBy,
         include: RESTAURANT_SUMMARY_INCLUDE,
       });
 
-      const openCandidates = candidates.filter((restaurant) =>
-        computeIsOpenNow(restaurant.branches?.[0]?.operatingHours ?? []),
+      if (openNow === 'true') {
+        candidates = candidates.filter((restaurant) =>
+          computeIsOpenNow(restaurant.branches?.[0]?.operatingHours ?? []),
+        );
+      }
+
+      const origin =
+        needsDistance && latitude !== undefined && longitude !== undefined
+          ? { latitude, longitude }
+          : undefined;
+
+      let summaries = candidates.map((restaurant) =>
+        toRestaurantSummary(restaurant, origin),
       );
 
+      if (maxDistanceKm !== undefined) {
+        summaries = summaries.filter(
+          (summary) =>
+            summary.distanceKm !== undefined &&
+            summary.distanceKm <= maxDistanceKm,
+        );
+      }
+
+      if (sortBy === 'distance') {
+        summaries = summaries.sort(
+          (a, b) => (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity),
+        );
+
+        if (sortOrder === 'desc') {
+          summaries = summaries.reverse();
+        }
+      }
+
       const { skip, take } = getPagination(page, limit);
-      const page_ = openCandidates.slice(skip, skip + take);
+      const pageItems = summaries.slice(skip, skip + take);
 
       return {
-        items: page_.map((restaurant) => toRestaurantSummary(restaurant)),
-        total: openCandidates.length,
+        items: pageItems,
+        total: summaries.length,
         page,
         limit,
-        totalPages: Math.ceil(openCandidates.length / limit),
+        totalPages: Math.ceil(summaries.length / limit),
       };
     }
 

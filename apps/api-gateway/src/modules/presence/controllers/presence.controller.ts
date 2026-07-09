@@ -9,7 +9,11 @@ import {
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 
+import { UserRole } from '@prisma/client';
+
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
+import { RolesGuard } from '../../auth/guards/roles.guard';
+import { Roles } from '../../auth/decorators/roles.decorator';
 
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 
@@ -83,5 +87,42 @@ export class PresenceController {
     partnerId: string,
   ) {
     return this.presenceService.getStatus(partnerId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPPORT_AGENT, UserRole.ADMIN, UserRole.SUPER_ADMIN)
+  @Post('agent/online')
+  @ApiOperation({
+    summary: 'Mark support agent online',
+    description:
+      'Marks the authenticated support agent online for the live-chat admin console.',
+  })
+  @ApiOkResponse({ description: 'Agent marked online successfully' })
+  async markAgentOnline(
+    @CurrentUser()
+    user: any,
+  ) {
+    return this.presenceService.markAgentOnline(user.userId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPPORT_AGENT, UserRole.ADMIN, UserRole.SUPER_ADMIN)
+  @Post('agent/offline')
+  @ApiOperation({ summary: 'Mark support agent offline' })
+  @ApiOkResponse({ description: 'Agent marked offline successfully' })
+  async markAgentOffline(
+    @CurrentUser()
+    user: any,
+  ) {
+    return this.presenceService.markAgentOffline(user.userId);
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPPORT_AGENT, UserRole.ADMIN, UserRole.SUPER_ADMIN)
+  @Get('agents/online')
+  @ApiOperation({ summary: 'List currently online support agent IDs' })
+  @ApiOkResponse({ description: 'Online agent IDs retrieved successfully' })
+  async listOnlineAgents() {
+    return this.presenceService.listOnlineAgentIds();
   }
 }

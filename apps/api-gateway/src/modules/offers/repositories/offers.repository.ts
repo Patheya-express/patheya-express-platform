@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import { OfferType, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
+import { buildActiveOfferWhere } from '../utils/offer-active-where.util';
 
 export const OFFER_INCLUDE = {
   restaurant: { select: { name: true } },
@@ -26,13 +27,7 @@ export class OffersRepository {
   private buildActiveWhere(
     params: OfferFilterParams = {},
   ): Prisma.OfferWhereInput {
-    const now = new Date();
-
-    const where: Prisma.OfferWhereInput = {
-      isActive: true,
-      OR: [{ startsAt: null }, { startsAt: { lte: now } }],
-      AND: [{ OR: [{ endsAt: null }, { endsAt: { gte: now } }] }],
-    };
+    const where: Prisma.OfferWhereInput = buildActiveOfferWhere();
 
     if (params.restaurantId) {
       where.restaurantId = params.restaurantId;

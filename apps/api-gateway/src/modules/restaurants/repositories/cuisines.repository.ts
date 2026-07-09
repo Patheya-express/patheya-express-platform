@@ -6,8 +6,12 @@ import { PrismaService } from '../../../infrastructure/database/prisma.service';
 export class CuisinesRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  async findAll() {
+  async findAll(search?: string) {
     return this.prisma.cuisine.findMany({
+      where: search
+        ? { name: { contains: search, mode: 'insensitive' } }
+        : undefined,
+
       orderBy: {
         name: 'asc',
       },

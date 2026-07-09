@@ -7,7 +7,7 @@ import { CuisineResponseDto } from '../dto/cuisine-response.dto';
 export class CuisinesService {
   constructor(private readonly cuisinesRepository: CuisinesRepository) {}
 
-  async findAll(): Promise<CuisineResponseDto[]> {
-    return this.cuisinesRepository.findAll();
+  async findAll(search?: string): Promise<CuisineResponseDto[]> {
+    return this.cuisinesRepository.findAll(search);
   }
 }

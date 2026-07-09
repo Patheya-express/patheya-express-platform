@@ -5,5 +5,7 @@ export class OrderStatusChangedEvent {
     public readonly customerId: string,
 
     public readonly status: string,
+
+    public readonly totalAmount?: number,
   ) {}
 }

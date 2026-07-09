@@ -42,6 +42,9 @@ import { AddressesModule } from './modules/addresses/addresses.module';
 import { TrackingModule } from './modules/tracking/tracking.module';
 import { FavoritesModule } from './modules/favorites/favorites.module';
 import { OffersModule } from './modules/offers/offers.module';
+import { SearchModule } from './modules/search/search.module';
+import { WalletModule } from './modules/wallet/wallet.module';
+import { TicketsModule } from './modules/tickets/tickets.module';
 import { APP_GUARD } from '@nestjs/core';
 
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
@@ -117,6 +120,12 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
     FavoritesModule,
 
     OffersModule,
+
+    SearchModule,
+
+    WalletModule,
+
+    TicketsModule,
   ],
   providers: [
     {

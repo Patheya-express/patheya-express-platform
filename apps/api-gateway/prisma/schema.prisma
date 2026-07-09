@@ -116,6 +116,10 @@ enum NotificationType {
   ORDER_STATUS_CHANGED
   DELIVERY_PARTNER_ASSIGNED
   OFFER
+  WALLET_CREDIT
+  REFERRAL_REWARD
+  TICKET_STATUS_CHANGED
+  TICKET_MESSAGE
   GENERAL
 }
 
@@ -197,6 +201,54 @@ enum AssignmentStatus {
   EXPIRED
 }
 
+enum WalletTransactionType {
+  CASHBACK
+  REFERRAL_REWARD
+  REFUND_CREDIT
+  ORDER_PAYMENT
+  ADMIN_ADJUSTMENT
+}
+
+enum WalletTransactionStatus {
+  COMPLETED
+  REVERSED
+}
+
+enum ReferralStatus {
+  PENDING
+  REWARDED
+}
+
+enum TicketCategory {
+  ORDER_ISSUE
+  PAYMENT_ISSUE
+  REFUND_REQUEST
+  CANCELLATION_REQUEST
+  ACCOUNT_ISSUE
+  GENERAL
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  WAITING_ON_CUSTOMER
+  RESOLVED
+  CLOSED
+}
+
+enum TicketMessageSenderType {
+  CUSTOMER
+  AGENT
+  SYSTEM
+}
+
 model User {
   id String @id @default(uuid())
 
@@ -228,6 +280,9 @@ model User {
 
   timezone String @default("Asia/Kolkata")
 
+  referralCode    String? @unique
+  referredByCode  String?
+
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
@@ -251,6 +306,16 @@ model User {
   addresses Address[]
 
   cart Cart?
+
+  walletTransactions WalletTransaction[]
+  referralsMade      Referral[]           @relation("ReferralsMade")
+  referralReceived   Referral?            @relation("ReferralsReceived")
+  recentSearches     RecentSearch[]
+
+  customerTickets    SupportTicket[] @relation("CustomerTickets")
+  assignedTickets    SupportTicket[] @relation("AssignedTickets")
+  ticketMessages     TicketMessage[]
+  ticketAttachments  TicketAttachment[]
 
   @@index([email])
   @@index([phone])
@@ -459,6 +524,10 @@ model Restaurant {
 
   deliveredOrderCount Int @default(0)
 
+  /** Derived from its menu items — recomputed by MenuRepository whenever an item's veg/vegan flag changes. */
+  hasVegOptions   Boolean @default(false)
+  hasVeganOptions Boolean @default(false)
+
   createdAt DateTime @default(now())
 
   updatedAt DateTime @updatedAt
@@ -486,6 +555,8 @@ model Restaurant {
   @@index([ownerId])
   @@index([status])
   @@index([featured])
+  @@index([hasVegOptions])
+  @@index([hasVeganOptions])
   @@map("restaurants")
 }
 
@@ -822,6 +893,9 @@ model Order {
 
   totalAmount Decimal @db.Decimal(10, 2)
 
+  /** Portion of totalAmount paid via wallet balance; the remainder is charged via the provider Payment(s) above. */
+  walletAmountUsed Decimal @db.Decimal(10, 2) @default(0)
+
   notes String?
 
   deliveryAddress String
@@ -853,6 +927,10 @@ model Order {
   statusHistory OrderStatusHistory[]
 
   deliveryAssignments DeliveryAssignment[]
+
+  walletTransactions WalletTransaction[]
+
+  supportTickets SupportTicket[]
 
   @@index([customerId])
   @@index([restaurantId])
@@ -1118,6 +1196,8 @@ model Payment {
 
   refunds Refund[]
 
+  supportTickets SupportTicket[]
+
   @@index([orderId])
   @@index([status])
   @@index([provider])
@@ -1190,4 +1270,214 @@ model DeliveryAssignment {
   @@index([deliveryPartnerId])
   @@index([status])
   @@map("delivery_assignments")
+}
+
+// ---------------------------------------------------------------------------
+// C7 — Search, Filters & Discovery
+// ---------------------------------------------------------------------------
+
+/** Per-customer recent search terms, most-recent-first. Upserted on (customerId, query) so a repeated search bumps to the top instead of duplicating. */
+model RecentSearch {
+  id String @id @default(uuid())
+
+  customerId String
+  query      String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customer User @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, query])
+  @@index([customerId, updatedAt])
+  @@map("recent_searches")
+}
+
+/** Append-only log of every search query (including anonymous/guest ones) — the raw input the trending-search aggregation job reads from. */
+model SearchLog {
+  id String @id @default(uuid())
+
+  query      String
+  customerId String?
+
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([query])
+  @@map("search_logs")
+}
+
+/** Precomputed by the trending-search BullMQ job — read directly by the public trending-searches endpoint so it never aggregates on the request path. */
+model TrendingSearch {
+  id String @id @default(uuid())
+
+  query String @unique
+  score Int    @default(0)
+
+  updatedAt DateTime @updatedAt
+
+  @@index([score])
+  @@map("trending_searches")
+}
+
+// ---------------------------------------------------------------------------
+// C9 — Wallet, Loyalty & Referral
+// ---------------------------------------------------------------------------
+
+/** Immutable, append-only ledger — a user's wallet balance is always the SUM of their COMPLETED transactions, never a mutable counter. */
+model WalletTransaction {
+  id String @id @default(uuid())
+
+  userId String
+  type   WalletTransactionType
+  status WalletTransactionStatus @default(COMPLETED)
+
+  /** Positive = credit, negative = debit. */
+  amount Decimal @db.Decimal(10, 2)
+
+  /** Snapshot of the running balance immediately after this entry — written once at insert time for fast history display, never updated afterwards. */
+  balanceAfter Decimal @db.Decimal(10, 2)
+
+  orderId    String?
+  referralId String?
+
+  description String
+
+  createdAt DateTime @default(now())
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order    Order?    @relation(fields: [orderId], references: [id])
+  referral Referral? @relation(fields: [referralId], references: [id])
+
+  @@index([userId])
+  @@index([userId, createdAt])
+  @@index([orderId])
+  @@index([type])
+  @@map("wallet_transactions")
+}
+
+/** One row per referred user (refereeId is unique — a user can only ever be referred once). Rewarded when the referee's first order reaches DELIVERED. */
+model Referral {
+  id String @id @default(uuid())
+
+  referrerId String
+  refereeId  String @unique
+
+  status       ReferralStatus @default(PENDING)
+  rewardAmount Decimal?       @db.Decimal(10, 2)
+  rewardedAt   DateTime?
+
+  createdAt DateTime @default(now())
+
+  referrer           User                @relation("ReferralsMade", fields: [referrerId], references: [id], onDelete: Cascade)
+  referee            User                @relation("ReferralsReceived", fields: [refereeId], references: [id], onDelete: Cascade)
+  walletTransactions WalletTransaction[]
+
+  @@index([referrerId])
+  @@index([status])
+  @@map("referrals")
+}
+
+// ---------------------------------------------------------------------------
+// C14 — Customer Help & Support
+// ---------------------------------------------------------------------------
+
+model SupportTicket {
+  id           String @id @default(uuid())
+  ticketNumber String @unique
+
+  customerId      String
+  assignedAgentId String?
+
+  orderId   String?
+  paymentId String?
+
+  category TicketCategory
+  priority TicketPriority @default(MEDIUM)
+  status   TicketStatus   @default(OPEN)
+
+  subject     String
+  description String
+
+  firstResponseAt DateTime?
+  resolvedAt      DateTime?
+  escalatedAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customer      User    @relation("CustomerTickets", fields: [customerId], references: [id], onDelete: Cascade)
+  assignedAgent User?   @relation("AssignedTickets", fields: [assignedAgentId], references: [id])
+  order         Order?  @relation(fields: [orderId], references: [id])
+  payment       Payment? @relation(fields: [paymentId], references: [id])
+
+  messages    TicketMessage[]
+  attachments TicketAttachment[]
+
+  @@index([customerId])
+  @@index([assignedAgentId])
+  @@index([status])
+  @@index([priority])
+  @@index([orderId])
+  @@map("support_tickets")
+}
+
+model TicketMessage {
+  id String @id @default(uuid())
+
+  ticketId   String
+  senderId   String?
+  senderType TicketMessageSenderType
+
+  message String
+
+  createdAt DateTime @default(now())
+
+  ticket      SupportTicket      @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  sender      User?              @relation(fields: [senderId], references: [id])
+  attachments TicketAttachment[]
+
+  @@index([ticketId])
+  @@index([ticketId, createdAt])
+  @@map("ticket_messages")
+}
+
+model TicketAttachment {
+  id String @id @default(uuid())
+
+  ticketId     String
+  messageId    String?
+  uploadedById String
+
+  fileUrl   String
+  fileName  String
+  mimeType  String
+  sizeBytes Int
+
+  createdAt DateTime @default(now())
+
+  ticket     SupportTicket  @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  message    TicketMessage? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  uploadedBy User           @relation(fields: [uploadedById], references: [id])
+
+  @@index([ticketId])
+  @@map("ticket_attachments")
+}
+
+model FAQ {
+  id String @id @default(uuid())
+
+  category String
+  question String
+  answer   String
+
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([category])
+  @@index([isActive])
+  @@map("faqs")
 }

@@ -73,6 +73,20 @@ export class RestaurantSummaryDto {
   })
   featured: boolean;
 
+  @ApiProperty({
+    example: true,
+    description:
+      "Derived from this restaurant's menu — true if at least one item is marked vegetarian.",
+  })
+  hasVegOptions: boolean;
+
+  @ApiProperty({
+    example: false,
+    description:
+      "Derived from this restaurant's menu — true if at least one item is marked vegan.",
+  })
+  hasVeganOptions: boolean;
+
   @ApiPropertyOptional({
     example: 3.2,
     description:

@@ -564,6 +564,8 @@ export class OrdersService {
       orderId,
 
       status: dto.status,
+
+      note: dto.reason,
     });
 
     await this.eventBus.publish(
@@ -575,6 +577,8 @@ export class OrdersService {
         updatedOrder.customerId,
 
         updatedOrder.status,
+
+        Number(updatedOrder.totalAmount),
       ),
     );
 
@@ -817,7 +821,14 @@ export class OrdersService {
     return updatedOrder;
   }
 
-  /** Resolves the order's active payment and delegates the actual refund to PaymentsService — no provider logic duplicated here. */
+  /**
+   * Resolves the order's active payment and delegates the actual provider refund to
+   * PaymentsService — no provider logic duplicated here. Splits the requested refund
+   * proportionally across the order's two payment legs (wallet + Razorpay, per the C9 mixed-
+   * payment feature): the Razorpay leg is refunded via PaymentsService as before, and the
+   * wallet leg is credited back by publishing `order.refunded` for WalletEventListener to
+   * consume — OrdersService stays fully decoupled from WalletModule.
+   */
   async refundOrder(orderId: string, dto: RefundOrderDto) {
     const order = await this.ordersRepository.findOrderById(orderId);
 
@@ -825,22 +836,43 @@ export class OrdersService {
       throw new NotFoundException('Order not found');
     }
 
-    const payment =
-      await this.paymentsService.findActivePaymentForOrder(orderId);
+    const totalAmount = Number(order.totalAmount);
+    const walletAmountUsed = Number((order as any).walletAmountUsed ?? 0);
+    const requestedAmount = dto.amount ?? totalAmount;
+    const refundRatio =
+      totalAmount > 0
+        ? Math.min(requestedAmount, totalAmount) / totalAmount
+        : 0;
 
-    if (!payment || payment.status !== TransactionStatus.SUCCESS) {
-      throw new BadRequestException(
-        'This order has no successful payment to refund',
+    const walletPortion =
+      Math.round(walletAmountUsed * refundRatio * 100) / 100;
+    const razorpayPortion =
+      Math.round((totalAmount - walletAmountUsed) * refundRatio * 100) / 100;
+
+    if (razorpayPortion > 0) {
+      const payment =
+        await this.paymentsService.findActivePaymentForOrder(orderId);
+
+      if (!payment || payment.status !== TransactionStatus.SUCCESS) {
+        throw new BadRequestException(
+          'This order has no successful payment to refund',
+        );
+      }
+
+      await this.paymentsService.refundPayment(
+        payment.id,
+        razorpayPortion,
+        dto.reason,
       );
     }
 
-    const refundAmount = dto.amount ?? Number(payment.amount);
-
-    await this.paymentsService.refundPayment(
-      payment.id,
-      refundAmount,
-      dto.reason,
-    );
+    if (walletPortion > 0) {
+      await this.eventBus.publish('order.refunded', {
+        orderId,
+        customerId: order.customerId,
+        walletAmount: walletPortion,
+      });
+    }
 
     return this.ordersRepository.updatePaymentStatus(
       orderId,

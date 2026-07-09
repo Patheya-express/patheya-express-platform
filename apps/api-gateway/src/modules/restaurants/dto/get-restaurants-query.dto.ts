@@ -2,6 +2,9 @@ import {
   IsBooleanString,
   IsIn,
   IsInt,
+  IsLatitude,
+  IsLongitude,
+  IsNumber,
   IsOptional,
   IsString,
   Max,
@@ -9,6 +12,15 @@ import {
 } from 'class-validator';
 
 import { Type } from 'class-transformer';
+
+export type RestaurantSortBy =
+  | 'name'
+  | 'rating'
+  | 'createdAt'
+  | 'popularity'
+  | 'deliveryTime'
+  | 'preparationTime'
+  | 'distance';
 
 export class GetRestaurantsQueryDto {
   @IsOptional()
@@ -45,8 +57,57 @@ export class GetRestaurantsQueryDto {
   openNow?: string;
 
   @IsOptional()
-  @IsIn(['name', 'rating', 'createdAt'])
-  sortBy: 'name' | 'rating' | 'createdAt' = 'name';
+  @IsBooleanString()
+  veg?: string;
+
+  @IsOptional()
+  @IsBooleanString()
+  vegan?: string;
+
+  @IsOptional()
+  @IsBooleanString()
+  offers?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(5)
+  minRating?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  maxDeliveryTimeMinutes?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  maxDistanceKm?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsLatitude()
+  latitude?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsLongitude()
+  longitude?: number;
+
+  @IsOptional()
+  @IsIn([
+    'name',
+    'rating',
+    'createdAt',
+    'popularity',
+    'deliveryTime',
+    'preparationTime',
+    'distance',
+  ])
+  sortBy: RestaurantSortBy = 'name';
 
   @IsOptional()
   @IsIn(['asc', 'desc'])

@@ -94,9 +94,61 @@ export class RestaurantsController {
     type: Boolean,
   })
   @ApiQuery({
+    name: 'veg',
+    required: false,
+    type: Boolean,
+    description: 'Only restaurants with at least one vegetarian menu item.',
+  })
+  @ApiQuery({
+    name: 'vegan',
+    required: false,
+    type: Boolean,
+    description: 'Only restaurants with at least one vegan menu item.',
+  })
+  @ApiQuery({
+    name: 'offers',
+    required: false,
+    type: Boolean,
+    description: 'Only restaurants with at least one currently active offer.',
+  })
+  @ApiQuery({
+    name: 'minRating',
+    required: false,
+    type: Number,
+  })
+  @ApiQuery({
+    name: 'maxDeliveryTimeMinutes',
+    required: false,
+    type: Number,
+  })
+  @ApiQuery({
+    name: 'maxDistanceKm',
+    required: false,
+    type: Number,
+    description: 'Requires latitude/longitude.',
+  })
+  @ApiQuery({
+    name: 'latitude',
+    required: false,
+    type: Number,
+  })
+  @ApiQuery({
+    name: 'longitude',
+    required: false,
+    type: Number,
+  })
+  @ApiQuery({
     name: 'sortBy',
     required: false,
-    enum: ['name', 'rating', 'createdAt'],
+    enum: [
+      'name',
+      'rating',
+      'createdAt',
+      'popularity',
+      'deliveryTime',
+      'preparationTime',
+      'distance',
+    ],
   })
   @ApiQuery({
     name: 'sortOrder',

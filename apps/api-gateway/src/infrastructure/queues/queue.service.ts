@@ -15,6 +15,12 @@ export class QueueService {
 
     @InjectQueue('payments')
     private readonly paymentsQueue: Queue,
+
+    @InjectQueue('search')
+    private readonly searchQueue: Queue,
+
+    @InjectQueue('tickets')
+    private readonly ticketsQueue: Queue,
   ) {}
 
   async addNotificationJob(data: any) {
@@ -47,6 +53,38 @@ export class QueueService {
 
       {
         name: 'reconcile-pending-payments',
+
+        data: {},
+      },
+    );
+  }
+
+  async addTrendingSearchAggregationJob() {
+    return this.searchQueue.upsertJobScheduler(
+      'trending-search-aggregation',
+
+      {
+        every: 15 * 60 * 1000,
+      },
+
+      {
+        name: 'aggregate-trending-searches',
+
+        data: {},
+      },
+    );
+  }
+
+  async addTicketEscalationJob() {
+    return this.ticketsQueue.upsertJobScheduler(
+      'ticket-escalation',
+
+      {
+        every: 30 * 60 * 1000,
+      },
+
+      {
+        name: 'escalate-overdue-tickets',
 
         data: {},
       },

@@ -31,6 +31,12 @@ import { NotificationsModule } from '../../modules/notifications/notifications.m
       {
         name: 'payments',
       },
+      {
+        name: 'search',
+      },
+      {
+        name: 'tickets',
+      },
     ),
   ],
 

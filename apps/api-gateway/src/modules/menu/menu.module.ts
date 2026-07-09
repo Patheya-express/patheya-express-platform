@@ -10,5 +10,7 @@ import { MenuRepository } from './repositories/menu.repository';
   controllers: [MenuController],
 
   providers: [MenuService, MenuRepository],
+
+  exports: [MenuService],
 })
 export class MenuModule {}
