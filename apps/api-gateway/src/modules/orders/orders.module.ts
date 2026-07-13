@@ -12,6 +12,7 @@ import { DeliveryModule } from '../delivery/delivery.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { RestaurantsModule } from '../restaurants/restaurants.module';
 import { AddressesModule } from '../addresses/addresses.module';
+import { AuditModule } from '../audit/audit.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { AddressesModule } from '../addresses/addresses.module';
     PaymentsModule,
     RestaurantsModule,
     AddressesModule,
+    AuditModule,
   ],
 
   controllers: [OrdersController],

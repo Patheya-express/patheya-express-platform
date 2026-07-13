@@ -12,6 +12,7 @@ import {
   PaymentStatus,
   PaymentMode,
   TransactionStatus,
+  AuditAction,
 } from '@prisma/client';
 
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
@@ -52,6 +53,9 @@ import {
   canAccessOrder,
   canAccessRestaurant,
 } from '../../../shared/authorization/order-access.util';
+import { getRestaurantOrderSettings } from '../../../shared/restaurant/restaurant-order-settings.util';
+import { QueueService } from '../../../infrastructure/queues/queue.service';
+import { AuditService } from '../../audit/services/audit.service';
 
 const TERMINAL_ORDER_STATUSES: OrderStatus[] = [
   OrderStatus.DELIVERED,
@@ -165,6 +169,8 @@ export class OrdersService {
     private readonly restaurantsService: RestaurantsService,
     private readonly addressesService: AddressesService,
     private readonly realtimeService: RealtimeService,
+    private readonly queueService: QueueService,
+    private readonly auditService: AuditService,
   ) {}
 
   /** Throws unless the acting user is this order's customer, its assigned delivery partner, its restaurant's owner/manager, or an admin. */
@@ -410,7 +416,12 @@ export class OrdersService {
       orderId: order.id,
 
       status: OrderStatus.PENDING,
+
+      changedById: customerId,
     });
+
+    await this.scheduleAcceptanceTimeout(dto.restaurantId, order.id);
+
     await this.eventBus.publish(
       'order.placed',
 
@@ -428,6 +439,101 @@ export class OrdersService {
 
       items: flattenOrderItems(order.items),
     };
+  }
+
+  /** Schedules the auto-reject/auto-accept timeout job for a newly placed order, using that
+   *  restaurant's configured RestaurantSettings.acceptanceTimeoutMinutes (defaults to 10). */
+  private async scheduleAcceptanceTimeout(
+    restaurantId: string,
+    orderId: string,
+  ): Promise<void> {
+    const { acceptanceTimeoutMinutes } = await getRestaurantOrderSettings(
+      this.prisma,
+      restaurantId,
+    );
+
+    await this.queueService.addOrderAcceptanceTimeoutJob(
+      orderId,
+      acceptanceTimeoutMinutes * 60 * 1000,
+    );
+  }
+
+  /**
+   * Invoked by OrderAcceptanceTimeoutProcessor once an order's acceptance-timeout job fires.
+   * Guarded twice against a race with a manual accept/reject: once here (skip if the order has
+   * already left PENDING) and once atomically in the repository's compare-and-swap update, so
+   * exactly one of "manual action" or "timeout" ever applies, never both.
+   */
+  async handleAcceptanceTimeout(orderId: string): Promise<void> {
+    const order = await this.ordersRepository.findOrderById(orderId);
+
+    if (!order || order.status !== OrderStatus.PENDING) {
+      return;
+    }
+
+    const { autoAcceptOrders } = await getRestaurantOrderSettings(
+      this.prisma,
+      order.restaurantId,
+    );
+
+    const nextStatus = autoAcceptOrders
+      ? OrderStatus.CONFIRMED
+      : OrderStatus.CANCELLED;
+
+    const updatedOrder = await this.ordersRepository.transitionIfPending(
+      orderId,
+      nextStatus,
+    );
+
+    if (!updatedOrder) {
+      // Lost the race to a manual accept/reject that landed first — no-op.
+      return;
+    }
+
+    await this.ordersRepository.createStatusHistory({
+      orderId,
+
+      status: nextStatus,
+
+      note: autoAcceptOrders
+        ? 'Auto-accepted: acceptance timeout elapsed'
+        : 'Auto-rejected: acceptance timeout elapsed',
+
+      changedById: null,
+    });
+
+    await this.auditService.log(
+      null,
+      'Order',
+      orderId,
+      AuditAction.STATUS_CHANGE,
+      { status: OrderStatus.PENDING },
+      { status: nextStatus, reason: 'acceptance-timeout' },
+    );
+
+    await this.eventBus.publish(
+      'order.status.changed',
+
+      new OrderStatusChangedEvent(
+        updatedOrder.id,
+        updatedOrder.customerId,
+        updatedOrder.status,
+        updatedOrder.restaurantId,
+        Number(updatedOrder.totalAmount),
+      ),
+    );
+
+    this.realtimeService.emitToOrder(orderId, 'order.status.changed', {
+      orderId,
+      status: updatedOrder.status,
+      updatedAt: updatedOrder.updatedAt,
+    });
+
+    this.realtimeService.emitToRestaurant(
+      order.restaurantId,
+      'order.acceptance-timeout',
+      { orderId, status: nextStatus },
+    );
   }
 
   /** Invoked by OrderPaymentListener when a Razorpay payment succeeds. Idempotent — safe to call more than once. */
@@ -462,6 +568,7 @@ export class OrdersService {
           updatedOrder.id,
           updatedOrder.customerId,
           updatedOrder.status,
+          updatedOrder.restaurantId,
         ),
       );
     }
@@ -525,6 +632,141 @@ export class OrdersService {
   }
 
   /**
+   * Restaurant dashboard metrics — every number is aggregated server-side from a bounded,
+   * restaurant-scoped window (today for the counters, a rolling 30 days for top items/peak
+   * hours). See OrdersRepository.getDashboardWindowOrders/getTopSellingItems/getRecentOrders.
+   */
+  async getRestaurantDashboard(
+    restaurantId: string,
+    user: AuthenticatedUser,
+    branchId?: string,
+  ) {
+    await this.assertRestaurantAccess(restaurantId, user);
+
+    const since30Days = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    const [windowOrders, topSellingItems, recentOrders] = await Promise.all([
+      this.ordersRepository.getDashboardWindowOrders(
+        restaurantId,
+        since30Days,
+        branchId,
+      ),
+      this.ordersRepository.getTopSellingItems(
+        restaurantId,
+        since30Days,
+        5,
+        branchId,
+      ),
+      this.ordersRepository.getRecentOrders(restaurantId, 10, branchId),
+    ]);
+
+    const todaysOrders = windowOrders.filter(
+      (order) => order.placedAt >= startOfToday,
+    );
+
+    const since7Days = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const thisWeekOrders = windowOrders.filter(
+      (order) => order.placedAt >= since7Days,
+    );
+
+    const ordersToday = todaysOrders.length;
+    const revenueToday = todaysOrders.reduce(
+      (sum, order) => sum + Number(order.totalAmount),
+      0,
+    );
+
+    // "This week" is the trailing 7 days and "this month" is the full rolling 30-day window
+    // already fetched above (not calendar-month-to-date) — both are derived from the same
+    // windowOrders fetch, so neither requires an additional query.
+    const revenueThisWeek = thisWeekOrders.reduce(
+      (sum, order) => sum + Number(order.totalAmount),
+      0,
+    );
+    const revenueThisMonth = windowOrders.reduce(
+      (sum, order) => sum + Number(order.totalAmount),
+      0,
+    );
+
+    const accepted = todaysOrders.filter(
+      (order) =>
+        order.status !== OrderStatus.PENDING &&
+        order.status !== OrderStatus.CANCELLED,
+    ).length;
+    const rejected = todaysOrders.filter(
+      (order) => order.status === OrderStatus.CANCELLED,
+    ).length;
+    const preparing = todaysOrders.filter(
+      (order) => order.status === OrderStatus.PREPARING,
+    ).length;
+    const ready = todaysOrders.filter(
+      (order) => order.status === OrderStatus.READY_FOR_PICKUP,
+    ).length;
+    const completed = todaysOrders.filter(
+      (order) => order.status === OrderStatus.DELIVERED,
+    ).length;
+
+    const decided = accepted + rejected;
+    const acceptanceRate = decided > 0 ? (accepted / decided) * 100 : 0;
+    const cancellationRate =
+      ordersToday > 0 ? (rejected / ordersToday) * 100 : 0;
+
+    const prepTimes = todaysOrders
+      .filter((order) => order.statusHistory.length > 0)
+      .map(
+        (order) =>
+          (order.statusHistory[0].createdAt.getTime() -
+            order.placedAt.getTime()) /
+          60000,
+      );
+    const averagePreparationTimeMinutes =
+      prepTimes.length > 0
+        ? Math.round(
+            prepTimes.reduce((sum, minutes) => sum + minutes, 0) /
+              prepTimes.length,
+          )
+        : undefined;
+
+    const hourCounts = new Map<number, number>();
+
+    for (const order of windowOrders) {
+      const hour = order.placedAt.getHours();
+      hourCounts.set(hour, (hourCounts.get(hour) ?? 0) + 1);
+    }
+
+    const peakHours = Array.from(hourCounts.entries())
+      .map(([hour, orderCount]) => ({ hour, orderCount }))
+      .sort((a, b) => b.orderCount - a.orderCount);
+
+    return {
+      ordersToday,
+      revenueToday,
+      revenueThisWeek,
+      revenueThisMonth,
+      accepted,
+      rejected,
+      preparing,
+      ready,
+      completed,
+      averagePreparationTimeMinutes,
+      acceptanceRate: Math.round(acceptanceRate * 10) / 10,
+      cancellationRate: Math.round(cancellationRate * 10) / 10,
+      topSellingItems,
+      peakHours,
+      recentOrders: recentOrders.map((order) => ({
+        id: order.id,
+        orderNumber: order.orderNumber,
+        status: order.status,
+        totalAmount: Number(order.totalAmount),
+        customerName:
+          `${order.customer.firstName} ${order.customer.lastName ?? ''}`.trim(),
+        createdAt: order.createdAt,
+      })),
+    };
+  }
+
+  /**
    * The single order-status transition path. Validates the transition, writes the
    * OrderStatusHistory entry, publishes `order.status.changed` for every transition (not just
    * some), and pushes a realtime update to the order's room — used identically whether the
@@ -566,6 +808,8 @@ export class OrdersService {
       status: dto.status,
 
       note: dto.reason,
+
+      changedById: user.userId,
     });
 
     await this.eventBus.publish(
@@ -577,6 +821,8 @@ export class OrdersService {
         updatedOrder.customerId,
 
         updatedOrder.status,
+
+        updatedOrder.restaurantId,
 
         Number(updatedOrder.totalAmount),
       ),
@@ -870,9 +1116,16 @@ export class OrdersService {
       await this.eventBus.publish('order.refunded', {
         orderId,
         customerId: order.customerId,
+        restaurantId: order.restaurantId,
         walletAmount: walletPortion,
       });
     }
+
+    await this.eventBus.publish('order.refunded.restaurant', {
+      orderId,
+      restaurantId: order.restaurantId,
+      amount: Math.round((walletPortion + razorpayPortion) * 100) / 100,
+    });
 
     return this.ordersRepository.updatePaymentStatus(
       orderId,

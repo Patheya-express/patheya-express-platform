@@ -19,6 +19,12 @@ import { LoginDto } from '../dto/login.dto';
 
 import { RefreshTokenDto } from '../dto/refresh-token.dto';
 
+import { ForgotPasswordDto } from '../dto/forgot-password.dto';
+
+import { ResetPasswordDto } from '../dto/reset-password.dto';
+
+import { PasswordResetMessageDto } from '../dto/password-reset-message.dto';
+
 import { RegisterResponseDto } from '../dto/register-response.dto';
 
 import { RefreshResponseDto } from '../dto/refresh-response.dto';
@@ -222,6 +228,54 @@ export class AuthController {
     dto: RefreshTokenDto,
   ) {
     return this.authService.logout(dto.refreshToken);
+  }
+
+  @Post('forgot-password')
+  @Throttle({
+    default: {
+      limit: 3,
+      ttl: 60000,
+    },
+  })
+  @ApiOperation({
+    summary: 'Request a password reset link',
+    description:
+      'Always returns the same message whether or not the email matches an account, to avoid revealing account existence.',
+  })
+  @ApiOkResponse({
+    description: 'Request accepted',
+    type: PasswordResetMessageDto,
+  })
+  forgotPassword(
+    @Body()
+    dto: ForgotPasswordDto,
+  ) {
+    return this.authService.forgotPassword(dto);
+  }
+
+  @Post('reset-password')
+  @Throttle({
+    default: {
+      limit: 5,
+      ttl: 60000,
+    },
+  })
+  @ApiOperation({
+    summary: 'Reset password using a token from the emailed reset link',
+  })
+  @ApiOkResponse({
+    description: 'Password reset successfully',
+    type: PasswordResetMessageDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Invalid, already-used, or expired reset link',
+  })
+  resetPassword(
+    @Body()
+    dto: ResetPasswordDto,
+  ) {
+    return this.authService.resetPassword(dto);
   }
 
   @Get('admin-only')

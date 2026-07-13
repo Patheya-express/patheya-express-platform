@@ -33,6 +33,7 @@ import {
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../auth/guards/roles.guard';
 import { Roles } from '../../auth/decorators/roles.decorator';
+import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 
 import { PaymentsService } from '../services/payments.service';
 
@@ -132,6 +133,9 @@ export class PaymentsController {
   @UseGuards(JwtAuthGuard)
   @Post('create')
   createPayment(
+    @CurrentUser()
+    user: any,
+
     @Body()
     dto: CreatePaymentDto,
   ) {
@@ -139,6 +143,8 @@ export class PaymentsController {
       dto.orderId,
 
       dto.amount,
+
+      user.userId,
     );
   }
 

@@ -85,7 +85,12 @@ export class TicketsRepository {
   async findTicketOwnership(id: string) {
     return this.prisma.supportTicket.findUnique({
       where: { id },
-      select: { id: true, customerId: true, assignedAgentId: true },
+      select: {
+        id: true,
+        customerId: true,
+        assignedAgentId: true,
+        orderId: true,
+      },
     });
   }
 

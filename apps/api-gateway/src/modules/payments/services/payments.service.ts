@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Injectable,
   ConflictException,
+  ForbiddenException,
   NotFoundException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -94,10 +95,11 @@ export class PaymentsService {
     private readonly prisma: PrismaService,
   ) {}
 
-  async createPayment(orderId: string, amount: number) {
+  async createPayment(orderId: string, amount: number, userId: string) {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
       select: {
+        customerId: true,
         paymentStatus: true,
         totalAmount: true,
         walletAmountUsed: true,
@@ -106,6 +108,10 @@ export class PaymentsService {
 
     if (!order) {
       throw new NotFoundException('Order not found');
+    }
+
+    if (order.customerId !== userId) {
+      throw new ForbiddenException('You do not have access to this order');
     }
 
     if (order.paymentStatus === PaymentStatus.PAID) {
@@ -257,6 +263,55 @@ export class PaymentsService {
 
     return updatedPayment;
   }
+
+  /**
+   * Marks a payment successful from outside the verify/webhook flow — used by
+   * PaymentReconciliationService when it finds a captured Razorpay payment whose webhook never
+   * arrived. Reuses the same transition + event-publish + notification path as
+   * handlePaymentCaptured so the order reaches PAID via the existing `payment.success` listener
+   * (OrderPaymentListener) instead of a second, parallel status-transition path.
+   */
+  async markPaymentSucceededFromReconciliation(
+    paymentId: string,
+    providerPaymentId: string,
+  ) {
+    const payment = await this.paymentsRepository.findById(paymentId);
+
+    if (!payment) {
+      throw new NotFoundException('Payment not found');
+    }
+
+    if (payment.status === TransactionStatus.SUCCESS) {
+      return payment;
+    }
+
+    const updatedPayment = await this.transitionPaymentStatus(
+      payment.id,
+
+      TransactionStatus.SUCCESS,
+
+      providerPaymentId,
+    );
+
+    await this.eventBus.publish(
+      'payment.success',
+
+      {
+        paymentId: payment.id,
+
+        orderId: payment.orderId,
+      },
+    );
+
+    await this.queueService.addNotificationJob({
+      type: 'payment-success',
+
+      orderId: payment.orderId,
+    });
+
+    return updatedPayment;
+  }
+
   private async handlePaymentFailed(payload: any) {
     const entity = payload.payload.payment.entity;
 

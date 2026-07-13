@@ -1,0 +1,32 @@
+# Dependencies (reinstalled inside the build stage)
+node_modules
+**/node_modules
+
+# Build output (rebuilt inside the build stage)
+dist
+**/dist
+deploy
+**/deploy
+
+# Environment / secrets — never baked into the image
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+
+# Version control / editor / tooling
+.git
+.gitignore
+.vscode
+.idea
+.turbo
+coverage
+logs
+*.log
+
+# Not needed for the api-gateway Docker build
+docs
+scripts
+infrastructure/docker

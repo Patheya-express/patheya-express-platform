@@ -21,6 +21,9 @@ export class QueueService {
 
     @InjectQueue('tickets')
     private readonly ticketsQueue: Queue,
+
+    @InjectQueue('orders')
+    private readonly ordersQueue: Queue,
   ) {}
 
   async addNotificationJob(data: any) {
@@ -43,6 +46,27 @@ export class QueueService {
       },
     );
   }
+  /**
+   * Delayed one-shot job, same pattern as addAssignmentExpiryJob — but the delay is dynamic
+   * (per-restaurant RestaurantSettings.acceptanceTimeoutMinutes) rather than a fixed constant.
+   * The job id is set to the orderId so a restart-safe re-schedule (if ever needed) would
+   * de-duplicate rather than stack a second timer for the same order.
+   */
+  async addOrderAcceptanceTimeoutJob(orderId: string, delayMs: number) {
+    return this.ordersQueue.add(
+      'order-acceptance-timeout',
+
+      {
+        orderId,
+      },
+
+      {
+        delay: delayMs,
+        jobId: `order-acceptance-timeout:${orderId}`,
+      },
+    );
+  }
+
   async addPaymentReconciliationJob() {
     return this.paymentsQueue.upsertJobScheduler(
       'payment-reconciliation',
@@ -89,5 +113,32 @@ export class QueueService {
         data: {},
       },
     );
+  }
+
+  /**
+   * Used by the readiness probe (LH1-10). Every queue shares the same Redis connection
+   * (registered once via `BullModule.forRoot`), so checking one queue's client is representative
+   * of all of them — this deliberately checks one, not all five, to keep the probe fast.
+   * `IRedisClient` (BullMQ's adapter-agnostic client interface) doesn't declare `ping`, so this
+   * reads `status` instead — `'ready'` is the same "connected and accepting commands" signal
+   * ioredis (the adapter actually in use here) exposes. A 2-second timeout keeps an unreachable
+   * Redis from hanging the readiness check indefinitely.
+   */
+  async checkHealth(): Promise<boolean> {
+    try {
+      const client = await Promise.race([
+        this.notificationQueue.client,
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error('queue health check timed out')),
+            2000,
+          ),
+        ),
+      ]);
+
+      return client.status === 'ready';
+    } catch {
+      return false;
+    }
   }
 }

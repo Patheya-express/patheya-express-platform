@@ -75,6 +75,35 @@ export class AuthRepository extends BaseRepository {
     });
   }
 
+  async updateUserPassword(userId: string, passwordHash: string) {
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash },
+    });
+  }
+
+  async createPasswordResetToken(data: {
+    userId: string;
+    tokenHash: string;
+    expiresAt: Date;
+  }) {
+    return this.prisma.passwordResetToken.create({ data });
+  }
+
+  async findPasswordResetToken(tokenHash: string) {
+    return this.prisma.passwordResetToken.findUnique({
+      where: { tokenHash },
+      include: { user: true },
+    });
+  }
+
+  async markPasswordResetTokenUsed(tokenHash: string) {
+    return this.prisma.passwordResetToken.update({
+      where: { tokenHash },
+      data: { usedAt: new Date() },
+    });
+  }
+
   async findUserByReferralCode(referralCode: string) {
     return this.prisma.user.findUnique({
       where: { referralCode },

@@ -1,8 +1,27 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
-import { Prisma, WalletTransactionType } from '@prisma/client';
+import {
+  Prisma,
+  WalletTransaction,
+  WalletTransactionType,
+} from '@prisma/client';
 
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
+
+type TransactionClient = Prisma.TransactionClient;
+
+export type ApplyToOrderAtomicResult =
+  | {
+      outcome: 'applied';
+      transaction: WalletTransaction;
+      amountApplied: number;
+      totalAmount: number;
+    }
+  | { outcome: 'already_applied' };
 
 export const WALLET_TRANSACTION_ADMIN_INCLUDE = {
   user: {
@@ -38,33 +57,126 @@ export class WalletRepository {
     referralId?: string;
   }) {
     return this.prisma.$transaction(
+      (tx) => this.insertLedgerEntry(tx, params),
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
+  }
+
+  /**
+   * Atomically claims an order for wallet payment and debits the wallet for the claimed amount
+   * in one SERIALIZABLE transaction — closes the race in WalletService.applyToOrder where two
+   * concurrent requests could each see `walletAmountUsed === 0` and both debit the wallet for
+   * the same order. The claim is a conditional `updateMany` (`WHERE walletAmountUsed = 0 AND
+   * paymentStatus != PAID`): Postgres serializes concurrent UPDATEs to the same row regardless
+   * of isolation level, so whichever transaction commits first "wins" the claim and the second
+   * sees 0 affected rows — no separate `SELECT ... FOR UPDATE` needed. Balance is read and
+   * clamped inside the same transaction as the debit, so a genuinely concurrent balance change
+   * from an unrelated debit/credit aborts this transaction with a serialization failure (caught
+   * and retried by the caller) rather than silently using a stale balance.
+   */
+  async applyToOrderAtomic(params: {
+    userId: string;
+    orderId: string;
+    requestedAmount: number;
+    description: string;
+  }): Promise<ApplyToOrderAtomicResult> {
+    return this.prisma.$transaction(
       async (tx) => {
+        const order = await tx.order.findUnique({
+          where: { id: params.orderId },
+          select: { totalAmount: true },
+        });
+
+        if (!order) {
+          throw new NotFoundException('Order not found');
+        }
+
+        const totalAmount = Number(order.totalAmount);
+
         const current = await tx.walletTransaction.aggregate({
           where: { userId: params.userId, status: 'COMPLETED' },
           _sum: { amount: true },
         });
 
-        const balanceBefore = Number(current._sum.amount ?? 0);
-        const balanceAfter = balanceBefore + params.amount;
+        const balance = Number(current._sum.amount ?? 0);
+        const amountToApply = Math.min(
+          params.requestedAmount,
+          balance,
+          totalAmount,
+        );
 
-        if (balanceAfter < 0) {
+        if (amountToApply <= 0) {
           throw new BadRequestException('Insufficient wallet balance');
         }
 
-        return tx.walletTransaction.create({
-          data: {
-            userId: params.userId,
-            type: params.type,
-            amount: params.amount,
-            balanceAfter,
-            description: params.description,
-            orderId: params.orderId,
-            referralId: params.referralId,
+        const claim = await tx.order.updateMany({
+          where: {
+            id: params.orderId,
+            walletAmountUsed: 0,
+            paymentStatus: { not: 'PAID' },
           },
+          data: { walletAmountUsed: amountToApply },
         });
+
+        if (claim.count === 0) {
+          return { outcome: 'already_applied' as const };
+        }
+
+        const transaction = await this.insertLedgerEntry(tx, {
+          userId: params.userId,
+          type: WalletTransactionType.ORDER_PAYMENT,
+          amount: -amountToApply,
+          description: params.description,
+          orderId: params.orderId,
+        });
+
+        return {
+          outcome: 'applied' as const,
+          transaction,
+          amountApplied: amountToApply,
+          totalAmount,
+        };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     );
+  }
+
+  /** Shared balance-check-then-insert body used by both writeLedgerEntry and
+   *  applyToOrderAtomic, each supplying their own transaction boundary. */
+  private async insertLedgerEntry(
+    tx: TransactionClient,
+    params: {
+      userId: string;
+      type: WalletTransactionType;
+      amount: number;
+      description: string;
+      orderId?: string;
+      referralId?: string;
+    },
+  ): Promise<WalletTransaction> {
+    const current = await tx.walletTransaction.aggregate({
+      where: { userId: params.userId, status: 'COMPLETED' },
+      _sum: { amount: true },
+    });
+
+    const balanceBefore = Number(current._sum.amount ?? 0);
+    const balanceAfter = balanceBefore + params.amount;
+
+    if (balanceAfter < 0) {
+      throw new BadRequestException('Insufficient wallet balance');
+    }
+
+    return tx.walletTransaction.create({
+      data: {
+        userId: params.userId,
+        type: params.type,
+        amount: params.amount,
+        balanceAfter,
+        description: params.description,
+        orderId: params.orderId,
+        referralId: params.referralId,
+      },
+    });
   }
 
   async findTransactions(userId: string, skip: number, take: number) {

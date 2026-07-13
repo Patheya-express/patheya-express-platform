@@ -195,6 +195,31 @@ export class OrdersRepository extends BaseRepository {
     });
   }
 
+  /**
+   * Atomic compare-and-swap transition: only succeeds if the order is still PENDING at the
+   * moment of the update. Used by the order-acceptance-timeout job so a timeout firing at the
+   * same moment a restaurant manually accepts/rejects can never double-apply — exactly one of
+   * the two writers wins, and the loser gets `null` back and takes no further action.
+   */
+  async transitionIfPending(orderId: string, status: OrderStatus) {
+    const result = await this.prisma.order.updateMany({
+      where: {
+        id: orderId,
+        status: OrderStatus.PENDING,
+      },
+
+      data: {
+        status,
+      },
+    });
+
+    if (result.count === 0) {
+      return null;
+    }
+
+    return this.findOrderById(orderId);
+  }
+
   async createStatusHistory(data: any) {
     return this.prisma.orderStatusHistory.create({
       data,
@@ -431,6 +456,93 @@ export class OrdersRepository extends BaseRepository {
 
       data: {
         paymentStatus,
+      },
+    });
+  }
+
+  /**
+   * Everything the restaurant dashboard needs, fetched with server-side aggregation only —
+   * bounded to this restaurant (indexed) and a 30-day window, never the restaurant's entire
+   * order history. `orderId`-scoped in-memory grouping for "today" counts and peak-hours is done
+   * over this already-small, already-filtered set, which is not the client-side-aggregation
+   * anti-pattern the platform is moving away from (that pattern was shipping *all* of a
+   * restaurant's orders to the frontend for it to reduce — this stays entirely server-side and
+   * only the final aggregated numbers cross the wire).
+   */
+  async getDashboardWindowOrders(
+    restaurantId: string,
+    since: Date,
+    branchId?: string,
+  ) {
+    return this.prisma.order.findMany({
+      where: {
+        restaurantId,
+        ...(branchId ? { branchId } : {}),
+        placedAt: { gte: since },
+      },
+      select: {
+        id: true,
+        status: true,
+        totalAmount: true,
+        placedAt: true,
+        statusHistory: {
+          where: { status: OrderStatus.READY_FOR_PICKUP },
+          select: { createdAt: true },
+          take: 1,
+        },
+      },
+    });
+  }
+
+  async getTopSellingItems(
+    restaurantId: string,
+    since: Date,
+    take: number,
+    branchId?: string,
+  ) {
+    const grouped = await this.prisma.orderItem.groupBy({
+      by: ['menuItemId'],
+      where: {
+        order: {
+          restaurantId,
+          ...(branchId ? { branchId } : {}),
+          placedAt: { gte: since },
+        },
+      },
+      _sum: { quantity: true },
+      orderBy: { _sum: { quantity: 'desc' } },
+      take,
+    });
+
+    const menuItems = await this.prisma.menuItem.findMany({
+      where: { id: { in: grouped.map((entry) => entry.menuItemId) } },
+      select: { id: true, name: true },
+    });
+
+    const nameById = new Map(menuItems.map((item) => [item.id, item.name]));
+
+    return grouped.map((entry) => ({
+      menuItemId: entry.menuItemId,
+      name: nameById.get(entry.menuItemId) ?? 'Unknown item',
+      quantitySold: entry._sum.quantity ?? 0,
+    }));
+  }
+
+  async getRecentOrders(restaurantId: string, take: number, branchId?: string) {
+    return this.prisma.order.findMany({
+      where: {
+        restaurantId,
+        ...(branchId ? { branchId } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      take,
+      select: {
+        id: true,
+        orderNumber: true,
+        status: true,
+        totalAmount: true,
+        createdAt: true,
+        customer: { select: { firstName: true, lastName: true } },
       },
     });
   }

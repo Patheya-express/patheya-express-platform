@@ -91,6 +91,13 @@ const PUSH_PREFERENCE_BY_TYPE: Record<NotificationType, PushPreferenceKey> = {
   TICKET_STATUS_CHANGED: 'systemPush',
   TICKET_MESSAGE: 'systemPush',
   GENERAL: 'systemPush',
+  // Restaurant-facing types are gated by RestaurantSettings notification preferences
+  // (see getRestaurantNotificationPreferences), not by this customer-facing preference map —
+  // still mapped here so PUSH_PREFERENCE_BY_TYPE stays exhaustive over NotificationType.
+  NEW_ORDER_FOR_RESTAURANT: 'orderUpdatesPush',
+  ORDER_CANCELLED_FOR_RESTAURANT: 'orderUpdatesPush',
+  REFUND_FOR_RESTAURANT: 'orderUpdatesPush',
+  CUSTOMER_MESSAGE_FOR_RESTAURANT: 'systemPush',
 };
 
 /**

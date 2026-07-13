@@ -144,6 +144,13 @@ export class RestaurantsRepository extends BaseRepository {
     return { items, total };
   }
 
+  async updateProfile(restaurantId: string, data: any) {
+    return this.prisma.restaurant.update({
+      where: { id: restaurantId },
+      data,
+    });
+  }
+
   async updateStatus(restaurantId: string, status: RestaurantStatus) {
     return this.prisma.restaurant.update({
       where: {

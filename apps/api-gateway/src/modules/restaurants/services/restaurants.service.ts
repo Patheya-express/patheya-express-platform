@@ -2,18 +2,25 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   ConflictException,
   NotFoundException,
 } from '@nestjs/common';
 
-import { Prisma, RestaurantStatus } from '@prisma/client';
+import {
+  AuditAction,
+  Prisma,
+  RestaurantMediaType,
+  RestaurantStatus,
+} from '@prisma/client';
 
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
 
 import { getPagination } from '../../../infrastructure/database/utils/pagination.util';
 
 import { CreateRestaurantDto } from '../dto/create-restaurant.dto';
+import { UpdateRestaurantDto } from '../dto/update-restaurant.dto';
 
 import { RestaurantsRepository } from '../repositories/restaurants.repository';
 
@@ -33,22 +40,38 @@ import { OffersService } from '../../offers/services/offers.service';
 import { OfferResponseDto } from '../../offers/dto/offer-response.dto';
 import { buildActiveOfferWhere } from '../../offers/utils/offer-active-where.util';
 
+import { AuditService } from '../../audit/services/audit.service';
+import { EventBusService } from '../../../core/events/event-bus.service';
+import {
+  AuthenticatedUser,
+  canAccessRestaurant,
+  hasRestaurantRole,
+} from '../../../shared/authorization/order-access.util';
+
 export const RESTAURANT_SUMMARY_INCLUDE = {
   cuisines: { include: { cuisine: true } },
   branches: { include: { operatingHours: true } },
 } as const;
 
+/** Picks the branch flagged `isPrimary`, falling back to the first branch for restaurants
+ *  created before ERPH-1 introduced the flag (or that never got one set). */
+function selectPrimaryBranch(branches: any[] | undefined | null) {
+  if (!branches || branches.length === 0) {
+    return undefined;
+  }
+
+  return branches.find((branch) => branch.isPrimary) ?? branches[0];
+}
+
 /**
  * Maps a Restaurant row (loaded with RESTAURANT_SUMMARY_INCLUDE) into the shared discovery
- * payload. "City" and "open now" are derived from the first branch — restaurants in this
- * platform are currently single-branch in practice, and there's no "primary branch" flag to
- * pick a specific one if there were several.
+ * payload. "City" and "open now" are derived from the restaurant's primary branch.
  */
 export function toRestaurantSummary(
   restaurant: any,
   origin?: { latitude: number; longitude: number },
 ): RestaurantSummaryDto {
-  const primaryBranch = restaurant.branches?.[0];
+  const primaryBranch = selectPrimaryBranch(restaurant.branches);
   const operatingHours = primaryBranch?.operatingHours ?? [];
 
   let distanceKm: number | undefined;
@@ -81,7 +104,7 @@ export function toRestaurantSummary(
     avgPreparationTimeMinutes:
       restaurant.avgPreparationTimeMinutes ?? undefined,
     avgDeliveryTimeMinutes: restaurant.avgDeliveryTimeMinutes ?? undefined,
-    isOpenNow: computeIsOpenNow(operatingHours),
+    isOpenNow: computeIsOpenNow(operatingHours, primaryBranch?.timezone),
     featured: restaurant.featured,
     hasVegOptions: restaurant.hasVegOptions,
     hasVeganOptions: restaurant.hasVeganOptions,
@@ -176,6 +199,10 @@ export class RestaurantsService {
     private readonly storageService: StorageService,
 
     private readonly offersService: OffersService,
+
+    private readonly auditService: AuditService,
+
+    private readonly eventBus: EventBusService,
   ) {}
 
   async createRestaurant(
@@ -193,7 +220,7 @@ export class RestaurantsService {
       throw new ConflictException('Restaurant slug already exists');
     }
 
-    return this.restaurantsRepository.createRestaurant({
+    const restaurant = await this.restaurantsRepository.createRestaurant({
       ownerId,
 
       name: dto.name,
@@ -206,6 +233,76 @@ export class RestaurantsService {
 
       email: dto.email,
     });
+
+    await this.auditService.log(
+      ownerId,
+      'Restaurant',
+      restaurant.id,
+      AuditAction.CREATE,
+      null,
+      { name: restaurant.name, slug: restaurant.slug },
+    );
+
+    await this.eventBus.publish('restaurant.created', {
+      restaurantId: restaurant.id,
+      ownerId,
+      name: restaurant.name,
+      slug: restaurant.slug,
+    });
+
+    return restaurant;
+  }
+
+  /**
+   * Owner, active co-owner staff, or admin only. Previously there was no update path for a
+   * restaurant's profile at all beyond the two dedicated logo/banner upload endpoints.
+   */
+  async updateRestaurant(
+    restaurantId: string,
+
+    dto: UpdateRestaurantDto,
+
+    user: AuthenticatedUser,
+  ) {
+    const restaurant =
+      await this.restaurantsRepository.findRestaurantById(restaurantId);
+
+    if (!restaurant) {
+      throw new NotFoundException('Restaurant not found');
+    }
+
+    const allowed = await hasRestaurantRole(this.prisma, restaurantId, user, [
+      'OWNER',
+      'CO_OWNER',
+      'ADMIN',
+    ]);
+
+    if (!allowed) {
+      throw new ForbiddenException(
+        'You do not have permission to update this restaurant',
+      );
+    }
+
+    const updated = await this.restaurantsRepository.updateProfile(
+      restaurantId,
+      dto,
+    );
+
+    await this.auditService.log(
+      user.userId,
+      'Restaurant',
+      restaurantId,
+      AuditAction.UPDATE,
+      null,
+      dto,
+    );
+
+    await this.eventBus.publish('restaurant.updated', {
+      restaurantId,
+      updatedFields: Object.keys(dto),
+    });
+
+    return updated;
   }
 
   async getMyRestaurants(ownerId: string) {
@@ -239,7 +336,11 @@ export class RestaurantsService {
     );
   }
 
-  async uploadLogo(restaurantId: string, file: UploadFile) {
+  async uploadLogo(
+    restaurantId: string,
+    file: UploadFile,
+    user: AuthenticatedUser,
+  ) {
     const restaurant =
       await this.restaurantsRepository.findRestaurantById(restaurantId);
 
@@ -247,17 +348,40 @@ export class RestaurantsService {
       throw new NotFoundException('Restaurant not found');
     }
 
+    if (!(await canAccessRestaurant(this.prisma, restaurantId, user))) {
+      throw new ForbiddenException(
+        'You do not have permission to modify this restaurant',
+      );
+    }
+
     const logoUrl = await this.storageService.upload(file, 'restaurants/logos');
+
+    await this.mirrorPrimaryMedia(
+      restaurantId,
+      RestaurantMediaType.LOGO,
+      logoUrl,
+      user.userId,
+    );
 
     return this.restaurantsRepository.updateImages(restaurantId, { logoUrl });
   }
 
-  async uploadBanner(restaurantId: string, file: UploadFile) {
+  async uploadBanner(
+    restaurantId: string,
+    file: UploadFile,
+    user: AuthenticatedUser,
+  ) {
     const restaurant =
       await this.restaurantsRepository.findRestaurantById(restaurantId);
 
     if (!restaurant) {
       throw new NotFoundException('Restaurant not found');
+    }
+
+    if (!(await canAccessRestaurant(this.prisma, restaurantId, user))) {
+      throw new ForbiddenException(
+        'You do not have permission to modify this restaurant',
+      );
     }
 
     const bannerUrl = await this.storageService.upload(
@@ -265,7 +389,35 @@ export class RestaurantsService {
       'restaurants/banners',
     );
 
+    await this.mirrorPrimaryMedia(
+      restaurantId,
+      RestaurantMediaType.BANNER,
+      bannerUrl,
+      user.userId,
+    );
+
     return this.restaurantsRepository.updateImages(restaurantId, { bannerUrl });
+  }
+
+  /**
+   * Keeps `Restaurant.logoUrl`/`bannerUrl` (the fast-path columns every existing consumer
+   * already reads) as the single system of record while also giving logo/banner a row in the
+   * new RestaurantMedia gallery table, so "all restaurant media" has one place to query instead
+   * of two parallel systems. At most one LOGO and one BANNER row exist per restaurant.
+   */
+  private async mirrorPrimaryMedia(
+    restaurantId: string,
+    type: typeof RestaurantMediaType.LOGO | typeof RestaurantMediaType.BANNER,
+    url: string,
+    uploadedById: string,
+  ) {
+    await this.prisma.restaurantMedia.deleteMany({
+      where: { restaurantId, type },
+    });
+
+    await this.prisma.restaurantMedia.create({
+      data: { restaurantId, type, url, uploadedById },
+    });
   }
 
   /**
@@ -379,9 +531,14 @@ export class RestaurantsService {
       });
 
       if (openNow === 'true') {
-        candidates = candidates.filter((restaurant) =>
-          computeIsOpenNow(restaurant.branches?.[0]?.operatingHours ?? []),
-        );
+        candidates = candidates.filter((restaurant) => {
+          const primaryBranch = selectPrimaryBranch(restaurant.branches);
+
+          return computeIsOpenNow(
+            primaryBranch?.operatingHours ?? [],
+            primaryBranch?.timezone,
+          );
+        });
       }
 
       const origin =
@@ -591,35 +748,43 @@ export class RestaurantsService {
     };
   }
 
-  async approveRestaurant(restaurantId: string) {
+  async approveRestaurant(restaurantId: string, adminUserId: string) {
     return this.transitionStatus(
       restaurantId,
       RestaurantStatus.PENDING,
       RestaurantStatus.APPROVED,
+      adminUserId,
+      AuditAction.APPROVE,
     );
   }
 
-  async rejectRestaurant(restaurantId: string) {
+  async rejectRestaurant(restaurantId: string, adminUserId: string) {
     return this.transitionStatus(
       restaurantId,
       RestaurantStatus.PENDING,
       RestaurantStatus.REJECTED,
+      adminUserId,
+      AuditAction.REJECT,
     );
   }
 
-  async suspendRestaurant(restaurantId: string) {
+  async suspendRestaurant(restaurantId: string, adminUserId: string) {
     return this.transitionStatus(
       restaurantId,
       RestaurantStatus.APPROVED,
       RestaurantStatus.SUSPENDED,
+      adminUserId,
+      AuditAction.STATUS_CHANGE,
     );
   }
 
-  async restoreRestaurant(restaurantId: string) {
+  async restoreRestaurant(restaurantId: string, adminUserId: string) {
     return this.transitionStatus(
       restaurantId,
       RestaurantStatus.SUSPENDED,
       RestaurantStatus.APPROVED,
+      adminUserId,
+      AuditAction.STATUS_CHANGE,
     );
   }
 
@@ -629,6 +794,10 @@ export class RestaurantsService {
     requiredStatus: RestaurantStatus,
 
     nextStatus: RestaurantStatus,
+
+    adminUserId: string,
+
+    auditAction: AuditAction,
   ) {
     const restaurant =
       await this.restaurantsRepository.findRestaurantById(restaurantId);
@@ -643,6 +812,24 @@ export class RestaurantsService {
       );
     }
 
-    return this.restaurantsRepository.updateStatus(restaurantId, nextStatus);
+    const updated = await this.restaurantsRepository.updateStatus(
+      restaurantId,
+      nextStatus,
+    );
+
+    await this.auditService.log(
+      adminUserId,
+      'Restaurant',
+      restaurantId,
+      auditAction,
+      { status: requiredStatus },
+      { status: nextStatus },
+    );
+
+    if (nextStatus === RestaurantStatus.APPROVED) {
+      await this.eventBus.publish('restaurant.activated', { restaurantId });
+    }
+
+    return updated;
   }
 }

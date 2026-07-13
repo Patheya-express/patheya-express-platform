@@ -36,6 +36,7 @@ import { UserRole, RestaurantStatus } from '@prisma/client';
 import { RestaurantsService } from '../services/restaurants.service';
 
 import { CreateRestaurantDto } from '../dto/create-restaurant.dto';
+import { UpdateRestaurantDto } from '../dto/update-restaurant.dto';
 import { GetRestaurantsQueryDto } from '../dto/get-restaurants-query.dto';
 import { GetAdminRestaurantsQueryDto } from '../dto/get-admin-restaurants-query.dto';
 import { RestaurantResponseDto } from '../dto/restaurant-response.dto';
@@ -46,6 +47,12 @@ import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../auth/guards/roles.guard';
 import { Roles } from '../../auth/decorators/roles.decorator';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
+
+import {
+  createUploadInterceptorOptions,
+  IMAGE_MAX_SIZE_BYTES,
+  IMAGE_MIME_TYPES,
+} from '../../storage/utils/upload-validation.util';
 
 @ApiTags('Restaurants')
 @Controller('restaurants')
@@ -175,7 +182,8 @@ export class RestaurantsController {
     status: 409,
     description: 'Restaurant slug already exists',
   })
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.RESTAURANT_OWNER, UserRole.ADMIN, UserRole.SUPER_ADMIN)
   @Post()
   createRestaurant(
     @CurrentUser()
@@ -185,6 +193,42 @@ export class RestaurantsController {
     dto: CreateRestaurantDto,
   ) {
     return this.restaurantsService.createRestaurant(user.userId, dto);
+  }
+
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'Update restaurant profile',
+    description:
+      'Owner, active co-owner staff, or admin only. Previously there was no way to edit a restaurant after creation at all.',
+  })
+  @ApiParam({
+    name: 'id',
+  })
+  @ApiOkResponse({
+    description: 'Restaurant updated successfully',
+    type: RestaurantResponseDto,
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Caller does not own or manage this restaurant',
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Restaurant not found',
+  })
+  @UseGuards(JwtAuthGuard)
+  @Patch(':id')
+  updateRestaurant(
+    @CurrentUser()
+    user: any,
+
+    @Param('id')
+    id: string,
+
+    @Body()
+    dto: UpdateRestaurantDto,
+  ) {
+    return this.restaurantsService.updateRestaurant(id, dto, user);
   }
 
   @ApiBearerAuth('JWT-auth')
@@ -277,10 +321,13 @@ export class RestaurantsController {
   @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
   @Patch(':id/approve')
   approveRestaurant(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     id: string,
   ) {
-    return this.restaurantsService.approveRestaurant(id);
+    return this.restaurantsService.approveRestaurant(id, user.userId);
   }
 
   @ApiBearerAuth('JWT-auth')
@@ -306,10 +353,13 @@ export class RestaurantsController {
   @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
   @Patch(':id/reject')
   rejectRestaurant(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     id: string,
   ) {
-    return this.restaurantsService.rejectRestaurant(id);
+    return this.restaurantsService.rejectRestaurant(id, user.userId);
   }
 
   @ApiBearerAuth('JWT-auth')
@@ -335,10 +385,13 @@ export class RestaurantsController {
   @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
   @Patch(':id/suspend')
   suspendRestaurant(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     id: string,
   ) {
-    return this.restaurantsService.suspendRestaurant(id);
+    return this.restaurantsService.suspendRestaurant(id, user.userId);
   }
 
   @ApiBearerAuth('JWT-auth')
@@ -364,10 +417,13 @@ export class RestaurantsController {
   @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
   @Patch(':id/restore')
   restoreRestaurant(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     id: string,
   ) {
-    return this.restaurantsService.restoreRestaurant(id);
+    return this.restaurantsService.restoreRestaurant(id, user.userId);
   }
 
   @ApiOperation({
@@ -419,20 +475,32 @@ export class RestaurantsController {
     type: RestaurantResponseDto,
   })
   @ApiResponse({
+    status: 403,
+    description: 'Caller does not own or manage this restaurant',
+  })
+  @ApiResponse({
     status: 404,
     description: 'Restaurant not found',
   })
   @UseGuards(JwtAuthGuard)
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    FileInterceptor(
+      'file',
+      createUploadInterceptorOptions(IMAGE_MIME_TYPES, IMAGE_MAX_SIZE_BYTES),
+    ),
+  )
   @Post(':id/logo')
   uploadLogo(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     id: string,
 
     @UploadedFile()
     file: UploadFile,
   ) {
-    return this.restaurantsService.uploadLogo(id, file);
+    return this.restaurantsService.uploadLogo(id, file, user);
   }
 
   @ApiBearerAuth('JWT-auth')
@@ -459,19 +527,31 @@ export class RestaurantsController {
     type: RestaurantResponseDto,
   })
   @ApiResponse({
+    status: 403,
+    description: 'Caller does not own or manage this restaurant',
+  })
+  @ApiResponse({
     status: 404,
     description: 'Restaurant not found',
   })
   @UseGuards(JwtAuthGuard)
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    FileInterceptor(
+      'file',
+      createUploadInterceptorOptions(IMAGE_MIME_TYPES, IMAGE_MAX_SIZE_BYTES),
+    ),
+  )
   @Post(':id/banner')
   uploadBanner(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     id: string,
 
     @UploadedFile()
     file: UploadFile,
   ) {
-    return this.restaurantsService.uploadBanner(id, file);
+    return this.restaurantsService.uploadBanner(id, file, user);
   }
 }

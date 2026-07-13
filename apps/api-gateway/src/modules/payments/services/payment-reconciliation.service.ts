@@ -1,17 +1,21 @@
-import { Injectable } from '@nestjs/common';
-
-import { TransactionStatus } from '@prisma/client';
+import { Injectable, Logger } from '@nestjs/common';
 
 import { PaymentsRepository } from '../repositories/payments.repository';
 
 import { RazorpayProvider } from '../providers/razorpay.provider';
 
+import { PaymentsService } from './payments.service';
+
 @Injectable()
 export class PaymentReconciliationService {
+  private readonly logger = new Logger(PaymentReconciliationService.name);
+
   constructor(
     private readonly paymentsRepository: PaymentsRepository,
 
     private readonly razorpayProvider: RazorpayProvider,
+
+    private readonly paymentsService: PaymentsService,
   ) {}
 
   async reconcilePendingPayments() {
@@ -31,15 +35,16 @@ export class PaymentReconciliationService {
           continue;
         }
 
-        await this.paymentsRepository.updatePaymentStatus(
+        await this.paymentsService.markPaymentSucceededFromReconciliation(
           payment.id,
-
-          TransactionStatus.SUCCESS,
 
           capturedPayment.id,
         );
       } catch (error) {
-        console.error('Payment reconciliation failed', payment.id, error);
+        this.logger.error(
+          `Payment reconciliation failed for payment ${payment.id}: ${(error as Error)?.message ?? error}`,
+          (error as Error)?.stack,
+        );
       }
     }
   }

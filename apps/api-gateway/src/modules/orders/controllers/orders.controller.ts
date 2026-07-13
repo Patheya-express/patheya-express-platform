@@ -50,6 +50,7 @@ import { OrderResponseDto } from '../dto/order-response.dto';
 
 import { OrderStatusHistoryResponseDto } from '../dto/order-status-history-response.dto';
 import { PaginatedAdminOrdersResponseDto } from '../dto/paginated-admin-orders-response.dto';
+import { RestaurantDashboardResponseDto } from '../dto/restaurant-dashboard-response.dto';
 
 @ApiTags('Orders')
 @ApiBearerAuth('JWT-auth')
@@ -134,6 +135,41 @@ export class OrdersController {
     restaurantId: string,
   ) {
     return this.ordersService.getRestaurantOrders(restaurantId, user);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({
+    summary: 'Get restaurant dashboard metrics',
+    description:
+      "Restricted to the restaurant's own owner/manager, or an admin. Every metric is " +
+      'computed server-side; the frontend only renders this response.',
+  })
+  @ApiParam({ name: 'restaurantId' })
+  @ApiQuery({
+    name: 'branchId',
+    required: false,
+    description: 'Scope every metric to a single branch.',
+  })
+  @ApiOkResponse({
+    description: 'Dashboard metrics retrieved',
+    type: RestaurantDashboardResponseDto,
+  })
+  @Get('restaurant/:restaurantId/dashboard')
+  getRestaurantDashboard(
+    @CurrentUser()
+    user: any,
+
+    @Param('restaurantId')
+    restaurantId: string,
+
+    @Query('branchId')
+    branchId?: string,
+  ) {
+    return this.ordersService.getRestaurantDashboard(
+      restaurantId,
+      user,
+      branchId,
+    );
   }
 
   @ApiOperation({

@@ -14,6 +14,7 @@ import {
 import {
   WalletRepository,
   WALLET_TRANSACTION_ADMIN_INCLUDE,
+  ApplyToOrderAtomicResult,
 } from '../repositories/wallet.repository';
 
 import { RealtimeService } from '../../realtime/services/realtime.service';
@@ -124,29 +125,7 @@ export class WalletService {
         ...opts,
       });
 
-      this.realtimeService.emitToUser(userId, 'wallet.balance.changed', {
-        balance: Number(tx.balanceAfter),
-        transaction: toTransactionResponse(tx),
-      });
-
-      await this.auditService.log(
-        userId,
-        'WalletTransaction',
-        tx.id,
-        AuditAction.CREATE,
-        undefined,
-        { type, amount, balanceAfter: Number(tx.balanceAfter) },
-      );
-
-      if (amount > 0) {
-        await this.notificationsService.createNotification(
-          userId,
-          NotificationType.WALLET_CREDIT,
-          'Wallet credited',
-          `${description} — ₹${amount.toFixed(2)} added to your wallet.`,
-          { referenceType: 'WALLET', referenceId: tx.id },
-        );
-      }
+      await this.applyLedgerSideEffects(userId, type, amount, description, tx);
 
       return tx;
     } catch (error) {
@@ -168,17 +147,60 @@ export class WalletService {
     }
   }
 
+  /** Post-commit side effects shared by every wallet-ledger write path (the standalone
+   *  writeLedgerEntry above, and applyToOrder's atomic claim-and-debit below): realtime
+   *  balance push, audit log, and a credit notification when the entry is a credit. */
+  private async applyLedgerSideEffects(
+    userId: string,
+    type: WalletTransactionType,
+    amount: number,
+    description: string,
+    tx: WalletTransaction,
+  ): Promise<void> {
+    this.realtimeService.emitToUser(userId, 'wallet.balance.changed', {
+      balance: Number(tx.balanceAfter),
+      transaction: toTransactionResponse(tx),
+    });
+
+    await this.auditService.log(
+      userId,
+      'WalletTransaction',
+      tx.id,
+      AuditAction.CREATE,
+      undefined,
+      { type, amount, balanceAfter: Number(tx.balanceAfter) },
+    );
+
+    if (amount > 0) {
+      await this.notificationsService.createNotification(
+        userId,
+        NotificationType.WALLET_CREDIT,
+        'Wallet credited',
+        `${description} — ₹${amount.toFixed(2)} added to your wallet.`,
+        { referenceType: 'WALLET', referenceId: tx.id },
+      );
+    }
+  }
+
   /**
    * Mixed-payment entry point (C9 approved decision: wallet can fully or partially pay for
    * orders). Debits the requested amount (clamped to balance and to the order's remaining
    * payable amount) and, if that fully covers the order, publishes the same `payment.success`
    * event the Razorpay flow already publishes — reusing OrderPaymentListener's existing,
    * idempotent `markOrderPaid` rather than duplicating that transition logic here.
+   *
+   * The checks below are a fast-fail pass only — clear, specific errors for the common cases
+   * (not found, not yours, already paid, already applied, invalid amount) without needing a
+   * transaction. The actual claim-and-debit happens atomically in
+   * WalletRepository.applyToOrderAtomic, which re-verifies "not already applied" and the
+   * balance inside one SERIALIZABLE transaction — closing the race where two concurrent calls
+   * could both pass these same checks and both debit the wallet for the same order.
    */
   async applyToOrder(
     userId: string,
     orderId: string,
     requestedAmount: number,
+    attempt = 0,
   ): Promise<ApplyWalletToOrderResponseDto> {
     const order = await this.walletRepository.findOrderForWallet(orderId);
 
@@ -206,25 +228,44 @@ export class WalletService {
       throw new BadRequestException('Invalid wallet amount for this order');
     }
 
-    const balance = await this.walletRepository.getBalance(userId);
-    const amountToApply = Math.min(requestedAmount, balance, totalAmount);
+    let result: ApplyToOrderAtomicResult;
 
-    if (amountToApply <= 0) {
-      throw new BadRequestException('Insufficient wallet balance');
+    try {
+      result = await this.walletRepository.applyToOrderAtomic({
+        userId,
+        orderId,
+        requestedAmount,
+        description: 'Applied to order',
+      });
+    } catch (error) {
+      if (
+        isSerializationFailure(error) &&
+        attempt < MAX_SERIALIZATION_RETRIES
+      ) {
+        return this.applyToOrder(userId, orderId, requestedAmount, attempt + 1);
+      }
+
+      throw error;
     }
 
-    await this.writeLedgerEntry(
+    if (result.outcome === 'already_applied') {
+      throw new BadRequestException(
+        'Wallet has already been applied to this order',
+      );
+    }
+
+    const { transaction, amountApplied } = result;
+
+    await this.applyLedgerSideEffects(
       userId,
       WalletTransactionType.ORDER_PAYMENT,
-      -amountToApply,
-      `Applied to order`,
-      { orderId },
+      -amountApplied,
+      'Applied to order',
+      transaction,
     );
 
-    await this.walletRepository.setOrderWalletAmount(orderId, amountToApply);
-
     const remainingAmount = Math.max(
-      Math.round((totalAmount - amountToApply) * 100) / 100,
+      Math.round((totalAmount - amountApplied) * 100) / 100,
       0,
     );
 
@@ -235,7 +276,7 @@ export class WalletService {
       });
     }
 
-    return { walletAmountApplied: amountToApply, remainingAmount };
+    return { walletAmountApplied: amountApplied, remainingAmount };
   }
 
   /** Consumed by WalletEventListener on `order.status.changed` (DELIVERED) — flat-rate cashback. */

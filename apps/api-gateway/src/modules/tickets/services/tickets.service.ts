@@ -23,6 +23,7 @@ import { StorageService } from '../../storage/services/storage.service';
 import { RealtimeService } from '../../realtime/services/realtime.service';
 import { NotificationsService } from '../../notifications/services/notifications.service';
 import { AuditService } from '../../audit/services/audit.service';
+import { EventBusService } from '../../../core/events/event-bus.service';
 
 import { UploadFile } from '../../../shared/types/upload-file.type';
 import { AuthenticatedUser } from '../../../shared/authorization/order-access.util';
@@ -152,6 +153,7 @@ export class TicketsService {
     private readonly realtimeService: RealtimeService,
     private readonly notificationsService: NotificationsService,
     private readonly auditService: AuditService,
+    private readonly eventBus: EventBusService,
   ) {}
 
   async createTicket(
@@ -317,6 +319,14 @@ export class TicketsService {
         message.length > 120 ? `${message.slice(0, 117)}...` : message,
         { referenceType: 'TICKET', referenceId: id },
       );
+    } else if (ticket.orderId) {
+      // A customer message on a ticket linked to an order is surfaced to that order's
+      // restaurant — see RestaurantOrderNotificationListener.
+      await this.eventBus.publish('order.customer.message', {
+        orderId: ticket.orderId,
+        ticketId: id,
+        message: message.length > 120 ? `${message.slice(0, 117)}...` : message,
+      });
     }
 
     return toTicketResponse(await this.getTicketOrThrow(id));

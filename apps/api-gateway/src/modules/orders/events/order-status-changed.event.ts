@@ -6,6 +6,8 @@ export class OrderStatusChangedEvent {
 
     public readonly status: string,
 
+    public readonly restaurantId: string,
+
     public readonly totalAmount?: number,
   ) {}
 }

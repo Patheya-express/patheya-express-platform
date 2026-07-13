@@ -7,6 +7,7 @@ import { NotificationsService } from './services/notifications.service';
 import { NotificationsRepository } from './repositories/notifications.repository';
 
 import { OrderNotificationListener } from './listeners/order-notification.listener';
+import { RestaurantOrderNotificationListener } from './listeners/restaurant-order-notification.listener';
 
 @Module({
   controllers: [NotificationsController],
@@ -17,6 +18,8 @@ import { OrderNotificationListener } from './listeners/order-notification.listen
     NotificationsRepository,
 
     OrderNotificationListener,
+
+    RestaurantOrderNotificationListener,
   ],
 
   exports: [NotificationsService],

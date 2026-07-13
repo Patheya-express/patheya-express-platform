@@ -17,6 +17,13 @@ import type { UploadFile } from '../../../shared/types/upload-file.type';
 import { MenuService } from '../services/menu.service';
 
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../../auth/decorators/current-user.decorator';
+
+import {
+  createUploadInterceptorOptions,
+  IMAGE_MAX_SIZE_BYTES,
+  IMAGE_MIME_TYPES,
+} from '../../storage/utils/upload-validation.util';
 
 import { CreateCategoryDto } from '../dto/create-category.dto';
 
@@ -52,6 +59,7 @@ import {
   ApiOperation,
   ApiParam,
   ApiQuery,
+  ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
 
@@ -74,31 +82,37 @@ export class MenuController {
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: 'Create menu category',
+    description:
+      'Restaurant OWNER/CO_OWNER/BRANCH_MANAGER or platform ADMIN only.',
   })
   @ApiCreatedResponse({
     type: MenuCategoryResponseDto,
   })
+  @ApiResponse({
+    status: 403,
+    description: 'Caller does not manage this restaurant',
+  })
   @Post('categories')
-  createCategory(
-    @Body()
-    dto: CreateCategoryDto,
-  ) {
-    return this.menuService.createCategory(dto);
+  createCategory(@CurrentUser() user: any, @Body() dto: CreateCategoryDto) {
+    return this.menuService.createCategory(dto, user);
   }
 
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: 'Create menu item',
+    description:
+      'Restaurant OWNER/CO_OWNER/BRANCH_MANAGER or platform ADMIN only.',
   })
   @ApiCreatedResponse({
     type: MenuItemResponseDto,
   })
+  @ApiResponse({
+    status: 403,
+    description: 'Caller does not manage this restaurant',
+  })
   @Post('items')
-  createMenuItem(
-    @Body()
-    dto: CreateMenuItemDto,
-  ) {
-    return this.menuService.createMenuItem(dto);
+  createMenuItem(@CurrentUser() user: any, @Body() dto: CreateMenuItemDto) {
+    return this.menuService.createMenuItem(dto, user);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -122,6 +136,8 @@ export class MenuController {
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: 'Update menu item',
+    description:
+      'Restaurant OWNER/CO_OWNER/BRANCH_MANAGER or platform ADMIN only.',
   })
   @ApiParam({
     name: 'id',
@@ -129,36 +145,42 @@ export class MenuController {
   @ApiOkResponse({
     type: MenuItemResponseDto,
   })
+  @ApiResponse({
+    status: 403,
+    description: 'Caller does not manage this restaurant',
+  })
   @Patch('items/:id')
   updateMenuItem(
+    @CurrentUser() user: any,
     @Param('id')
     id: string,
 
     @Body()
     dto: UpdateMenuItemDto,
   ) {
-    return this.menuService.updateMenuItem(
-      id,
-
-      dto,
-    );
+    return this.menuService.updateMenuItem(id, dto, user);
   }
 
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: 'Delete menu item',
+    description:
+      'Restaurant OWNER/CO_OWNER/BRANCH_MANAGER or platform ADMIN only.',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Caller does not manage this restaurant',
   })
   @Delete('items/:id')
-  deleteMenuItem(
-    @Param('id')
-    id: string,
-  ) {
-    return this.menuService.deleteMenuItem(id);
+  deleteMenuItem(@CurrentUser() user: any, @Param('id') id: string) {
+    return this.menuService.deleteMenuItem(id, user);
   }
 
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: 'Toggle menu item availability',
+    description:
+      'Restaurant OWNER/CO_OWNER/BRANCH_MANAGER or platform ADMIN only.',
   })
   @ApiParam({
     name: 'id',
@@ -166,19 +188,20 @@ export class MenuController {
   @ApiOkResponse({
     type: MenuItemResponseDto,
   })
+  @ApiResponse({
+    status: 403,
+    description: 'Caller does not manage this restaurant',
+  })
   @Patch('items/:id/availability')
   toggleAvailability(
+    @CurrentUser() user: any,
     @Param('id')
     id: string,
 
     @Body()
     dto: ToggleMenuItemAvailabilityDto,
   ) {
-    return this.menuService.toggleAvailability(
-      id,
-
-      dto.isAvailable,
-    );
+    return this.menuService.toggleAvailability(id, dto.isAvailable, user);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -202,6 +225,8 @@ export class MenuController {
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: 'Update category',
+    description:
+      'Restaurant OWNER/CO_OWNER/BRANCH_MANAGER or platform ADMIN only.',
   })
   @ApiParam({
     name: 'id',
@@ -209,36 +234,42 @@ export class MenuController {
   @ApiOkResponse({
     type: MenuCategoryResponseDto,
   })
+  @ApiResponse({
+    status: 403,
+    description: 'Caller does not manage this restaurant',
+  })
   @Patch('categories/:id')
   updateCategory(
+    @CurrentUser() user: any,
     @Param('id')
     id: string,
 
     @Body()
     dto: UpdateCategoryDto,
   ) {
-    return this.menuService.updateCategory(
-      id,
-
-      dto,
-    );
+    return this.menuService.updateCategory(id, dto, user);
   }
 
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: 'Delete category',
+    description:
+      'Restaurant OWNER/CO_OWNER/BRANCH_MANAGER or platform ADMIN only.',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Caller does not manage this restaurant',
   })
   @Delete('categories/:id')
-  deleteCategory(
-    @Param('id')
-    id: string,
-  ) {
-    return this.menuService.deleteCategory(id);
+  deleteCategory(@CurrentUser() user: any, @Param('id') id: string) {
+    return this.menuService.deleteCategory(id, user);
   }
 
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: 'Create menu item variant',
+    description:
+      'Restaurant OWNER/CO_OWNER/BRANCH_MANAGER or platform ADMIN only.',
   })
   @ApiParam({
     name: 'id',
@@ -246,24 +277,27 @@ export class MenuController {
   @ApiCreatedResponse({
     type: MenuItemVariantResponseDto,
   })
+  @ApiResponse({
+    status: 403,
+    description: 'Caller does not manage this restaurant',
+  })
   @Post('items/:id/variants')
   createVariant(
+    @CurrentUser() user: any,
     @Param('id')
     menuItemId: string,
 
     @Body()
     dto: CreateMenuItemVariantDto,
   ) {
-    return this.menuService.createVariant(
-      menuItemId,
-
-      dto,
-    );
+    return this.menuService.createVariant(menuItemId, dto, user);
   }
 
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: 'Update variant',
+    description:
+      'Restaurant OWNER/CO_OWNER/BRANCH_MANAGER or platform ADMIN only.',
   })
   @ApiParam({
     name: 'id',
@@ -271,36 +305,42 @@ export class MenuController {
   @ApiOkResponse({
     type: MenuItemVariantResponseDto,
   })
+  @ApiResponse({
+    status: 403,
+    description: 'Caller does not manage this restaurant',
+  })
   @Patch('variants/:id')
   updateVariant(
+    @CurrentUser() user: any,
     @Param('id')
     variantId: string,
 
     @Body()
     dto: UpdateMenuItemVariantDto,
   ) {
-    return this.menuService.updateVariant(
-      variantId,
-
-      dto,
-    );
+    return this.menuService.updateVariant(variantId, dto, user);
   }
 
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: 'Delete variant',
+    description:
+      'Restaurant OWNER/CO_OWNER/BRANCH_MANAGER or platform ADMIN only.',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Caller does not manage this restaurant',
   })
   @Delete('variants/:id')
-  deleteVariant(
-    @Param('id')
-    variantId: string,
-  ) {
-    return this.menuService.deleteVariant(variantId);
+  deleteVariant(@CurrentUser() user: any, @Param('id') variantId: string) {
+    return this.menuService.deleteVariant(variantId, user);
   }
 
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: 'Create addon group',
+    description:
+      'Restaurant OWNER/CO_OWNER/BRANCH_MANAGER or platform ADMIN only.',
   })
   @ApiParam({
     name: 'id',
@@ -308,14 +348,24 @@ export class MenuController {
   @ApiCreatedResponse({
     type: MenuAddonResponseDto,
   })
+  @ApiResponse({
+    status: 403,
+    description: 'Caller does not manage this restaurant',
+  })
   @Post('items/:id/addons')
-  createAddon(@Param('id') menuItemId: string, @Body() dto: CreateAddonDto) {
-    return this.menuService.createAddon(menuItemId, dto);
+  createAddon(
+    @CurrentUser() user: any,
+    @Param('id') menuItemId: string,
+    @Body() dto: CreateAddonDto,
+  ) {
+    return this.menuService.createAddon(menuItemId, dto, user);
   }
 
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: 'Update addon',
+    description:
+      'Restaurant OWNER/CO_OWNER/BRANCH_MANAGER or platform ADMIN only.',
   })
   @ApiParam({
     name: 'id',
@@ -323,23 +373,39 @@ export class MenuController {
   @ApiOkResponse({
     type: MenuAddonResponseDto,
   })
+  @ApiResponse({
+    status: 403,
+    description: 'Caller does not manage this restaurant',
+  })
   @Patch('addons/:id')
-  updateAddon(@Param('id') addonId: string, @Body() dto: UpdateAddonDto) {
-    return this.menuService.updateAddon(addonId, dto);
+  updateAddon(
+    @CurrentUser() user: any,
+    @Param('id') addonId: string,
+    @Body() dto: UpdateAddonDto,
+  ) {
+    return this.menuService.updateAddon(addonId, dto, user);
   }
 
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: 'Delete addon',
+    description:
+      'Restaurant OWNER/CO_OWNER/BRANCH_MANAGER or platform ADMIN only.',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Caller does not manage this restaurant',
   })
   @Delete('addons/:id')
-  deleteAddon(@Param('id') addonId: string) {
-    return this.menuService.deleteAddon(addonId);
+  deleteAddon(@CurrentUser() user: any, @Param('id') addonId: string) {
+    return this.menuService.deleteAddon(addonId, user);
   }
 
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: 'Create addon option',
+    description:
+      'Restaurant OWNER/CO_OWNER/BRANCH_MANAGER or platform ADMIN only.',
   })
   @ApiParam({
     name: 'id',
@@ -347,17 +413,24 @@ export class MenuController {
   @ApiCreatedResponse({
     type: MenuAddonOptionResponseDto,
   })
+  @ApiResponse({
+    status: 403,
+    description: 'Caller does not manage this restaurant',
+  })
   @Post('addons/:id/options')
   createAddonOption(
+    @CurrentUser() user: any,
     @Param('id') addonId: string,
     @Body() dto: CreateAddonOptionDto,
   ) {
-    return this.menuService.createAddonOption(addonId, dto);
+    return this.menuService.createAddonOption(addonId, dto, user);
   }
 
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: 'Update addon option',
+    description:
+      'Restaurant OWNER/CO_OWNER/BRANCH_MANAGER or platform ADMIN only.',
   })
   @ApiParam({
     name: 'id',
@@ -365,21 +438,32 @@ export class MenuController {
   @ApiOkResponse({
     type: MenuAddonOptionResponseDto,
   })
+  @ApiResponse({
+    status: 403,
+    description: 'Caller does not manage this restaurant',
+  })
   @Patch('options/:id')
   updateAddonOption(
+    @CurrentUser() user: any,
     @Param('id') optionId: string,
     @Body() dto: UpdateAddonOptionDto,
   ) {
-    return this.menuService.updateAddonOption(optionId, dto);
+    return this.menuService.updateAddonOption(optionId, dto, user);
   }
 
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: 'Delete addon option',
+    description:
+      'Restaurant OWNER/CO_OWNER/BRANCH_MANAGER or platform ADMIN only.',
+  })
+  @ApiResponse({
+    status: 403,
+    description: 'Caller does not manage this restaurant',
   })
   @Delete('options/:id')
-  deleteAddonOption(@Param('id') optionId: string) {
-    return this.menuService.deleteAddonOption(optionId);
+  deleteAddonOption(@CurrentUser() user: any, @Param('id') optionId: string) {
+    return this.menuService.deleteAddonOption(optionId, user);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -467,6 +551,8 @@ export class MenuController {
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: 'Upload menu item image',
+    description:
+      'Restaurant OWNER/CO_OWNER/BRANCH_MANAGER or platform ADMIN only.',
   })
   @ApiParam({
     name: 'id',
@@ -486,15 +572,25 @@ export class MenuController {
   @ApiOkResponse({
     type: MenuItemResponseDto,
   })
-  @UseInterceptors(FileInterceptor('file'))
+  @ApiResponse({
+    status: 403,
+    description: 'Caller does not manage this restaurant',
+  })
+  @UseInterceptors(
+    FileInterceptor(
+      'file',
+      createUploadInterceptorOptions(IMAGE_MIME_TYPES, IMAGE_MAX_SIZE_BYTES),
+    ),
+  )
   @Post('items/:id/image')
   uploadMenuItemImage(
+    @CurrentUser() user: any,
     @Param('id')
     id: string,
 
     @UploadedFile()
     file: UploadFile,
   ) {
-    return this.menuService.uploadMenuItemImage(id, file);
+    return this.menuService.uploadMenuItemImage(id, file, user);
   }
 }

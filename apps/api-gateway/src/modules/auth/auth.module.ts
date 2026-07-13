@@ -18,9 +18,10 @@ import { AuthController } from './controllers/auth.controller';
 
 import { RolesGuard } from './guards/roles.guard';
 import { AuditModule } from '../audit/audit.module';
+import { EmailModule } from '../email/email.module';
 
 @Module({
-  imports: [PassportModule, JwtModule.register({}), AuditModule],
+  imports: [PassportModule, JwtModule.register({}), AuditModule, EmailModule],
 
   controllers: [AuthController],
 

@@ -14,6 +14,12 @@ import {
 
 import { FileInterceptor } from '@nestjs/platform-express';
 
+import {
+  createUploadInterceptorOptions,
+  IMAGE_MAX_SIZE_BYTES,
+  IMAGE_MIME_TYPES,
+} from '../../storage/utils/upload-validation.util';
+
 import { UsersService } from '../services/users.service';
 
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
@@ -149,7 +155,12 @@ export class UsersController {
     type: UserResponseDto,
   })
   @UseGuards(JwtAuthGuard)
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    FileInterceptor(
+      'file',
+      createUploadInterceptorOptions(IMAGE_MIME_TYPES, IMAGE_MAX_SIZE_BYTES),
+    ),
+  )
   @Post('me/avatar')
   uploadAvatar(
     @CurrentUser()

@@ -372,4 +372,66 @@ export class MenuRepository extends BaseRepository {
       },
     });
   }
+
+  /** Resolves the owning restaurantId for a category — used for menu ownership checks. */
+  async getCategoryRestaurantId(categoryId: string): Promise<string | null> {
+    const category = await this.prisma.menuCategory.findUnique({
+      where: { id: categoryId },
+      select: { restaurantId: true },
+    });
+
+    return category?.restaurantId ?? null;
+  }
+
+  /** Resolves the owning restaurantId for a menu item — used for menu ownership checks. */
+  async getMenuItemRestaurantId(menuItemId: string): Promise<string | null> {
+    const menuItem = await this.prisma.menuItem.findUnique({
+      where: { id: menuItemId },
+      select: { category: { select: { restaurantId: true } } },
+    });
+
+    return menuItem?.category.restaurantId ?? null;
+  }
+
+  /** Resolves the owning restaurantId for a menu item variant — used for menu ownership checks. */
+  async getVariantRestaurantId(variantId: string): Promise<string | null> {
+    const variant = await this.prisma.menuItemVariant.findUnique({
+      where: { id: variantId },
+      select: {
+        menuItem: { select: { category: { select: { restaurantId: true } } } },
+      },
+    });
+
+    return variant?.menuItem.category.restaurantId ?? null;
+  }
+
+  /** Resolves the owning restaurantId for an addon group — used for menu ownership checks. */
+  async getAddonRestaurantId(addonId: string): Promise<string | null> {
+    const addon = await this.prisma.menuItemAddon.findUnique({
+      where: { id: addonId },
+      select: {
+        menuItem: { select: { category: { select: { restaurantId: true } } } },
+      },
+    });
+
+    return addon?.menuItem.category.restaurantId ?? null;
+  }
+
+  /** Resolves the owning restaurantId for an addon option — used for menu ownership checks. */
+  async getAddonOptionRestaurantId(optionId: string): Promise<string | null> {
+    const option = await this.prisma.menuItemAddonOption.findUnique({
+      where: { id: optionId },
+      select: {
+        addon: {
+          select: {
+            menuItem: {
+              select: { category: { select: { restaurantId: true } } },
+            },
+          },
+        },
+      },
+    });
+
+    return option?.addon.menuItem.category.restaurantId ?? null;
+  }
 }

@@ -47,6 +47,145 @@ enum RestaurantStatus {
   SUSPENDED
 }
 
+enum RestaurantStaffRole {
+  OWNER
+
+  CO_OWNER
+
+  BRANCH_MANAGER
+
+  KITCHEN_MANAGER
+
+  FINANCE_MANAGER
+
+  STAFF
+}
+
+enum RestaurantStaffStatus {
+  INVITED
+
+  ACTIVE
+
+  REVOKED
+}
+
+enum RestaurantVerificationStage {
+  DRAFT
+
+  SUBMITTED
+
+  DOCUMENT_REVIEW
+
+  GST_VERIFICATION
+
+  FSSAI_VERIFICATION
+
+  BANK_VERIFICATION
+
+  COMPLIANCE_REVIEW
+
+  APPROVED
+
+  REJECTED
+
+  SUSPENDED
+}
+
+enum RestaurantDocumentType {
+  GST
+
+  FSSAI
+
+  PAN
+
+  TRADE_LICENSE
+
+  FIRE_NOC
+
+  SHOP_ESTABLISHMENT
+
+  LIQUOR_LICENSE
+
+  HALAL
+
+  CANCELLED_CHEQUE
+
+  PASSBOOK
+
+  AADHAAR
+
+  PAN_CARD
+
+  RENTAL_AGREEMENT
+
+  UTILITY_BILL
+
+  OTHER
+}
+
+/**
+ * Shared verification lifecycle for documents, GST, FSSAI, and bank accounts.
+ */
+enum VerificationStatus {
+  PENDING
+
+  UNDER_REVIEW
+
+  VERIFIED
+
+  REJECTED
+
+  EXPIRED
+}
+
+enum BusinessType {
+  PROPRIETORSHIP
+
+  PARTNERSHIP
+
+  LLP
+
+  PRIVATE_LIMITED
+
+  PUBLIC_LIMITED
+
+  TRUST
+
+  SOCIETY
+
+  OTHER
+}
+
+enum ServiceChargeType {
+  NONE
+
+  FLAT
+
+  PERCENTAGE
+}
+
+enum RestaurantMediaType {
+  LOGO
+
+  BANNER
+
+  FRONT_VIEW
+
+  EXTERIOR
+
+  KITCHEN
+
+  DINING
+
+  INTERIOR
+
+  SIGN_BOARD
+
+  GALLERY
+
+  VIDEO
+}
+
 enum OrderStatus {
   PENDING
 
@@ -121,6 +260,16 @@ enum NotificationType {
   TICKET_STATUS_CHANGED
   TICKET_MESSAGE
   GENERAL
+
+  /**
+   * Restaurant-facing notification types (ERPH-2A) — sent to restaurant owners/active staff
+   * rather than customers. Kept in the same enum as the customer-facing types above since both
+   * sides share one Notification table/user-scoped delivery model.
+   */
+  NEW_ORDER_FOR_RESTAURANT
+  ORDER_CANCELLED_FOR_RESTAURANT
+  REFUND_FOR_RESTAURANT
+  CUSTOMER_MESSAGE_FOR_RESTAURANT
 }
 
 enum OfferType {
@@ -280,8 +429,8 @@ model User {
 
   timezone String @default("Asia/Kolkata")
 
-  referralCode    String? @unique
-  referredByCode  String?
+  referralCode   String? @unique
+  referredByCode String?
 
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
@@ -308,14 +457,18 @@ model User {
   cart Cart?
 
   walletTransactions WalletTransaction[]
-  referralsMade      Referral[]           @relation("ReferralsMade")
-  referralReceived   Referral?            @relation("ReferralsReceived")
+  referralsMade      Referral[]          @relation("ReferralsMade")
+  referralReceived   Referral?           @relation("ReferralsReceived")
   recentSearches     RecentSearch[]
 
-  customerTickets    SupportTicket[] @relation("CustomerTickets")
-  assignedTickets    SupportTicket[] @relation("AssignedTickets")
-  ticketMessages     TicketMessage[]
-  ticketAttachments  TicketAttachment[]
+  customerTickets   SupportTicket[]    @relation("CustomerTickets")
+  assignedTickets   SupportTicket[]    @relation("AssignedTickets")
+  ticketMessages    TicketMessage[]
+  ticketAttachments TicketAttachment[]
+
+  restaurantStaffMemberships RestaurantStaff[]
+
+  passwordResetTokens PasswordResetToken[]
 
   @@index([email])
   @@index([phone])
@@ -470,6 +623,31 @@ model RefreshToken {
   @@map("refresh_tokens")
 }
 
+/**
+ * Single-use, short-lived token for the forgot-password flow. Only the SHA-256 hash of the raw
+ * token is ever stored (same pattern as RefreshToken) — the raw value exists only in the email
+ * sent to the user and is never persisted. `usedAt` enforces single-use; a used or expired
+ * token is rejected exactly like a missing one, without revealing which.
+ */
+model PasswordResetToken {
+  id String @id @default(uuid())
+
+  userId String
+
+  tokenHash String @unique
+
+  expiresAt DateTime
+
+  usedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
 model OtpVerification {
   id String @id @default(uuid())
 
@@ -494,7 +672,23 @@ model Restaurant {
 
   ownerId String
 
+  /**
+   * Plain forward-compatible pointer — no Business aggregate/table exists yet. Reserved for a
+   * future multi-restaurant Business entity so ownership never has to assume one owner owns
+   * only one restaurant brand.
+   */
+  businessId String?
+
   name String
+
+  /**
+   * Registered legal name, distinct from the public-facing `name`/`brandName`.
+   */
+  legalBusinessName String?
+
+  tradeName String?
+
+  brandName String?
 
   slug String @unique
 
@@ -503,6 +697,16 @@ model Restaurant {
   phone String?
 
   email String?
+
+  supportEmail String?
+
+  supportPhone String?
+
+  businessEmail String?
+
+  businessPhone String?
+
+  website String?
 
   logoUrl String?
 
@@ -524,7 +728,9 @@ model Restaurant {
 
   deliveredOrderCount Int @default(0)
 
-  /** Derived from its menu items — recomputed by MenuRepository whenever an item's veg/vegan flag changes. */
+  /**
+   * Derived from its menu items — recomputed by MenuRepository whenever an item's veg/vegan flag changes.
+   */
   hasVegOptions   Boolean @default(false)
   hasVeganOptions Boolean @default(false)
 
@@ -552,7 +758,24 @@ model Restaurant {
 
   favoritedBy RestaurantFavorite[]
 
+  staff RestaurantStaff[]
+
+  verification RestaurantVerification?
+
+  documents RestaurantDocument[]
+
+  taxProfile RestaurantTaxProfile?
+
+  bankAccount RestaurantBankAccount?
+
+  media RestaurantMedia[]
+
+  settings RestaurantSettings?
+
+  holidays RestaurantHoliday[]
+
   @@index([ownerId])
+  @@index([businessId])
   @@index([status])
   @@index([featured])
   @@index([hasVegOptions])
@@ -577,24 +800,56 @@ model RestaurantBranch {
 
   postalCode String
 
+  landmark String?
+
   latitude Float?
 
   longitude Float?
 
+  timezone String?
+
+  /**
+   * Simple radius in kilometers for now — polygon/geofence support is future work.
+   */
+  deliveryRadiusKm Float?
+
   phone String?
 
+  emergencyContactName String?
+
+  emergencyContactPhone String?
+
   isActive Boolean @default(true)
+
+  /**
+   * Explicit "which branch is the default for legacy single-branch flows" flag — replaces the
+   * implicit `branches[0]` assumption used throughout the platform prior to ERPH-1.
+   */
+  isPrimary Boolean @default(false)
 
   createdAt DateTime @default(now())
 
   updatedAt DateTime @updatedAt
+
+  deletedAt DateTime?
 
   restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
 
   operatingHours OperatingHour[]
   orders         Order[]
 
+  staff RestaurantStaff[]
+
+  documents RestaurantDocument[]
+
+  media RestaurantMedia[]
+
+  menuCategories MenuCategory[]
+
+  holidays RestaurantHoliday[]
+
   @@index([restaurantId])
+  @@index([isPrimary])
   @@map("restaurant_branches")
 }
 
@@ -623,6 +878,279 @@ model RestaurantCuisine {
   @@map("restaurant_cuisines")
 }
 
+model RestaurantStaff {
+  id String @id @default(uuid())
+
+  restaurantId String
+
+  userId String
+
+  /**
+   * Null means "restaurant-wide" — e.g. OWNER/CO_OWNER/FINANCE_MANAGER typically aren't scoped
+   * to one branch, while BRANCH_MANAGER/KITCHEN_MANAGER/STAFF usually are.
+   */
+  branchId String?
+
+  role RestaurantStaffRole @default(STAFF)
+
+  status RestaurantStaffStatus @default(INVITED)
+
+  /**
+   * Plain attribution field, not a Prisma relation — kept lightweight like other audit-only
+   * references in this schema (see RestaurantDocument.uploadedById).
+   */
+  invitedById String?
+
+  invitedAt DateTime @default(now())
+
+  respondedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  branch RestaurantBranch? @relation(fields: [branchId], references: [id], onDelete: SetNull)
+
+  @@unique([restaurantId, userId])
+  @@index([restaurantId])
+  @@index([userId])
+  @@index([branchId])
+  @@map("restaurant_staff")
+}
+
+/**
+ * Dedicated verification aggregate — deliberately separate from RestaurantStatus, which stays a
+ * small, stable enum with existing consumers (public listing filter, admin 4-state chip). This
+ * richer sub-state-machine feeds into RestaurantStatus rather than replacing it: a restaurant
+ * only becomes RestaurantStatus.APPROVED once this reaches RestaurantVerificationStage.APPROVED.
+ */
+model RestaurantVerification {
+  id String @id @default(uuid())
+
+  restaurantId String @unique
+
+  stage RestaurantVerificationStage @default(DRAFT)
+
+  submittedAt DateTime?
+
+  decidedAt DateTime?
+
+  decidedById String?
+
+  rejectedReason String?
+
+  notes String?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@index([stage])
+  @@map("restaurant_verifications")
+}
+
+/**
+ * One generic table for the long tail of document types (trade license, fire NOC, halal, etc.)
+ * rather than N near-identical tables — new document types are an enum addition, not a
+ * migration. GST/FSSAI/bank still get their canonical numbers and expiry dates as typed,
+ * indexed columns on RestaurantTaxProfile/RestaurantBankAccount for cheap expiry queries; this
+ * table holds the uploaded certificate/proof file for every document type, including GST/FSSAI.
+ */
+model RestaurantDocument {
+  id String @id @default(uuid())
+
+  restaurantId String
+
+  branchId String?
+
+  documentType RestaurantDocumentType
+
+  documentNumber String?
+
+  issueDate DateTime?
+
+  expiryDate DateTime?
+
+  status VerificationStatus @default(PENDING)
+
+  storageUrl String
+
+  fileName String
+
+  mimeType String
+
+  sizeBytes Int
+
+  uploadedById String
+
+  verifiedById String?
+
+  verifiedAt DateTime?
+
+  rejectedReason String?
+
+  metadata Json?
+
+  version Int @default(1)
+
+  isLatest Boolean @default(true)
+
+  /**
+   * Plain attribution field pointing at the prior version's id — avoids a self-relation for a
+   * simple linear version chain that's walked in application code, not via Prisma include.
+   */
+  previousVersionId String?
+
+  deletedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  branch RestaurantBranch? @relation(fields: [branchId], references: [id], onDelete: SetNull)
+
+  @@index([restaurantId])
+  @@index([branchId])
+  @@index([documentType])
+  @@index([status])
+  @@index([expiryDate])
+  @@map("restaurant_documents")
+}
+
+model RestaurantTaxProfile {
+  id String @id @default(uuid())
+
+  restaurantId String @unique
+
+  gstin String?
+
+  gstLegalName String?
+
+  gstRegisteredAddress String?
+
+  gstBusinessCategory String?
+
+  gstRegistrationState String?
+
+  gstVerificationStatus VerificationStatus @default(PENDING)
+
+  gstVerifiedById String?
+
+  gstVerifiedAt DateTime?
+
+  fssaiNumber String?
+
+  fssaiLicenseType String?
+
+  fssaiIssueDate DateTime?
+
+  fssaiExpiryAt DateTime?
+
+  fssaiVerificationStatus VerificationStatus @default(PENDING)
+
+  fssaiVerifiedById String?
+
+  fssaiVerifiedAt DateTime?
+
+  pan String?
+
+  cin String?
+
+  businessType BusinessType?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@index([fssaiExpiryAt])
+  @@map("restaurant_tax_profiles")
+}
+
+model RestaurantBankAccount {
+  id String @id @default(uuid())
+
+  restaurantId String @unique
+
+  accountHolderName String
+
+  bankName String
+
+  branchName String?
+
+  /**
+   * AES-256-GCM ciphertext (iv + authTag + ciphertext, base64-joined) — see
+   * shared/crypto/crypto.util.ts. The full number is never returned by any API response.
+   */
+  accountNumberEncrypted String
+
+  accountNumberLast4 String
+
+  ifsc String
+
+  upiId String?
+
+  /**
+   * Plain reference to the RestaurantDocument row holding the uploaded cancelled cheque.
+   */
+  cancelledChequeDocumentId String?
+
+  verificationStatus VerificationStatus @default(PENDING)
+
+  verifiedById String?
+
+  verifiedAt DateTime?
+
+  /**
+   * Reserved for a future payout integration (Razorpay Route / Cashfree Payouts).
+   */
+  payoutProviderRef String?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@map("restaurant_bank_accounts")
+}
+
+model RestaurantMedia {
+  id String @id @default(uuid())
+
+  restaurantId String
+
+  branchId String?
+
+  type RestaurantMediaType
+
+  url String
+
+  sortOrder Int @default(0)
+
+  uploadedById String
+
+  createdAt DateTime @default(now())
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  branch RestaurantBranch? @relation(fields: [branchId], references: [id], onDelete: SetNull)
+
+  @@index([restaurantId])
+  @@index([branchId])
+  @@index([type])
+  @@map("restaurant_media")
+}
+
 model OperatingHour {
   id String @id @default(uuid())
 
@@ -638,8 +1166,124 @@ model OperatingHour {
 
   branch RestaurantBranch @relation(fields: [branchId], references: [id], onDelete: Cascade)
 
+  /**
+   * Deliberately no unique constraint on [branchId, dayOfWeek] — split shifts (e.g. a lunch
+   * window and a separate dinner window on the same day) are modeled as two rows sharing the
+   * same dayOfWeek rather than a single row with multiple time ranges.
+   */
   @@index([branchId])
+  @@index([branchId, dayOfWeek])
   @@map("operating_hours")
+}
+
+/**
+ * Restaurant-wide (optionally branch-scoped) exceptions to the regular weekly OperatingHour
+ * schedule — a specific calendar date that is either fully closed or has special hours (e.g.
+ * festival hours). Takes precedence over OperatingHour for that date; see computeIsOpenNow().
+ */
+model RestaurantHoliday {
+  id String @id @default(uuid())
+
+  restaurantId String
+
+  /**
+   * Null applies to every branch of the restaurant; set to override for one branch only.
+   */
+  branchId String?
+
+  date DateTime @db.Date
+
+  name String
+
+  isClosed Boolean @default(true)
+
+  specialOpensAt String?
+
+  specialClosesAt String?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  branch RestaurantBranch? @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([restaurantId, branchId, date])
+  @@index([restaurantId])
+  @@index([branchId])
+  @@index([date])
+  @@map("restaurant_holidays")
+}
+
+/**
+ * Restaurant-wide operational configuration additive to ERPH-1 — one row per restaurant, created
+ * lazily with defaults on first read/write (see SettingsService), mirroring the
+ * RestaurantBankAccount/RestaurantTaxProfile 1:1 upsert pattern rather than requiring a separate
+ * "initialize settings" step.
+ */
+model RestaurantSettings {
+  id String @id @default(uuid())
+
+  restaurantId String @unique
+
+  serviceChargeType ServiceChargeType @default(NONE)
+
+  serviceChargeValue Decimal @default(0) @db.Decimal(10, 2)
+
+  packingChargeType ServiceChargeType @default(NONE)
+
+  packingChargeValue Decimal @default(0) @db.Decimal(10, 2)
+
+  minimumOrderAmount Decimal @default(0) @db.Decimal(10, 2)
+
+  currency String @default("INR")
+
+  autoAcceptOrders Boolean @default(false)
+
+  /**
+   * Minutes an order may sit PENDING before the acceptance-timeout job auto-rejects it (or
+   * auto-accepts it, if autoAcceptOrders is true). See OrderAcceptanceTimeoutProcessor.
+   */
+  acceptanceTimeoutMinutes Int @default(10)
+
+  isTemporarilyClosed Boolean @default(false)
+
+  temporaryClosureReason String?
+
+  temporaryClosureUntil DateTime?
+
+  restaurantNotes String?
+
+  specialInstructions String?
+
+  /**
+   * Restaurant-wide override that takes precedence over any individual branch's
+   * RestaurantBranch.deliveryRadiusKm when set.
+   */
+  deliveryRadiusOverrideKm Decimal? @db.Decimal(6, 2)
+
+  /**
+   * Fallback preparation time (minutes) applied when a MenuItem has no preparationTime of its
+   * own set.
+   */
+  orderPreparationDefaultMinutes Int?
+
+  notifyOnNewOrder Boolean @default(true)
+
+  notifyOnOrderCancelled Boolean @default(true)
+
+  notifyOnRefund Boolean @default(true)
+
+  notifyOnCustomerMessage Boolean @default(true)
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@map("restaurant_settings")
 }
 
 model Review {
@@ -740,6 +1384,13 @@ model MenuCategory {
 
   restaurantId String
 
+  /**
+   * Nullable = "applies to all branches," preserving today's restaurant-wide menu behavior
+   * exactly. Schema-only for ERPH-1 — no service/query logic filters on this yet; menu stays
+   * restaurant-wide until a later phase makes per-branch menus load-bearing.
+   */
+  branchId String?
+
   name String
 
   description String?
@@ -754,9 +1405,12 @@ model MenuCategory {
 
   restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
 
+  branch RestaurantBranch? @relation(fields: [branchId], references: [id], onDelete: SetNull)
+
   menuItems MenuItem[]
 
   @@index([restaurantId])
+  @@index([branchId])
   @@map("menu_categories")
 }
 
@@ -893,8 +1547,10 @@ model Order {
 
   totalAmount Decimal @db.Decimal(10, 2)
 
-  /** Portion of totalAmount paid via wallet balance; the remainder is charged via the provider Payment(s) above. */
-  walletAmountUsed Decimal @db.Decimal(10, 2) @default(0)
+  /**
+   * Portion of totalAmount paid via wallet balance; the remainder is charged via the provider Payment(s) above.
+   */
+  walletAmountUsed Decimal @default(0) @db.Decimal(10, 2)
 
   notes String?
 
@@ -998,6 +1654,13 @@ model OrderStatusHistory {
   status OrderStatus
 
   note String?
+
+  /**
+   * Plain attribution field (not a Prisma relation), like RestaurantStaff.invitedById — the
+   * staff/admin/customer/delivery-partner user who caused this transition. Null means the
+   * transition was system-initiated (e.g. the order-acceptance-timeout auto-reject/auto-accept).
+   */
+  changedById String?
 
   createdAt DateTime @default(now())
 
@@ -1276,7 +1939,9 @@ model DeliveryAssignment {
 // C7 — Search, Filters & Discovery
 // ---------------------------------------------------------------------------
 
-/** Per-customer recent search terms, most-recent-first. Upserted on (customerId, query) so a repeated search bumps to the top instead of duplicating. */
+/**
+ * Per-customer recent search terms, most-recent-first. Upserted on (customerId, query) so a repeated search bumps to the top instead of duplicating.
+ */
 model RecentSearch {
   id String @id @default(uuid())
 
@@ -1293,7 +1958,9 @@ model RecentSearch {
   @@map("recent_searches")
 }
 
-/** Append-only log of every search query (including anonymous/guest ones) — the raw input the trending-search aggregation job reads from. */
+/**
+ * Append-only log of every search query (including anonymous/guest ones) — the raw input the trending-search aggregation job reads from.
+ */
 model SearchLog {
   id String @id @default(uuid())
 
@@ -1307,7 +1974,9 @@ model SearchLog {
   @@map("search_logs")
 }
 
-/** Precomputed by the trending-search BullMQ job — read directly by the public trending-searches endpoint so it never aggregates on the request path. */
+/**
+ * Precomputed by the trending-search BullMQ job — read directly by the public trending-searches endpoint so it never aggregates on the request path.
+ */
 model TrendingSearch {
   id String @id @default(uuid())
 
@@ -1324,7 +1993,9 @@ model TrendingSearch {
 // C9 — Wallet, Loyalty & Referral
 // ---------------------------------------------------------------------------
 
-/** Immutable, append-only ledger — a user's wallet balance is always the SUM of their COMPLETED transactions, never a mutable counter. */
+/**
+ * Immutable, append-only ledger — a user's wallet balance is always the SUM of their COMPLETED transactions, never a mutable counter.
+ */
 model WalletTransaction {
   id String @id @default(uuid())
 
@@ -1332,10 +2003,14 @@ model WalletTransaction {
   type   WalletTransactionType
   status WalletTransactionStatus @default(COMPLETED)
 
-  /** Positive = credit, negative = debit. */
+  /**
+   * Positive = credit, negative = debit.
+   */
   amount Decimal @db.Decimal(10, 2)
 
-  /** Snapshot of the running balance immediately after this entry — written once at insert time for fast history display, never updated afterwards. */
+  /**
+   * Snapshot of the running balance immediately after this entry — written once at insert time for fast history display, never updated afterwards.
+   */
   balanceAfter Decimal @db.Decimal(10, 2)
 
   orderId    String?
@@ -1356,7 +2031,9 @@ model WalletTransaction {
   @@map("wallet_transactions")
 }
 
-/** One row per referred user (refereeId is unique — a user can only ever be referred once). Rewarded when the referee's first order reaches DELIVERED. */
+/**
+ * One row per referred user (refereeId is unique — a user can only ever be referred once). Rewarded when the referee's first order reaches DELIVERED.
+ */
 model Referral {
   id String @id @default(uuid())
 
@@ -1406,9 +2083,9 @@ model SupportTicket {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  customer      User    @relation("CustomerTickets", fields: [customerId], references: [id], onDelete: Cascade)
-  assignedAgent User?   @relation("AssignedTickets", fields: [assignedAgentId], references: [id])
-  order         Order?  @relation(fields: [orderId], references: [id])
+  customer      User     @relation("CustomerTickets", fields: [customerId], references: [id], onDelete: Cascade)
+  assignedAgent User?    @relation("AssignedTickets", fields: [assignedAgentId], references: [id])
+  order         Order?   @relation(fields: [orderId], references: [id])
   payment       Payment? @relation(fields: [paymentId], references: [id])
 
   messages    TicketMessage[]

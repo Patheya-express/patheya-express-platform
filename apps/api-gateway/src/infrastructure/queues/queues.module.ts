@@ -7,14 +7,17 @@ import { QueueService } from './queue.service';
 import { NotificationProcessor } from './processors/notification.processor';
 
 import { AssignmentExpiryProcessor } from './processors/assignment-expiry.processor';
+import { OrderAcceptanceTimeoutProcessor } from './processors/order-acceptance-timeout.processor';
 import { DispatchModule } from '../../modules/dispatch/dispatch.module';
 import { NotificationsModule } from '../../modules/notifications/notifications.module';
+import { OrdersModule } from '../../modules/orders/orders.module';
 
 @Global()
 @Module({
   imports: [
     DispatchModule,
     NotificationsModule,
+    OrdersModule,
     BullModule.forRoot({
       connection: {
         host: process.env.REDIS_HOST,
@@ -37,10 +40,18 @@ import { NotificationsModule } from '../../modules/notifications/notifications.m
       {
         name: 'tickets',
       },
+      {
+        name: 'orders',
+      },
     ),
   ],
 
-  providers: [QueueService, NotificationProcessor, AssignmentExpiryProcessor],
+  providers: [
+    QueueService,
+    NotificationProcessor,
+    AssignmentExpiryProcessor,
+    OrderAcceptanceTimeoutProcessor,
+  ],
 
   exports: [QueueService],
 })
