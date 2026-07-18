@@ -394,4 +394,37 @@ export class DeliveryRepository extends BaseRepository {
       currentOrder,
     };
   }
+
+  /** Batched current-location lookup by DeliveryPartner id, for the admin "available partners"
+   *  listing (`AdminDispatchService`) — kept separate from the richer getAllForAdmin projection
+   *  above since that one doesn't expose raw lat/long. */
+  async findLocationsByIds(
+    ids: string[],
+  ): Promise<
+    Map<string, { latitude: number | null; longitude: number | null }>
+  > {
+    if (ids.length === 0) {
+      return new Map();
+    }
+
+    const partners = await this.prisma.deliveryPartner.findMany({
+      where: { id: { in: ids } },
+
+      select: {
+        id: true,
+        currentLatitude: true,
+        currentLongitude: true,
+      },
+    });
+
+    return new Map(
+      partners.map((partner) => [
+        partner.id,
+        {
+          latitude: partner.currentLatitude,
+          longitude: partner.currentLongitude,
+        },
+      ]),
+    );
+  }
 }

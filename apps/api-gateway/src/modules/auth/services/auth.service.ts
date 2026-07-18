@@ -2,7 +2,6 @@ import {
   BadRequestException,
   Injectable,
   ConflictException,
-  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 
@@ -34,6 +33,8 @@ import { EmailService } from '../../email/services/email.service';
 
 import { hashToken } from '../../../shared/crypto/crypto.util';
 
+import { AppLoggerService } from '../../../infrastructure/logger/logger.service';
+
 const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const PASSWORD_RESET_TOKEN_TTL_MS = 30 * 60 * 1000;
@@ -45,8 +46,6 @@ const GENERIC_RESET_MESSAGE =
 
 @Injectable()
 export class AuthService {
-  private readonly logger = new Logger(AuthService.name);
-
   constructor(
     private readonly authRepository: AuthRepository,
 
@@ -58,6 +57,8 @@ export class AuthService {
     private readonly emailService: EmailService,
 
     private readonly config: ConfigService,
+
+    private readonly logger: AppLoggerService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -132,10 +133,16 @@ export class AuthService {
     );
 
     const {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       passwordHash: _passwordHash,
 
       ...safeUser
     } = user;
+
+    this.logger.log(
+      { event: 'auth_register_success', userId: user.id, role },
+      'AuthService',
+    );
 
     return {
       user: safeUser,
@@ -150,6 +157,11 @@ export class AuthService {
     const user = await this.authRepository.findUserByEmail(dto.email);
 
     if (!user || !user.passwordHash) {
+      this.logger.warn(
+        { event: 'auth_login_failed', reason: 'user_not_found_or_no_password' },
+        'AuthService',
+      );
+
       throw new UnauthorizedException('Invalid credentials');
     }
 
@@ -160,16 +172,31 @@ export class AuthService {
     );
 
     if (!isPasswordValid) {
+      this.logger.warn(
+        {
+          event: 'auth_login_failed',
+          reason: 'invalid_password',
+          userId: user.id,
+        },
+        'AuthService',
+      );
+
       throw new UnauthorizedException('Invalid credentials');
     }
 
     const { accessToken, refreshToken } = await this.issueTokens(user);
 
     const {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       passwordHash: _passwordHash,
 
       ...safeUser
     } = user;
+
+    this.logger.log(
+      { event: 'auth_login_success', userId: user.id },
+      'AuthService',
+    );
 
     return {
       user: safeUser,
@@ -192,6 +219,11 @@ export class AuthService {
     try {
       await this.tokenService.verifyRefreshToken(dto.refreshToken);
     } catch {
+      this.logger.warn(
+        { event: 'auth_refresh_failed', reason: 'invalid_or_expired_jwt' },
+        'AuthService',
+      );
+
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
 
@@ -199,21 +231,58 @@ export class AuthService {
       hashToken(dto.refreshToken),
     );
 
-    if (
-      !existingToken ||
-      existingToken.revokedAt ||
-      existingToken.expiresAt.getTime() < Date.now()
-    ) {
+    if (!existingToken) {
+      this.logger.warn(
+        { event: 'auth_refresh_failed', reason: 'token_not_found' },
+        'AuthService',
+      );
+
+      throw new UnauthorizedException('Invalid or expired refresh token');
+    }
+
+    if (existingToken.revokedAt) {
+      // A revoked refresh token being presented again means either a client retried a stale
+      // token, or a leaked/stolen token is being replayed after the legitimate rotation already
+      // consumed it — a real security signal worth its own distinct event name, even without
+      // full reuse-detection (revoke-all-sessions) behavior implemented yet.
+      this.logger.warn(
+        {
+          event: 'auth_refresh_token_reuse_detected',
+          userId: existingToken.userId,
+        },
+        'AuthService',
+      );
+
+      throw new UnauthorizedException('Invalid or expired refresh token');
+    }
+
+    if (existingToken.expiresAt.getTime() < Date.now()) {
+      this.logger.warn(
+        {
+          event: 'auth_refresh_failed',
+          reason: 'token_expired',
+          userId: existingToken.userId,
+        },
+        'AuthService',
+      );
+
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
 
     await this.authRepository.revokeRefreshToken(hashToken(dto.refreshToken));
+
+    this.logger.log(
+      { event: 'auth_refresh_success', userId: existingToken.userId },
+      'AuthService',
+    );
 
     return this.issueTokens(existingToken.user);
   }
 
   async logout(refreshToken: string) {
     await this.authRepository.revokeRefreshToken(hashToken(refreshToken));
+
+    this.logger.log({ event: 'auth_logout' }, 'AuthService');
 
     return {
       message: 'Logged out successfully',
@@ -277,8 +346,12 @@ export class AuthService {
         // Best-effort — see method doc. The token still exists and remains valid; if the user
         // never receives the email they can simply request another one.
         this.logger.error(
-          `Failed to send password reset email: ${(error as Error)?.message ?? error}`,
-          (error as Error)?.stack,
+          {
+            event: 'auth_password_reset_email_failed',
+            message: error instanceof Error ? error.message : 'Unknown error',
+          },
+          error instanceof Error ? error.stack : undefined,
+          'AuthService',
         );
       }
     }
@@ -303,6 +376,14 @@ export class AuthService {
       resetToken.usedAt ||
       resetToken.expiresAt.getTime() < Date.now()
     ) {
+      this.logger.warn(
+        {
+          event: 'auth_password_reset_failed',
+          reason: 'invalid_or_expired_token',
+        },
+        'AuthService',
+      );
+
       throw new BadRequestException('Invalid or expired reset link');
     }
 
@@ -326,6 +407,11 @@ export class AuthService {
       { action: 'password_reset' },
     );
 
+    this.logger.log(
+      { event: 'auth_password_reset_success', userId: resetToken.userId },
+      'AuthService',
+    );
+
     return { message: 'Your password has been reset. Please log in again.' };
   }
 
@@ -336,6 +422,7 @@ export class AuthService {
       throw new UnauthorizedException('User not found');
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { passwordHash: _passwordHash, ...safeUser } = user;
 
     return safeUser;

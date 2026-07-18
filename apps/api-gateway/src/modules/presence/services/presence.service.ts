@@ -122,4 +122,40 @@ export class PresenceService {
 
     return status.online === true;
   }
+
+  /**
+   * Batched equivalent of calling `isOnline` once per id in a loop — one Redis round trip via
+   * `MGET` instead of N sequential ones. Added for `DispatchService.assignOrder` (the automatic
+   * dispatch hot path, previously a sequential `for`-loop of individual `isOnline` calls) and
+   * `AdminDispatchService.getAvailablePartners` (production-validation performance finding).
+   */
+  async isOnlineBatch(partnerIds: string[]): Promise<Map<string, boolean>> {
+    if (partnerIds.length === 0) {
+      return new Map();
+    }
+
+    const client = this.redisService.getClient();
+
+    const values = await client.mget(
+      partnerIds.map((partnerId) => `driver:online:${partnerId}`),
+    );
+
+    return new Map(
+      partnerIds.map((partnerId, index) => {
+        const raw = values[index];
+
+        if (!raw) {
+          return [partnerId, false] as const;
+        }
+
+        try {
+          const parsed = JSON.parse(raw) as { online?: boolean };
+
+          return [partnerId, parsed.online === true] as const;
+        } catch {
+          return [partnerId, false] as const;
+        }
+      }),
+    );
+  }
 }

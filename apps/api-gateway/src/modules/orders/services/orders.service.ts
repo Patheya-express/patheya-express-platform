@@ -13,6 +13,7 @@ import {
   PaymentMode,
   TransactionStatus,
   AuditAction,
+  UserRole,
 } from '@prisma/client';
 
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
@@ -56,6 +57,7 @@ import {
 import { getRestaurantOrderSettings } from '../../../shared/restaurant/restaurant-order-settings.util';
 import { QueueService } from '../../../infrastructure/queues/queue.service';
 import { AuditService } from '../../audit/services/audit.service';
+import { AppLoggerService } from '../../../infrastructure/logger/logger.service';
 
 const TERMINAL_ORDER_STATUSES: OrderStatus[] = [
   OrderStatus.DELIVERED,
@@ -76,6 +78,35 @@ const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.DELIVERED]: [],
   [OrderStatus.CANCELLED]: [],
 };
+
+/**
+ * Layered on top of assertOrderAccess's identity/ownership check (production-validation audit
+ * finding): that check alone only confirms the caller has *some* relationship to the order
+ * (customer/assigned partner/restaurant staff/admin), not that they're the *right* relationship
+ * for the specific transition requested — meaning, before this fix, a customer could call
+ * POST /orders/:id/ready or /picked-up, or an assigned delivery partner could call /accept or
+ * /prepare, and it would silently succeed. CANCELLED is deliberately excluded from both lists
+ * below and left unrestricted, since customer self-cancel, restaurant reject, and admin override
+ * are all pre-existing, intentional paths through that same status value — only the
+ * restaurant-only and delivery-partner-only *advancing* transitions are newly role-scoped here.
+ */
+const RESTAURANT_ONLY_STATUSES: OrderStatus[] = [
+  OrderStatus.CONFIRMED,
+  OrderStatus.PREPARING,
+  OrderStatus.READY_FOR_PICKUP,
+];
+
+const DELIVERY_PARTNER_ONLY_STATUSES: OrderStatus[] = [
+  OrderStatus.OUT_FOR_DELIVERY,
+  OrderStatus.DELIVERED,
+];
+
+const RESTAURANT_STAFF_ROLES: UserRole[] = [
+  UserRole.RESTAURANT_OWNER,
+  UserRole.RESTAURANT_MANAGER,
+];
+
+const ADMIN_ROLES: UserRole[] = [UserRole.ADMIN, UserRole.SUPER_ADMIN];
 
 /**
  * Flattens the raw Prisma include shape (menuItem/variant as nested rows, addonOptions as join
@@ -171,6 +202,7 @@ export class OrdersService {
     private readonly realtimeService: RealtimeService,
     private readonly queueService: QueueService,
     private readonly auditService: AuditService,
+    private readonly logger: AppLoggerService,
   ) {}
 
   /** Throws unless the acting user is this order's customer, its assigned delivery partner, its restaurant's owner/manager, or an admin. */
@@ -199,6 +231,39 @@ export class OrdersService {
       throw new ForbiddenException(
         "You do not have access to this restaurant's orders",
       );
+    }
+  }
+
+  /** See RESTAURANT_ONLY_STATUSES/DELIVERY_PARTNER_ONLY_STATUSES' doc comment — this is the
+   *  role-appropriateness check layered on top of assertOrderAccess's identity check. */
+  private assertActorAllowedForStatus(
+    status: OrderStatus,
+    user: AuthenticatedUser,
+  ): void {
+    if (RESTAURANT_ONLY_STATUSES.includes(status)) {
+      if (
+        !RESTAURANT_STAFF_ROLES.includes(user.role) &&
+        !ADMIN_ROLES.includes(user.role)
+      ) {
+        throw new ForbiddenException(
+          `Only restaurant staff can mark an order as ${status}`,
+        );
+      }
+
+      return;
+    }
+
+    if (DELIVERY_PARTNER_ONLY_STATUSES.includes(status)) {
+      if (
+        user.role !== UserRole.DELIVERY_PARTNER &&
+        !ADMIN_ROLES.includes(user.role)
+      ) {
+        throw new ForbiddenException(
+          `Only the assigned delivery partner can mark an order as ${status}`,
+        );
+      }
+
+      return;
     }
   }
 
@@ -796,6 +861,8 @@ export class OrdersService {
       );
     }
 
+    this.assertActorAllowedForStatus(dto.status, user);
+
     const updatedOrder = await this.ordersRepository.updateOrderStatus(
       orderId,
 
@@ -843,6 +910,15 @@ export class OrdersService {
 
           updatedOrder.restaurantId,
         ),
+      );
+
+      this.logger.log(
+        {
+          event: 'order_ready_event_published',
+          orderId: updatedOrder.id,
+          restaurantId: updatedOrder.restaurantId,
+        },
+        'OrdersService',
       );
     }
 

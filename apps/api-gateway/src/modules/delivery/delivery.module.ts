@@ -93,6 +93,10 @@ import { NotificationsModule } from '../notifications/notifications.module';
     DeliveryPartnerCreatedOnboardingListener,
   ],
 
-  exports: [DeliveryService],
+  // DeliveryRepository is additionally exported (previously private to this module) so
+  // AdminDispatchService (admin/bootstrap-adjacent manual-assignment feature) can reuse its
+  // existing admin search/pagination/stats/location queries directly rather than duplicating
+  // them — no existing behavior changes, this only widens what's importable.
+  exports: [DeliveryService, DeliveryRepository],
 })
 export class DeliveryModule {}

@@ -69,10 +69,14 @@ export class DispatchRepository {
     });
   }
 
-  async findPartnerAssignments(partnerId: string) {
+  /** `status` is optional — omitted, returns every assignment for the partner (unchanged,
+   *  pre-existing behavior); passed, narrows to that one AssignmentStatus (additive). */
+  async findPartnerAssignments(partnerId: string, status?: AssignmentStatus) {
     return this.prisma.deliveryAssignment.findMany({
       where: {
         deliveryPartnerId: partnerId,
+
+        ...(status ? { status } : {}),
       },
 
       include: {
@@ -132,10 +136,35 @@ export class DispatchRepository {
       },
     });
   }
+
+  /** By the DeliveryPartner's own primary key (as stored on DeliveryAssignment.deliveryPartnerId)
+   *  — distinct from findPartnerByUserId, which looks up by the associated User's id instead. */
+  async findPartnerById(id: string) {
+    return this.prisma.deliveryPartner.findUnique({
+      where: {
+        id,
+      },
+    });
+  }
   async findActiveAssignmentForOrder(orderId: string) {
     return this.prisma.deliveryAssignment.findFirst({
       where: {
         orderId,
+
+        status: {
+          in: [AssignmentStatus.PENDING, AssignmentStatus.ACCEPTED],
+        },
+      },
+    });
+  }
+
+  /** Any PENDING/ACCEPTED assignment for this partner, regardless of which order — used by
+   *  manual admin assignment to reject "already assigned partners" (a partner mid-assignment
+   *  elsewhere shouldn't be double-booked by an admin override). */
+  async findActiveAssignmentForPartner(deliveryPartnerId: string) {
+    return this.prisma.deliveryAssignment.findFirst({
+      where: {
+        deliveryPartnerId,
 
         status: {
           in: [AssignmentStatus.PENDING, AssignmentStatus.ACCEPTED],

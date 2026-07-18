@@ -1,14 +1,24 @@
-import { Controller, Get, Param, Patch, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 
 import {
   ApiTags,
   ApiBearerAuth,
   ApiOperation,
   ApiParam,
+  ApiQuery,
   ApiOkResponse,
   ApiUnauthorizedResponse,
   ApiNotFoundResponse,
 } from '@nestjs/swagger';
+
+import { AssignmentStatus } from '@prisma/client';
 
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 
@@ -19,6 +29,7 @@ import { DispatchService } from '../services/dispatch.service';
 import { DeliveryAssignmentResponseDto } from '../dto/delivery-assignment-response.dto';
 
 import { DispatchActionResponseDto } from '../dto/dispatch-action-response.dto';
+import { GetDispatchAssignmentsQueryDto } from '../dto/get-dispatch-assignments-query.dto';
 
 @ApiTags('Dispatch')
 @ApiBearerAuth('JWT-auth')
@@ -31,7 +42,14 @@ export class DispatchController {
   @ApiOperation({
     summary: 'Get delivery partner assignments',
     description:
-      'Returns all delivery assignments assigned to the authenticated delivery partner.',
+      'Returns all delivery assignments assigned to the authenticated delivery partner, optionally narrowed to one status.',
+  })
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    enum: AssignmentStatus,
+    description:
+      'Optional — omit to get every assignment (unchanged default behavior); pass to narrow to one status (Pending/Accepted/Rejected/Expired).',
   })
   @ApiOkResponse({
     description: 'Assignments fetched successfully',
@@ -44,8 +62,11 @@ export class DispatchController {
   getAssignments(
     @CurrentUser()
     user: any,
+
+    @Query()
+    query: GetDispatchAssignmentsQueryDto,
   ) {
-    return this.dispatchService.getAssignments(user.userId);
+    return this.dispatchService.getAssignments(user.userId, query.status);
   }
 
   @UseGuards(JwtAuthGuard)

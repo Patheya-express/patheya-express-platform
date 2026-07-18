@@ -15,6 +15,9 @@ enum UserRole {
   SUPPORT_AGENT
   ADMIN
   SUPER_ADMIN
+  /** Additive (see migration 20260718160000_add_dispatch_manager_role) — authorizes manual
+   *  dispatch assignment (POST /admin/orders/:orderId/assign) alongside SUPER_ADMIN. */
+  DISPATCH_MANAGER
 }
 
 enum UserStatus {
@@ -1833,8 +1836,10 @@ model Order {
 
   @@index([customerId])
   @@index([restaurantId])
+  @@index([deliveryPartnerId])
   @@index([status])
   @@index([paymentStatus])
+  @@index([createdAt])
   @@map("orders")
 }
 
@@ -2004,6 +2009,7 @@ model DeliveryPartner {
   complianceSnapshot DeliveryComplianceSnapshot?
 
   @@index([status])
+  @@index([status, isVerified])
   @@map("delivery_partners")
 }
 

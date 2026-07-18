@@ -23,6 +23,7 @@ import { RazorpayProvider } from '../providers/razorpay.provider';
 import { EventBusService } from '../../../core/events/event-bus.service';
 
 import { QueueService } from '../../../infrastructure/queues/queue.service';
+import { AppLoggerService } from '../../../infrastructure/logger/logger.service';
 import { PAYMENT_EVENTS } from '../events/payment-events.constants';
 import { PaymentStatusValidator } from '../Validators/payment-status.validator';
 import { GetAdminPaymentsQueryDto } from '../dto/get-admin-payments-query.dto';
@@ -93,6 +94,8 @@ export class PaymentsService {
     private readonly queueService: QueueService,
 
     private readonly prisma: PrismaService,
+
+    private readonly logger: AppLoggerService,
   ) {}
 
   async createPayment(orderId: string, amount: number, userId: string) {
@@ -166,6 +169,17 @@ export class PaymentsService {
       isActive: true,
     });
 
+    this.logger.log(
+      {
+        event: 'payment_initiated',
+        paymentId: payment.id,
+        orderId,
+        amount,
+        attemptNumber,
+      },
+      'PaymentsService',
+    );
+
     return {
       payment,
 
@@ -177,6 +191,15 @@ export class PaymentsService {
     const isValid = await this.razorpayProvider.verifySignature(payload);
 
     if (!isValid) {
+      this.logger.error(
+        {
+          event: 'payment_signature_verification_failed',
+          providerOrderId: payload?.razorpay_order_id,
+        },
+        undefined,
+        'PaymentsService',
+      );
+
       throw new ConflictException('Invalid payment signature');
     }
 
@@ -217,6 +240,15 @@ export class PaymentsService {
 
       orderId: payment.orderId,
     });
+
+    this.logger.log(
+      {
+        event: 'payment_verified_client_side',
+        paymentId: payment.id,
+        orderId: payment.orderId,
+      },
+      'PaymentsService',
+    );
 
     return updatedPayment;
   }
@@ -260,6 +292,15 @@ export class PaymentsService {
 
       orderId: payment.orderId,
     });
+
+    this.logger.log(
+      {
+        event: 'payment_captured_webhook',
+        paymentId: payment.id,
+        orderId: payment.orderId,
+      },
+      'PaymentsService',
+    );
 
     return updatedPayment;
   }
@@ -344,6 +385,16 @@ export class PaymentsService {
         orderId: payment.orderId,
       },
     );
+
+    this.logger.error(
+      {
+        event: 'payment_failed_webhook',
+        paymentId: payment.id,
+        orderId: payment.orderId,
+      },
+      undefined,
+      'PaymentsService',
+    );
   }
   private async transitionPaymentStatus(
     paymentId: string,
@@ -408,6 +459,16 @@ export class PaymentsService {
       status: TransactionStatus.REFUNDED,
     });
 
+    this.logger.log(
+      {
+        event: 'payment_refunded',
+        paymentId,
+        orderId: payment.orderId,
+        amount,
+      },
+      'PaymentsService',
+    );
+
     return refund;
   }
 
@@ -418,6 +479,14 @@ export class PaymentsService {
     );
 
     if (!isValid) {
+      // No trace previously existed of a forged/invalid webhook attempt — a real fraud/security
+      // signal that was silently discarded (production-validation audit finding).
+      this.logger.error(
+        { event: 'payment_webhook_signature_invalid' },
+        undefined,
+        'PaymentsService',
+      );
+
       throw new UnauthorizedException('Invalid webhook signature');
     }
 

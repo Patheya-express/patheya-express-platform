@@ -24,6 +24,7 @@ import { UsersService } from '../../users/services/users.service';
 import { OrdersService } from '../../orders/services/orders.service';
 import { EventBusService } from '../../../core/events/event-bus.service';
 import { AuthenticatedUser } from '../../../shared/authorization/order-access.util';
+import { AppLoggerService } from '../../../infrastructure/logger/logger.service';
 
 /**
  * Flattens the raw Prisma include shape (user as a full User row) into the documented
@@ -82,6 +83,7 @@ export class DeliveryService {
     @Inject(forwardRef(() => OrdersService))
     private readonly ordersService: OrdersService,
     private readonly eventBus: EventBusService,
+    private readonly logger: AppLoggerService,
   ) {}
 
   async onboardPartner(
@@ -156,22 +158,52 @@ export class DeliveryService {
     }
   }
 
+  /**
+   * Also marks live Redis presence (`PresenceService.markOnline`) — this used to only flip the
+   * DB `status` column, leaving a partner who called *only* this endpoint invisible to
+   * `DispatchService.assignOrder()`'s presence check (`PresenceService.isOnline`), which requires
+   * both signals. That gap meant automatic dispatch silently found zero eligible partners for
+   * any partner who never separately called `POST /presence/online` — the root cause of dispatch
+   * assignments never being created. A single "go available" action now satisfies both checks;
+   * the standalone `/presence/online` endpoint still exists unchanged for heartbeat-style re-pings.
+   */
   async goAvailable(userId: string) {
     await this.assertOnlineEligible(userId);
 
-    return this.deliveryRepository.updatePartnerStatus(
+    const partner = await this.deliveryRepository.updatePartnerStatus(
       userId,
 
       DeliveryPartnerStatus.AVAILABLE,
     );
+
+    await this.presenceService.markOnline(userId);
+
+    this.logger.log(
+      { event: 'delivery_partner_went_available', userId },
+      'DeliveryService',
+    );
+
+    return partner;
   }
 
+  /** Also clears live Redis presence — the counterpart to goAvailable()'s fix above, so a
+   *  partner who goes offline via this single action is immediately excluded from dispatch
+   *  rather than remaining "present" until their presence TTL happens to expire. */
   async goOffline(userId: string) {
-    return this.deliveryRepository.updatePartnerStatus(
+    const partner = await this.deliveryRepository.updatePartnerStatus(
       userId,
 
       DeliveryPartnerStatus.OFFLINE,
     );
+
+    await this.presenceService.markOffline(userId);
+
+    this.logger.log(
+      { event: 'delivery_partner_went_offline', userId },
+      'DeliveryService',
+    );
+
+    return partner;
   }
 
   async getAssignedOrders(userId: string) {
@@ -190,6 +222,16 @@ export class DeliveryService {
 
     dto: UpdateDeliveryStatusDto,
   ) {
+    this.logger.log(
+      {
+        event: 'delivery_status_update_requested',
+        orderId,
+        targetStatus: dto.status,
+        userId: user.userId,
+      },
+      'DeliveryService',
+    );
+
     return this.ordersService.updateOrderStatus(orderId, dto, user);
   }
 

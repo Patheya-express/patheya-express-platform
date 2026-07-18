@@ -8,9 +8,10 @@ import { DispatchRepository } from './repositories/dispatch.repository';
 
 import { DispatchListener } from './listeners/dispatch.listener';
 import { PresenceModule } from '../presence/presence.module';
+import { AuditModule } from '../audit/audit.module';
 
 @Module({
-  imports: [PresenceModule],
+  imports: [PresenceModule, AuditModule],
 
   controllers: [DispatchController],
 

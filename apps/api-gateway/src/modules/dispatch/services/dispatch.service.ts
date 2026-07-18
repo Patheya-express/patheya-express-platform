@@ -5,7 +5,12 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 
-import { AssignmentStatus, DeliveryPartnerStatus } from '@prisma/client';
+import {
+  AssignmentStatus,
+  AuditAction,
+  DeliveryPartnerStatus,
+  OrderStatus,
+} from '@prisma/client';
 
 import { DispatchRepository } from '../repositories/dispatch.repository';
 
@@ -15,8 +20,18 @@ import { QueueService } from 'src/infrastructure/queues/queue.service';
 
 import { PresenceService } from '../../presence/services/presence.service';
 import { EventBusService } from '../../../core/events/event-bus.service';
+import { AppLoggerService } from '../../../infrastructure/logger/logger.service';
+import { AuditService } from '../../audit/services/audit.service';
 
 import { DeliveryPartnerAssignedEvent } from '../events/delivery-partner-assigned.event';
+
+/** Order statuses a fresh dispatch assignment may still be created for — anything else means
+ *  the order moved on (or was cancelled) since `order.ready` fired, so assignment is a no-op,
+ *  not an error (a stale/duplicate event re-trigger is expected, e.g. a delayed retry queued
+ *  before a cancellation landed). */
+const DISPATCHABLE_ORDER_STATUSES: OrderStatus[] = [
+  OrderStatus.READY_FOR_PICKUP,
+];
 
 @Injectable()
 export class DispatchService {
@@ -27,13 +42,76 @@ export class DispatchService {
     private readonly queueService: QueueService,
     private readonly presenceService: PresenceService,
     private readonly eventBus: EventBusService,
+    private readonly logger: AppLoggerService,
+    private readonly auditService: AuditService,
   ) {}
 
+  /**
+   * Automatic assignment — invoked by DispatchListener on `order.ready`,
+   * `dispatch.assignment.rejected`, and `dispatch.assignment.expired`. Idempotent and safe to
+   * call repeatedly for the same order (Phase 4 validation below): an order that's already
+   * actively assigned, already has a delivery partner, doesn't exist, or is no longer in a
+   * dispatchable status is a logged no-op, never a duplicate assignment.
+   */
   async assignOrder(orderId: string) {
+    const order = await this.dispatchRepository.findOrderById(orderId);
+
+    if (!order) {
+      this.logger.error(
+        {
+          event: 'dispatch_assignment_failed',
+          reason: 'order_not_found',
+          orderId,
+        },
+        undefined,
+        'DispatchService',
+      );
+
+      return null;
+    }
+
+    if (order.deliveryPartnerId) {
+      this.logger.log(
+        {
+          event: 'dispatch_assignment_skipped',
+          reason: 'order_already_has_delivery_partner',
+          orderId,
+          deliveryPartnerId: order.deliveryPartnerId,
+        },
+        'DispatchService',
+      );
+
+      return null;
+    }
+
+    if (!DISPATCHABLE_ORDER_STATUSES.includes(order.status)) {
+      this.logger.log(
+        {
+          event: 'dispatch_assignment_skipped',
+          reason: 'order_not_in_dispatchable_status',
+          orderId,
+          status: order.status,
+        },
+        'DispatchService',
+      );
+
+      return null;
+    }
+
     const activeAssignment =
       await this.dispatchRepository.findActiveAssignmentForOrder(orderId);
 
     if (activeAssignment) {
+      this.logger.log(
+        {
+          event: 'dispatch_assignment_skipped',
+          reason: 'active_assignment_already_exists',
+          orderId,
+          assignmentId: activeAssignment.id,
+        },
+        'DispatchService',
+      );
+
       return activeAssignment;
     }
 
@@ -46,17 +124,49 @@ export class DispatchService {
 
     const partners = await this.dispatchRepository.findAvailablePartners();
 
-    const onlinePartners: any[] = [];
+    this.logger.log(
+      {
+        event: 'eligible_delivery_partners_found',
+        orderId,
+        eligible_partner_count: partners.length,
+      },
+      'DispatchService',
+    );
 
-    for (const partner of partners) {
-      const isOnline = await this.presenceService.isOnline(partner.userId);
+    // Batched via MGET (production-validation performance finding) — one Redis round trip for
+    // every candidate partner instead of one sequential round trip per partner.
+    const onlineMap = await this.presenceService.isOnlineBatch(
+      partners.map((partner) => partner.userId),
+    );
 
-      if (isOnline && !attemptedPartnerIds.includes(partner.id)) {
-        onlinePartners.push(partner);
-      }
-    }
+    const onlinePartners = partners.filter(
+      (partner) =>
+        onlineMap.get(partner.userId) === true &&
+        !attemptedPartnerIds.includes(partner.id),
+    );
+
+    this.logger.log(
+      {
+        event: 'eligible_delivery_partners_filtered',
+        orderId,
+        eligible_partner_count: partners.length,
+        filtered_partner_count: onlinePartners.length,
+      },
+      'DispatchService',
+    );
 
     if (!onlinePartners.length) {
+      this.logger.error(
+        {
+          event: 'dispatch_assignment_failed',
+          reason: 'no_delivery_partners_available',
+          orderId,
+          eligible_partner_count: partners.length,
+        },
+        undefined,
+        'DispatchService',
+      );
+
       throw new NotFoundException('No delivery partners available');
     }
 
@@ -70,6 +180,38 @@ export class DispatchService {
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
     });
 
+    this.logger.log(
+      {
+        event: 'dispatch_assignment_created',
+        orderId,
+        assignmentId: assignment.id,
+        deliveryPartnerId: partner.id,
+      },
+      'DispatchService',
+    );
+
+    this.logger.log(
+      {
+        event: 'dispatch_assignment_saved',
+        orderId,
+        assignmentId: assignment.id,
+      },
+      'DispatchService',
+    );
+
+    await this.auditService.log(
+      null,
+      'DeliveryAssignment',
+      assignment.id,
+      AuditAction.CREATE,
+      null,
+      {
+        event: 'AUTO_ASSIGNMENT_CREATED',
+        orderId,
+        deliveryPartnerId: partner.id,
+      },
+    );
+
     this.realtimeService.emitToUser(
       partner.userId,
 
@@ -82,9 +224,17 @@ export class DispatchService {
       },
     );
 
-    await this.queueService.addAssignmentExpiryJob(assignment.id);
+    this.logger.log(
+      {
+        event: 'dispatch_notification_sent',
+        orderId,
+        assignmentId: assignment.id,
+        deliveryPartnerUserId: partner.userId,
+      },
+      'DispatchService',
+    );
 
-    const order = await this.dispatchRepository.findOrderById(orderId);
+    await this.queueService.addAssignmentExpiryJob(assignment.id);
 
     if (order) {
       await this.eventBus.publish(
@@ -153,6 +303,34 @@ export class DispatchService {
       partner.userId,
     );
 
+    this.logger.log(
+      {
+        event: 'dispatch_assignment_accepted',
+        assignmentId,
+        orderId: assignment.orderId,
+        deliveryPartnerId: partner.id,
+      },
+      'DispatchService',
+    );
+
+    await this.auditService.log(
+      userId,
+      'DeliveryAssignment',
+      assignmentId,
+      AuditAction.STATUS_CHANGE,
+      { status: AssignmentStatus.PENDING },
+      { event: 'ASSIGNMENT_ACCEPTED', status: AssignmentStatus.ACCEPTED },
+    );
+
+    this.realtimeService.emitToOrder(
+      assignment.orderId,
+      'dispatch.assignment.accepted',
+      {
+        assignmentId,
+        orderId: assignment.orderId,
+      },
+    );
+
     return {
       success: true,
     };
@@ -190,6 +368,25 @@ export class DispatchService {
       AssignmentStatus.REJECTED,
     );
 
+    this.logger.log(
+      {
+        event: 'dispatch_assignment_rejected',
+        assignmentId,
+        orderId: assignment.orderId,
+        deliveryPartnerId: partner.id,
+      },
+      'DispatchService',
+    );
+
+    await this.auditService.log(
+      userId,
+      'DeliveryAssignment',
+      assignmentId,
+      AuditAction.STATUS_CHANGE,
+      { status: AssignmentStatus.PENDING },
+      { event: 'ASSIGNMENT_REJECTED', status: AssignmentStatus.REJECTED },
+    );
+
     await this.eventBus.publish(
       'dispatch.assignment.rejected',
 
@@ -205,7 +402,11 @@ export class DispatchService {
     };
   }
 
-  async getAssignments(userId: string) {
+  /** `status` is additive/optional — omitted, this returns exactly what it always has (every
+   *  assignment for the partner, newest first); passed, it narrows to that one AssignmentStatus.
+   *  No existing caller (DispatchController's current route) passes it, so behavior for them is
+   *  unchanged. */
+  async getAssignments(userId: string, status?: AssignmentStatus) {
     const partner = await this.dispatchRepository.findPartnerByUserId(userId);
 
     if (!partner) {
@@ -214,6 +415,8 @@ export class DispatchService {
 
     const assignments = await this.dispatchRepository.findPartnerAssignments(
       partner.id,
+
+      status,
     );
 
     return assignments.map((assignment: any) => ({
