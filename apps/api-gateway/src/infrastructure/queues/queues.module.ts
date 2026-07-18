@@ -11,6 +11,7 @@ import { OrderAcceptanceTimeoutProcessor } from './processors/order-acceptance-t
 import { DispatchModule } from '../../modules/dispatch/dispatch.module';
 import { NotificationsModule } from '../../modules/notifications/notifications.module';
 import { OrdersModule } from '../../modules/orders/orders.module';
+import { getRedisConnectionOptions } from '../redis/redis-connection.config';
 
 @Global()
 @Module({
@@ -19,11 +20,7 @@ import { OrdersModule } from '../../modules/orders/orders.module';
     NotificationsModule,
     OrdersModule,
     BullModule.forRoot({
-      connection: {
-        host: process.env.REDIS_HOST,
-
-        port: Number(process.env.REDIS_PORT),
-      },
+      connection: getRedisConnectionOptions(),
     }),
 
     BullModule.registerQueue(

@@ -1,0 +1,18 @@
+# PodMonitor, not ServiceMonitor — deliberately, the worker Deployment has no Service (it never
+# receives external traffic, see workers/deployment.yaml's header comment), so there's no Service
+# object for a ServiceMonitor to select against. PodMonitor selects pods directly.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: worker
+  labels:
+    app.kubernetes.io/name: worker
+    app.kubernetes.io/component: worker
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: worker
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      interval: 30s

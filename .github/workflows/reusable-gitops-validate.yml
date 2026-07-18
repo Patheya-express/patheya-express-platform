@@ -1,0 +1,62 @@
+name: Reusable / GitOps manifest validation
+
+# Section 5 (GitOps Pipeline): manifest validation, Kustomize build, YAML schema validation, policy
+# validation. This workflow never applies anything to a cluster — it only proves every overlay
+# still renders, every rendered object is schema-valid, and a small set of baseline invariants
+# (mirroring modules/supply-chain-security's Kyverno ClusterPolicies) hold — a fast, offline
+# pre-check. The real enforcement is still Kyverno admission in-cluster; this only catches an
+# obviously-broken PR before a human even reviews it.
+
+on:
+  workflow_call:
+    inputs:
+      overlay-paths:
+        description: JSON array of overlay directories to render+validate, e.g. ["applications/backend/overlays/development", ...].
+        type: string
+        required: true
+      policy-path:
+        description: Directory of conftest/Rego policies to check rendered manifests against.
+        type: string
+        default: "policy"
+
+jobs:
+  validate:
+    name: Validate GitOps manifests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        overlay: ${{ fromJSON(inputs.overlay-paths) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Kustomize build
+        run: |
+          mkdir -p /tmp/rendered
+          safe=$(echo "${{ matrix.overlay }}" | tr '/' '-')
+          kubectl kustomize "${{ matrix.overlay }}" > "/tmp/rendered/${safe}.yaml"
+
+      - name: Install kubeconform
+        run: |
+          curl -sfL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
+            | tar xz -C /usr/local/bin kubeconform
+
+      - name: YAML schema validation (kubeconform)
+        run: |
+          safe=$(echo "${{ matrix.overlay }}" | tr '/' '-')
+          kubeconform -strict -summary -ignore-missing-schemas \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            "/tmp/rendered/${safe}.yaml"
+
+      - name: Install conftest
+        if: hashFiles(format('{0}/*.rego', inputs.policy-path)) != ''
+        run: |
+          curl -sfL "https://github.com/open-policy-agent/conftest/releases/latest/download/conftest_Linux_x86_64.tar.gz" \
+            | tar xz -C /usr/local/bin conftest
+
+      - name: Policy validation (conftest, offline pre-check)
+        if: hashFiles(format('{0}/*.rego', inputs.policy-path)) != ''
+        run: |
+          safe=$(echo "${{ matrix.overlay }}" | tr '/' '-')
+          conftest test --policy "${{ inputs.policy-path }}" "/tmp/rendered/${safe}.yaml"

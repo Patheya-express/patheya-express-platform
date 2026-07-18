@@ -97,6 +97,11 @@ import { AuditModule } from '../audit/audit.module';
     HolidaysRepository,
   ],
 
-  exports: [RestaurantsService, CuisinesService, SettingsService],
+  exports: [
+    RestaurantsService,
+    CuisinesService,
+    SettingsService,
+    VerificationService,
+  ],
 })
 export class RestaurantsModule {}

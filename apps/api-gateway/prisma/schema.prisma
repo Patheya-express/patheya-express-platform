@@ -91,6 +91,32 @@ enum RestaurantVerificationStage {
   SUSPENDED
 }
 
+/**
+ * ERPH-2B.1 — tracks the mandatory onboarding wizard's own progress, deliberately separate from
+ * both RestaurantVerificationStage (the admin-side detailed review sub-state-machine) and
+ * RestaurantStatus (pure operational status). CHANGES_REQUESTED in particular has no equivalent
+ * anywhere else in the schema. UNDER_REVIEW/APPROVED/REJECTED here are kept in sync with
+ * RestaurantVerificationStage by OnboardingVerificationListener reacting to the existing
+ * verification events — this enum is not a second copy of that state, it is the
+ * onboarding-wizard-facing projection of it (plus the wizard-only states DRAFT/IN_PROGRESS/
+ * CHANGES_REQUESTED that verification has no concept of).
+ */
+enum OnboardingStatus {
+  DRAFT
+
+  IN_PROGRESS
+
+  SUBMITTED
+
+  UNDER_REVIEW
+
+  CHANGES_REQUESTED
+
+  APPROVED
+
+  REJECTED
+}
+
 enum RestaurantDocumentType {
   GST
 
@@ -230,6 +256,109 @@ enum VehicleType {
   BICYCLE
 
   CAR
+
+  ELECTRIC_VEHICLE
+}
+
+enum Gender {
+  MALE
+
+  FEMALE
+
+  OTHER
+
+  PREFER_NOT_TO_SAY
+}
+
+enum FuelType {
+  PETROL
+
+  DIESEL
+
+  ELECTRIC
+
+  CNG
+
+  HYBRID
+}
+
+/**
+ * EDPH-1 — the delivery-partner analog of RestaurantDocumentType. One generic enum for the long
+ * tail of KYC/vehicle document types rather than N near-identical tables, exactly mirroring the
+ * restaurant document system. SELFIE/BACKGROUND_VERIFICATION are manual-admin-review only — no
+ * biometric/background-check vendor is integrated.
+ */
+enum DeliveryDocumentType {
+  DRIVING_LICENSE
+
+  AADHAAR
+
+  PAN
+
+  VEHICLE_RC
+
+  VEHICLE_INSURANCE
+
+  VEHICLE_FITNESS
+
+  VEHICLE_POLLUTION
+
+  PROFILE_PHOTO
+
+  SELFIE
+
+  BACKGROUND_VERIFICATION
+
+  VEHICLE_PHOTO
+
+  OTHER
+}
+
+/**
+ * EDPH-1 — deliberately simpler than RestaurantVerificationStage: no granular per-category
+ * sub-stages (DOCUMENT_REVIEW/BANK_VERIFICATION/etc.) because delivery documents are reviewed
+ * atomically per-document via the Documents API rather than via sequential category gates.
+ * CHANGES_REQUESTED lives only on DeliveryOnboardingStatus, exactly like the Restaurant split.
+ */
+enum DeliveryVerificationStage {
+  DRAFT
+
+  SUBMITTED
+
+  UNDER_REVIEW
+
+  APPROVED
+
+  REJECTED
+
+  SUSPENDED
+}
+
+/**
+ * EDPH-1 — exact mirror of OnboardingStatus, scoped to the delivery-partner wizard.
+ */
+enum DeliveryOnboardingStatus {
+  DRAFT
+
+  IN_PROGRESS
+
+  SUBMITTED
+
+  UNDER_REVIEW
+
+  CHANGES_REQUESTED
+
+  APPROVED
+
+  REJECTED
+}
+
+enum ComplianceOverallStatus {
+  COMPLIANT
+
+  AT_RISK
+
+  NON_COMPLIANT
 }
 
 enum AuditAction {
@@ -270,6 +399,16 @@ enum NotificationType {
   ORDER_CANCELLED_FOR_RESTAURANT
   REFUND_FOR_RESTAURANT
   CUSTOMER_MESSAGE_FOR_RESTAURANT
+
+  /**
+   * Delivery-partner-facing notification types (EDPH-1) — mirrors the restaurant-facing
+   * additions above, same shared Notification table/user-scoped delivery model.
+   */
+  DELIVERY_PARTNER_VERIFICATION_SUBMITTED
+  DELIVERY_PARTNER_VERIFICATION_APPROVED
+  DELIVERY_PARTNER_VERIFICATION_REJECTED
+  DELIVERY_PARTNER_CHANGES_REQUESTED
+  DELIVERY_PARTNER_DOCUMENT_EXPIRING
 }
 
 enum OfferType {
@@ -318,6 +457,40 @@ enum PaymentMode {
   ONLINE
 
   COD
+}
+
+/**
+ * How a location's coordinates were captured — surfaced in the Address Preview / audit trail,
+ * never used for authorization.
+ */
+enum LocationSource {
+  GPS
+
+  MANUAL
+
+  AUTOCOMPLETE
+
+  REVERSE_GEOCODE
+
+  MAP_CLICK
+
+  MARKER_DRAG
+}
+
+/**
+ * Which AddressProvider implementation resolved this location — lets the backend validate/
+ * audit coordinates without caring which map SDK the frontend used.
+ */
+enum MapProvider {
+  GOOGLE_MAPS
+
+  MAPBOX
+
+  HERE_MAPS
+
+  OPENSTREETMAP
+
+  AZURE_MAPS
 }
 
 enum AddressLabel {
@@ -502,6 +675,26 @@ model Address {
   latitude Float?
 
   longitude Float?
+
+  accuracy Float?
+
+  altitude Float?
+
+  heading Float?
+
+  speed Float?
+
+  locationSource LocationSource?
+
+  provider MapProvider?
+
+  providerPlaceId String?
+
+  providerMetadata Json?
+
+  verified Boolean @default(false)
+
+  verifiedAt DateTime?
 
   isDefault Boolean @default(false)
 
@@ -773,6 +966,8 @@ model Restaurant {
   settings RestaurantSettings?
 
   holidays RestaurantHoliday[]
+
+  onboarding RestaurantOnboarding?
 
   @@index([ownerId])
   @@index([businessId])
@@ -1286,6 +1481,54 @@ model RestaurantSettings {
   @@map("restaurant_settings")
 }
 
+/**
+ * ERPH-2B.1 — the mandatory onboarding wizard's own progress record, one per restaurant.
+ * Created lazily (findOrCreate, same pattern as RestaurantSettings) the moment a restaurant is
+ * created (see OnboardingRestaurantCreatedListener), and is the single source of truth
+ * OnboardingGuard reads to decide whether the owner may reach the operational app at all.
+ */
+model RestaurantOnboarding {
+  id String @id @default(uuid())
+
+  restaurantId String @unique
+
+  status OnboardingStatus @default(DRAFT)
+
+  /**
+   * 1-12, matching the wizard step order (Business Details .. Review). Not itself the
+   * completion signal — see completedSteps — just where the wizard should resume.
+   */
+  currentStep Int @default(1)
+
+  /**
+   * Which of steps 1-12 have been marked complete. A Postgres int array rather than a join
+   * table — this is a small, append-only set with no per-step metadata beyond "done or not".
+   */
+  completedSteps Int[] @default([])
+
+  termsAcceptedAt DateTime?
+
+  submittedAt DateTime?
+
+  decidedAt DateTime?
+
+  /**
+   * Set by the admin "Request Changes" action — an array of { section, reason } objects
+   * identifying exactly which wizard sections need correction. No equivalent concept exists on
+   * RestaurantVerification today.
+   */
+  changesRequested Json?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@map("restaurant_onboarding")
+}
+
 model Review {
   id String @id @default(uuid())
 
@@ -1688,7 +1931,57 @@ model DeliveryPartner {
 
   currentLongitude Float?
 
+  /**
+   * Fast operational gate — this is the single boolean Dispatch/Presence/goAvailable already
+   * read (and, as of EDPH-1, the only thing they read) to decide whether a partner may go
+   * online/receive assignments. Kept in sync exclusively by DeliveryVerificationService whenever
+   * DeliveryVerification.stage enters/leaves APPROVED — never set directly by any onboarding
+   * step. The legacy admin approve/reject endpoints (DeliveryService.approvePartner/rejectPartner)
+   * still flip it directly for backward compatibility.
+   */
   isVerified Boolean @default(false)
+
+  dateOfBirth DateTime?
+
+  gender Gender?
+
+  permanentAddressLine1 String?
+
+  permanentAddressLine2 String?
+
+  permanentCity String?
+
+  permanentState String?
+
+  permanentPostalCode String?
+
+  permanentLatitude Float?
+
+  permanentLongitude Float?
+
+  currentAddressLine1 String?
+
+  currentAddressLine2 String?
+
+  currentCity String?
+
+  currentState String?
+
+  currentPostalCode String?
+
+  currentAddressLatitude Float?
+
+  currentAddressLongitude Float?
+
+  sameAsPermanentAddress Boolean @default(false)
+
+  emergencyContactName String?
+
+  emergencyContactPhone String?
+
+  emergencyContactRelation String?
+
+  languagesSpoken String[] @default([])
 
   createdAt DateTime @default(now())
 
@@ -1698,8 +1991,336 @@ model DeliveryPartner {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  vehicles DeliveryVehicle[]
+
+  documents DeliveryDocument[]
+
+  bankAccount DeliveryBankAccount?
+
+  verification DeliveryVerification?
+
+  onboarding DeliveryOnboarding?
+
+  complianceSnapshot DeliveryComplianceSnapshot?
+
   @@index([status])
   @@map("delivery_partners")
+}
+
+/**
+ * EDPH-1 — supports multiple vehicles per partner (one marked primary) with a replacement
+ * workflow: a replaced vehicle is deactivated (isActive=false), never deleted, so its document
+ * history remains intact. Expiry dates are denormalized here (mirroring
+ * RestaurantTaxProfile.fssaiExpiryAt) for cheap expiry queries; the actual uploaded certificates
+ * live in DeliveryDocument keyed by vehicleId + documentType.
+ */
+model DeliveryVehicle {
+  id String @id @default(uuid())
+
+  deliveryPartnerId String
+
+  vehicleType VehicleType
+
+  registrationNumber String
+
+  brand String?
+
+  model String?
+
+  year Int?
+
+  fuelType FuelType?
+
+  color String?
+
+  isPrimary Boolean @default(false)
+
+  isActive Boolean @default(true)
+
+  insuranceExpiryAt DateTime?
+
+  rcExpiryAt DateTime?
+
+  fitnessExpiryAt DateTime?
+
+  pollutionExpiryAt DateTime?
+
+  verificationStatus VerificationStatus @default(PENDING)
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  deliveryPartner DeliveryPartner @relation(fields: [deliveryPartnerId], references: [id], onDelete: Cascade)
+
+  documents DeliveryDocument[]
+
+  @@index([deliveryPartnerId])
+  @@index([isActive])
+  @@map("delivery_vehicles")
+}
+
+/**
+ * EDPH-1 — exact mirror of RestaurantDocument's shape/versioning convention, scoped to delivery
+ * partners. vehicleId is set for vehicle-scoped types (RC/insurance/fitness/pollution/photo) and
+ * null for partner-scoped types (license/Aadhaar/PAN/profile photo/selfie/background check).
+ */
+model DeliveryDocument {
+  id String @id @default(uuid())
+
+  deliveryPartnerId String
+
+  vehicleId String?
+
+  documentType DeliveryDocumentType
+
+  documentNumber String?
+
+  issueDate DateTime?
+
+  expiryDate DateTime?
+
+  status VerificationStatus @default(PENDING)
+
+  storageUrl String
+
+  fileName String
+
+  mimeType String
+
+  sizeBytes Int
+
+  uploadedById String
+
+  verifiedById String?
+
+  verifiedAt DateTime?
+
+  rejectedReason String?
+
+  metadata Json?
+
+  version Int @default(1)
+
+  isLatest Boolean @default(true)
+
+  previousVersionId String?
+
+  deletedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  deliveryPartner DeliveryPartner @relation(fields: [deliveryPartnerId], references: [id], onDelete: Cascade)
+
+  vehicle DeliveryVehicle? @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+
+  @@index([deliveryPartnerId])
+  @@index([vehicleId])
+  @@index([documentType])
+  @@index([status])
+  @@index([expiryDate])
+  @@map("delivery_documents")
+}
+
+/**
+ * EDPH-1 — append-only history log, NOT the source of truth (that stays DeliveryDocument, same
+ * as the Restaurant convention). Written once per upload/replace so "document history" is a
+ * direct query instead of walking previousVersionId in application code.
+ */
+model DocumentVersion {
+  id String @id @default(uuid())
+
+  documentId String
+
+  deliveryPartnerId String
+
+  documentType DeliveryDocumentType
+
+  version Int
+
+  storageUrl String
+
+  fileName String
+
+  supersededAt DateTime @default(now())
+
+  @@index([documentId])
+  @@index([deliveryPartnerId])
+  @@map("delivery_document_versions")
+}
+
+/**
+ * EDPH-1 — exact mirror of RestaurantBankAccount.
+ */
+model DeliveryBankAccount {
+  id String @id @default(uuid())
+
+  deliveryPartnerId String @unique
+
+  accountHolderName String
+
+  bankName String
+
+  branchName String?
+
+  /**
+   * AES-256-GCM ciphertext — see shared/crypto/crypto.util.ts. Full number never returned.
+   */
+  accountNumberEncrypted String
+
+  accountNumberLast4 String
+
+  ifsc String
+
+  upiId String?
+
+  cancelledChequeDocumentId String?
+
+  verificationStatus VerificationStatus @default(PENDING)
+
+  verifiedById String?
+
+  verifiedAt DateTime?
+
+  payoutProviderRef String?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  deliveryPartner DeliveryPartner @relation(fields: [deliveryPartnerId], references: [id], onDelete: Cascade)
+
+  @@map("delivery_bank_accounts")
+}
+
+/**
+ * EDPH-1 — the delivery-partner analog of RestaurantVerification. Deliberately simpler stage
+ * machine than the restaurant one (see DeliveryVerificationStage doc comment). Reaching APPROVED
+ * (or leaving it via reject/suspend) is what drives DeliveryPartner.isVerified, which is the
+ * boolean Dispatch/Presence/goAvailable actually gate on.
+ */
+model DeliveryVerification {
+  id String @id @default(uuid())
+
+  deliveryPartnerId String @unique
+
+  stage DeliveryVerificationStage @default(DRAFT)
+
+  submittedAt DateTime?
+
+  decidedAt DateTime?
+
+  decidedById String?
+
+  rejectedReason String?
+
+  notes String?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  deliveryPartner DeliveryPartner @relation(fields: [deliveryPartnerId], references: [id], onDelete: Cascade)
+
+  @@index([stage])
+  @@map("delivery_verifications")
+}
+
+/**
+ * EDPH-1 — append-only transition log for DeliveryVerification.stage, distinct from the generic
+ * cross-entity AuditLog. Powers the "Verification Timeline"/reviewer-comments requirement with a
+ * dedicated, purpose-built query.
+ */
+model VerificationHistory {
+  id String @id @default(uuid())
+
+  deliveryPartnerId String
+
+  fromStage DeliveryVerificationStage?
+
+  toStage DeliveryVerificationStage
+
+  reason String?
+
+  decidedById String?
+
+  createdAt DateTime @default(now())
+
+  @@index([deliveryPartnerId])
+  @@map("delivery_verification_history")
+}
+
+/**
+ * EDPH-1 — the delivery-partner analog of RestaurantOnboarding. One row per partner, created
+ * lazily (findOrCreate) the moment a DeliveryPartner is created. Steps 1-11 are mandatory before
+ * submit; step 12 (Review) is the submit act itself. See DeliveryOnboardingService for the
+ * 12-step order (Personal, Address, Vehicle, Driving License, Aadhaar, PAN, RC, Insurance, Bank,
+ * Selfie, Background Verification, Review).
+ */
+model DeliveryOnboarding {
+  id String @id @default(uuid())
+
+  deliveryPartnerId String @unique
+
+  status DeliveryOnboardingStatus @default(DRAFT)
+
+  currentStep Int @default(1)
+
+  completedSteps Int[] @default([])
+
+  termsAcceptedAt DateTime?
+
+  submittedAt DateTime?
+
+  decidedAt DateTime?
+
+  changesRequested Json?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  deliveryPartner DeliveryPartner @relation(fields: [deliveryPartnerId], references: [id], onDelete: Cascade)
+
+  @@map("delivery_onboardings")
+}
+
+/**
+ * EDPH-1 — persisted write-through cache of DeliveryComplianceService.getSnapshot()'s computed
+ * result (one row per partner, upserted every time the endpoint runs — the endpoint itself
+ * always returns the freshly computed value, never a stale read of this row). Gives the
+ * admin/dashboard a queryable "last computed readiness" without recomputation, and a genuine
+ * missingDocumentTypes list beyond what RestaurantCompliance (which has no persisted model)
+ * exposes.
+ */
+model DeliveryComplianceSnapshot {
+  id String @id @default(uuid())
+
+  deliveryPartnerId String @unique
+
+  overallStatus ComplianceOverallStatus
+
+  verificationStage DeliveryVerificationStage
+
+  documentsTotal Int @default(0)
+
+  documentsVerified Int @default(0)
+
+  documentsPending Int @default(0)
+
+  documentsRejected Int @default(0)
+
+  bankVerificationStatus VerificationStatus?
+
+  missingDocumentTypes String[] @default([])
+
+  updatedAt DateTime @updatedAt
+
+  deliveryPartner DeliveryPartner @relation(fields: [deliveryPartnerId], references: [id], onDelete: Cascade)
+
+  @@map("delivery_compliance_snapshots")
 }
 
 model AuditLog {

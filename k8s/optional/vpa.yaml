@@ -1,0 +1,64 @@
+# Vertical Pod Autoscalers — NOT referenced by any kustomization.yaml in base/ or overlays/, and
+# deliberately so: VerticalPodAutoscaler is a CRD from the vertical-pod-autoscaler add-on, not a
+# built-in Kubernetes API. Most clusters don't have it installed, and wiring it into the default
+# `resources:` list would make `kubectl kustomize`/`kubectl apply -k` fail everywhere it isn't.
+#
+# To use: install https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler,
+# then either `kubectl apply -f k8s/optional/vpa.yaml -n <namespace>` directly, or add it as a
+# resource in a kustomization that targets a cluster you've confirmed has the CRD.
+#
+# updateMode: "Off" (recommendation-only) is the safe default — it reports suggested requests
+# without evicting/resizing pods. Switch to "Auto" only once you've reviewed its recommendations;
+# combining VPA in "Auto" mode with the HPA's own CPU/memory-based scaling on the same resource
+# metrics can fight itself (both react to the same signal).
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: api-gateway
+  labels:
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: patheya-express
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-gateway
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: api-gateway
+        minAllowed:
+          cpu: 100m
+          memory: 128Mi
+        maxAllowed:
+          cpu: "2"
+          memory: 1Gi
+        controlledResources: ["cpu", "memory"]
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: worker
+  labels:
+    app.kubernetes.io/name: worker
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: patheya-express
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worker
+  updatePolicy:
+    updateMode: "Off"
+  resourcePolicy:
+    containerPolicies:
+      - containerName: worker
+        minAllowed:
+          cpu: 50m
+          memory: 128Mi
+        maxAllowed:
+          cpu: "1"
+          memory: 768Mi
+        controlledResources: ["cpu", "memory"]

@@ -46,9 +46,20 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         statusCode: status,
 
         message,
+
+        // The response body only ever exposes the generic message above — this is the only
+        // place the real cause of a non-HttpException (i.e. an unexpected 500) is recoverable.
+        ...(exception instanceof HttpException
+          ? {}
+          : {
+              cause:
+                exception instanceof Error
+                  ? exception.message
+                  : String(exception),
+            }),
       },
 
-      undefined,
+      exception instanceof Error ? exception.stack : undefined,
 
       'EXCEPTION',
     );

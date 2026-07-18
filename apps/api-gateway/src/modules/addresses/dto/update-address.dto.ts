@@ -1,14 +1,18 @@
 import {
   IsBoolean,
   IsEnum,
+  IsLatitude,
+  IsLongitude,
   IsNumber,
+  IsObject,
   IsOptional,
   IsString,
+  Min,
 } from 'class-validator';
 
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
-import { AddressLabel } from '@prisma/client';
+import { AddressLabel, LocationSource, MapProvider } from '@prisma/client';
 
 export class UpdateAddressDto {
   @ApiPropertyOptional({ enum: AddressLabel })
@@ -58,13 +62,56 @@ export class UpdateAddressDto {
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsNumber()
+  @IsLatitude()
   latitude?: number;
 
   @ApiPropertyOptional()
   @IsOptional()
-  @IsNumber()
+  @IsLongitude()
   longitude?: number;
+
+  @ApiPropertyOptional({ description: 'GPS accuracy radius in meters.' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  accuracy?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  altitude?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  heading?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  speed?: number;
+
+  @ApiPropertyOptional({ enum: LocationSource })
+  @IsOptional()
+  @IsEnum(LocationSource)
+  locationSource?: LocationSource;
+
+  @ApiPropertyOptional({ enum: MapProvider })
+  @IsOptional()
+  @IsEnum(MapProvider)
+  provider?: MapProvider;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  providerPlaceId?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsObject()
+  providerMetadata?: Record<string, unknown>;
 
   @ApiPropertyOptional()
   @IsOptional()

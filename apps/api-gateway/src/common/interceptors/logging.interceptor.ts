@@ -9,9 +9,17 @@ import { Observable, tap } from 'rxjs';
 
 import { AppLoggerService } from '../../infrastructure/logger/logger.service';
 
+import { MetricsService } from '../../modules/metrics/metrics.service';
+
 @Injectable()
 export class LoggingInterceptor implements NestInterceptor {
-  constructor(private readonly logger: AppLoggerService) {}
+  constructor(
+    private readonly logger: AppLoggerService,
+
+    // Optional so this interceptor's existing manual `new LoggingInterceptor(logger)`
+    // instantiation in any as-yet-unmigrated bootstrap keeps working without the metrics arg.
+    private readonly metrics?: MetricsService,
+  ) {}
 
   intercept(
     context: ExecutionContext,
@@ -32,6 +40,8 @@ export class LoggingInterceptor implements NestInterceptor {
       tap(() => {
         const duration = Date.now() - start;
 
+        const statusCode = request.res?.statusCode;
+
         this.logger.log(
           {
             requestId,
@@ -42,10 +52,22 @@ export class LoggingInterceptor implements NestInterceptor {
 
             duration,
 
-            statusCode: request.res?.statusCode,
+            statusCode,
           },
 
           'HTTP',
+        );
+
+        // Route, not raw URL — `:id`-shaped path params keep the label's cardinality bounded
+        // (platform-standards.md Section 12's naming convention assumes a finite label set, which
+        // a raw URL containing UUIDs would violate).
+        const route: string = request.route?.path || url;
+
+        this.metrics?.observeHttpRequest(
+          method,
+          route,
+          statusCode,
+          duration / 1000,
         );
       }),
     );

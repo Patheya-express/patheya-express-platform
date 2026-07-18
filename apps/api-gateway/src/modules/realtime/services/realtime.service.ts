@@ -52,4 +52,10 @@ export class RealtimeService {
   emitToRoom(room: string, event: string, payload: any) {
     this.gateway.server.to(room).emit(event, payload);
   }
+
+  /** Used by the health endpoint (informational only, not readiness-gating) — confirms the
+   *  Socket.IO server is bound to the HTTP server rather than checking any external dependency. */
+  isReady(): boolean {
+    return !!this.gateway.server;
+  }
 }

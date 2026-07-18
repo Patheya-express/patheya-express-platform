@@ -68,6 +68,16 @@ export class DeliveryRepository extends BaseRepository {
     });
   }
 
+  /** EDPH-1 — used by the online-protection eligibility check, which needs both the partner's
+   *  isVerified/status and the underlying User.status (a partner can be individually SUSPENDED
+   *  as a DeliveryPartner and/or have their User account SUSPENDED/BLOCKED independently). */
+  async findPartnerWithUserByUserId(userId: string) {
+    return this.prisma.deliveryPartner.findUnique({
+      where: { userId },
+      include: { user: { select: { status: true } } },
+    });
+  }
+
   async updatePartnerStatus(
     userId: string,
 
@@ -145,6 +155,14 @@ export class DeliveryRepository extends BaseRepository {
       data: {
         isVerified,
       },
+    });
+  }
+
+  /** EDPH-1 — personal details/addresses/emergency contact/languages, all optional/partial. */
+  async updateProfile(userId: string, data: Record<string, unknown>) {
+    return this.prisma.deliveryPartner.update({
+      where: { userId },
+      data,
     });
   }
 

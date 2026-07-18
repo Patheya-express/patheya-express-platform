@@ -69,6 +69,14 @@ export class AddressesService {
       deliveryInstructions: dto.deliveryInstructions,
       latitude: dto.latitude,
       longitude: dto.longitude,
+      accuracy: dto.accuracy,
+      altitude: dto.altitude,
+      heading: dto.heading,
+      speed: dto.speed,
+      locationSource: dto.locationSource,
+      provider: dto.provider,
+      providerPlaceId: dto.providerPlaceId,
+      providerMetadata: dto.providerMetadata,
       isDefault: shouldBeDefault,
     });
   }

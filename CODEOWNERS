@@ -1,0 +1,19 @@
+# Ownership map — platform-standards.md Section 2 ("No directory in a repository is ownerless")
+# and Section 3 (PR review requires at least one reviewer who owns, per this file, a changed path;
+# anything touching k8s/ or the Dockerfile requires 2 approvals).
+#
+# Team slugs are placeholders (@Patheya-express/backend-team, @Patheya-express/platform-team) —
+# replace with this organization's real GitHub team slugs before enabling the branch-protection
+# rules in docs/infrastructure/branch-protection.md, which reference these same two teams.
+
+# Default owner for anything not matched more specifically below.
+*                           @Patheya-express/platform-team
+
+apps/api-gateway/           @Patheya-express/backend-team
+k8s/                        @Patheya-express/platform-team
+Dockerfile                  @Patheya-express/platform-team
+.dockerignore               @Patheya-express/platform-team
+infrastructure/             @Patheya-express/platform-team
+.github/                    @Patheya-express/platform-team
+docs/architecture/          @Patheya-express/platform-team
+docs/infrastructure/        @Patheya-express/platform-team

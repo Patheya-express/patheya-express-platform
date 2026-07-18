@@ -1,0 +1,15 @@
+# At 1 replica, minAvailable: 1 (the base default) blocks every voluntary disruption/node drain —
+# fine in principle for dev, but deliberately relaxed here so local/dev clusters aren't blocked.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-gateway
+spec:
+  minAvailable: 0
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: worker
+spec:
+  minAvailable: 0

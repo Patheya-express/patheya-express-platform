@@ -1,0 +1,78 @@
+# Section 2 (Database Integration): "Migration Job, Migration ordering." Runs `prisma migrate
+# deploy` (the `migrate` Dockerfile target — docs/infrastructure/migrations.md explains why that's
+# a separate image tag from the running service) exactly once per sync, before either
+# api-gateway's or workers' Deployment rolls a new pod — ArgoCD's PreSync hook phase always
+# completes (or fails, blocking the rest of the sync) before the main sync-wave-ordered resources
+# apply, which is what actually enforces "migration before new code runs," not the Kubernetes
+# object model itself (a bare Job has no such ordering guarantee against a Deployment in the same
+# manifest set).
+#
+# `hook-delete-policy: BeforeHookCreation` — the previous run's completed Job is deleted right
+# before the next one is created (not immediately after success), so `kubectl describe
+# job/api-gateway-migrate` from a prior deploy stays inspectable for the entire window until the
+# *next* deploy needs the name again.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: api-gateway-migrate
+  labels:
+    app.kubernetes.io/name: api-gateway-migrate
+    app.kubernetes.io/component: migration
+    app.kubernetes.io/version: "unset"
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    patheya-express.io/git-commit: "unset"
+    patheya-express.io/build-id: "unset"
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: api-gateway-migrate
+        app.kubernetes.io/component: migration
+        app.kubernetes.io/version: "unset"
+      annotations:
+        patheya-express.io/git-commit: "unset"
+        patheya-express.io/build-id: "unset"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: api-gateway
+      priorityClassName: patheya-express-critical
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          # Same repository, `-migrate` tag suffix — kustomize's `images:` transformer (below)
+          # can't derive a suffixed tag from the app image's own `newTag`, so CI's
+          # gitops-image-update step sets this image's tag explicitly, in the same PR, alongside
+          # the app image's tag bump (patheya-express-platform's .github/actions/gitops-image-update,
+          # extended in Phase 9).
+          image: patheya-express-api-gateway-migrate:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: api-gateway-config
+            - secretRef:
+                name: backend-database-url
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

@@ -1,0 +1,58 @@
+name: Trivy image scan
+description: >
+  Scans a digest-pinned image with Trivy — platform-standards.md Section 10: "HIGH/CRITICAL fails
+  the build with no inline suppression; a genuinely-accepted-risk CVE gets an ADR and an explicit,
+  time-boxed .trivyignore entry referencing that ADR's number." Uploads SARIF to the repo's Code
+  Scanning tab regardless of pass/fail, so a finding is visible even when exit-code is 0 for other
+  reasons.
+
+inputs:
+  image-ref:
+    required: true
+  severity:
+    required: false
+    default: "HIGH,CRITICAL"
+  exit-code:
+    description: "1 fails the job on a finding at or above `severity`; 0 is report-only (never used for a release job, only for informational scans)."
+    required: false
+    default: "1"
+  trivyignore-path:
+    description: >
+      Path to a .trivyignore file. Per platform-standards.md Section 10, every entry in this file
+      must reference the ADR number that accepted that specific CVE's risk — never a bare
+      suppression. Empty means no ignore file is used.
+    required: false
+    default: ""
+  sarif-category:
+    description: Distinguishes this scan's SARIF upload from others in the same workflow run (e.g. "backend-api-gateway").
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Trivy scan (SARIF)
+      uses: aquasecurity/trivy-action@0.28.0
+      with:
+        scan-type: image
+        image-ref: ${{ inputs.image-ref }}
+        format: sarif
+        output: trivy-results-${{ inputs.sarif-category }}.sarif
+        severity: ${{ inputs.severity }}
+        exit-code: "0" # never fail on this pass — SARIF must upload either way; the real gate is the second pass below
+        trivyignores: ${{ inputs.trivyignore-path }}
+
+    - name: Upload SARIF to Code Scanning
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: trivy-results-${{ inputs.sarif-category }}.sarif
+        category: ${{ inputs.sarif-category }}
+
+    - name: Trivy scan (quality gate)
+      uses: aquasecurity/trivy-action@0.28.0
+      with:
+        scan-type: image
+        image-ref: ${{ inputs.image-ref }}
+        format: table
+        severity: ${{ inputs.severity }}
+        exit-code: ${{ inputs.exit-code }}
+        trivyignores: ${{ inputs.trivyignore-path }}

@@ -19,16 +19,14 @@ export const envValidationSchema = Joi.object({
 
   KAFKA_BROKER: Joi.string().required(),
 
-  STORAGE_DRIVER: Joi.string().valid('local', 's3').optional(),
+  STORAGE_DRIVER: Joi.string().valid('local', 'cloudinary').optional(),
 
-  // Required only when STORAGE_DRIVER=s3 — enforced at S3StorageProvider construction time
-  // rather than here, so local-driver dev/test environments are never blocked by these.
-  S3_BUCKET: Joi.string().optional(),
-  S3_REGION: Joi.string().optional(),
-  S3_ACCESS_KEY_ID: Joi.string().optional(),
-  S3_SECRET_ACCESS_KEY: Joi.string().optional(),
-  S3_ENDPOINT: Joi.string().optional(),
-  S3_PUBLIC_BASE_URL: Joi.string().optional(),
+  // Required only when STORAGE_DRIVER=cloudinary — enforced at CloudinaryStorageProvider
+  // construction time rather than here, so local-driver dev/test environments are never
+  // blocked by these.
+  CLOUDINARY_CLOUD_NAME: Joi.string().optional(),
+  CLOUDINARY_API_KEY: Joi.string().optional(),
+  CLOUDINARY_API_SECRET: Joi.string().optional(),
 
   // Required only once a restaurant bank account is actually created/decrypted — enforced at
   // that call site so environments that never touch banking data aren't blocked by it.

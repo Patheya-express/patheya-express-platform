@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Same namespace name as every other environment — see base/kustomization.yaml's comment on why
+# environment is no longer encoded in the namespace name at all (each environment is its own
+# cluster).
+namespace: patheya-backend
+
+resources:
+  - ../../base
+
+patches:
+  - path: replicas-patch.yaml
+  - path: hpa-patch.yaml
+  - path: pdb-patch.yaml
+  - path: ingress-patch.yaml
+
+configMapGenerator:
+  - name: api-gateway-config
+    behavior: merge
+    literals:
+      - NODE_ENV=production
+
+# IMPORTANT: replace this with a real secret source before deploying for real — see
+# k8s/base/secret.env.example's header. A common approach: keep a gitignored
+# `k8s/overlays/production/secret.env` next to this file and add a secretGenerator override
+# here pointing at it, or switch to your cluster's secret manager entirely.
+
+images:
+  - name: patheya-express-api-gateway
+    # Replace with the real, pinned release tag before applying — "latest"/"stable" floating
+    # tags make rollbacks and audits harder in production.
+    newTag: v1.0.0-placeholder

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 
 import { PrismaService } from '../../infrastructure/database/prisma.service';
 
@@ -7,6 +7,10 @@ import { AppLoggerService } from '../../infrastructure/logger/logger.service';
 import { RedisService } from '../../infrastructure/redis/redis.service';
 
 import { QueueService } from '../../infrastructure/queues/queue.service';
+
+import { StorageService } from '../storage/services/storage.service';
+
+import { RealtimeService } from '../realtime/services/realtime.service';
 
 import { HealthResponseDto } from './dto/health-response.dto';
 
@@ -24,13 +28,24 @@ export class HealthService {
     private readonly redis: RedisService,
 
     private readonly queueService: QueueService,
+
+    private readonly storage: StorageService,
+
+    // Optional: worker-main.ts's slim WorkerModule imports HealthModule (for the same
+    // /health/live,ready probe contract api-gateway uses) but not RealtimeModule — the worker
+    // process never accepts WebSocket connections, so there is no gateway to be ready. `undefined`
+    // here means getHealthStatus() reports `websocket: 'not_applicable'` rather than throwing.
+    @Optional()
+    private readonly realtime?: RealtimeService,
   ) {}
 
   async getHealthStatus(): Promise<HealthResponseDto> {
-    const [databaseConnected, redisConnected] = await Promise.all([
-      this.checkDatabase(),
-      this.checkRedis(),
-    ]);
+    const [databaseConnected, redisConnected, queuesConnected] =
+      await Promise.all([
+        this.checkDatabase(),
+        this.checkRedis(),
+        this.queueService.checkHealth(),
+      ]);
 
     const memory = process.memoryUsage();
 
@@ -43,19 +58,35 @@ export class HealthService {
         database: databaseConnected ? 'connected' : 'disconnected',
 
         redis: redisConnected ? 'connected' : 'disconnected',
+
+        queues: queuesConnected ? 'connected' : 'disconnected',
       },
 
       'HealthService',
     );
 
     return {
-      status: 'ok',
+      // Reflects the actual state of every dependency checked below — previously hardcoded to
+      // 'ok' regardless of database/redis/queues state, which made this endpoint useless as a
+      // Render/orchestrator health check target (see docs/deployment/render.md).
+      status:
+        databaseConnected && redisConnected && queuesConnected
+          ? 'ok'
+          : 'degraded',
 
       service: 'Patheya Express API',
 
       database: databaseConnected ? 'connected' : 'disconnected',
 
       redis: redisConnected ? 'connected' : 'disconnected',
+
+      queues: queuesConnected ? 'connected' : 'disconnected',
+
+      websocket: this.realtime
+        ? this.realtime.isReady()
+          ? 'ready'
+          : 'not_ready'
+        : 'not_applicable',
 
       uptime,
 
@@ -85,14 +116,16 @@ export class HealthService {
   /** Checks every dependency an orchestrator needs before routing traffic to this instance:
    *  Database, Redis, and the BullMQ queues' Redis connections. */
   async getReadiness(): Promise<ReadinessResponseDto> {
-    const [databaseConnected, redisConnected, queuesConnected] =
+    const [databaseConnected, redisConnected, queuesConnected, storageHealthy] =
       await Promise.all([
         this.checkDatabase(),
         this.checkRedis(),
         this.queueService.checkHealth(),
+        this.storage.checkHealth(),
       ]);
 
-    const allConnected = databaseConnected && redisConnected && queuesConnected;
+    const allConnected =
+      databaseConnected && redisConnected && queuesConnected && storageHealthy;
 
     return {
       status: allConnected ? 'ok' : 'degraded',
@@ -102,6 +135,8 @@ export class HealthService {
       redis: redisConnected ? 'connected' : 'disconnected',
 
       queues: queuesConnected ? 'connected' : 'disconnected',
+
+      storage: storageHealthy ? 'connected' : 'disconnected',
 
       timestamp: new Date().toISOString(),
     };

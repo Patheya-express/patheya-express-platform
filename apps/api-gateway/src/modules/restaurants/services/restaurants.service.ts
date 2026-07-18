@@ -748,7 +748,14 @@ export class RestaurantsService {
     };
   }
 
-  async approveRestaurant(restaurantId: string, adminUserId: string) {
+  /**
+   * adminUserId is nullable specifically so OnboardingVerificationDecisionListener can trigger
+   * this as a system-initiated transition (once verification reaches APPROVED) without a human
+   * admin acting — AuditLog.userId is itself nullable for exactly this "system action" case, so
+   * this passes null through rather than fabricating a fake user id that would violate the
+   * AuditLog -> User foreign key.
+   */
+  async approveRestaurant(restaurantId: string, adminUserId: string | null) {
     return this.transitionStatus(
       restaurantId,
       RestaurantStatus.PENDING,
@@ -795,7 +802,7 @@ export class RestaurantsService {
 
     nextStatus: RestaurantStatus,
 
-    adminUserId: string,
+    adminUserId: string | null,
 
     auditAction: AuditAction,
   ) {

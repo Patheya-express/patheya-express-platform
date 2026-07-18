@@ -28,6 +28,14 @@ export class ReadinessResponseDto {
   queues: string;
 
   @ApiProperty({
+    example: 'connected',
+    enum: ['connected', 'disconnected'],
+    description:
+      'Storage backend reachability — a writable-directory check for the local driver, a config-presence check (no live API call) for Cloudinary',
+  })
+  storage: string;
+
+  @ApiProperty({
     example: '2026-07-04T10:00:00.000Z',
   })
   timestamp: string;

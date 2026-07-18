@@ -1,0 +1,77 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# patheya-backend — no environment suffix. Each environment is now its own EKS cluster
+# (patheya-express-terraform Phase 3), not a shared cluster with per-environment namespace
+# suffixes, so "which environment" is a property of which cluster you're pointed at, not the
+# namespace name (platform-standards.md Section 4). The Namespace object itself is intentionally
+# NOT in this kustomization's resources — patheya-express-terraform's modules/eks-addons/
+# namespaces.tf already creates it (with ResourceQuota/LimitRange/Pod Security Admission labels
+# Kustomize has no equivalent for); this repo only supplies what runs inside it.
+namespace: patheya-backend
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: patheya-express
+      app.kubernetes.io/managed-by: kustomize
+    includeSelectors: true
+
+resources:
+  - priorityclass.yaml
+  - networkpolicy.yaml
+  - api-gateway/serviceaccount.yaml
+  - api-gateway/deployment.yaml
+  - api-gateway/service.yaml
+  - api-gateway/hpa.yaml
+  - api-gateway/pdb.yaml
+  - api-gateway/migrate-job.yaml
+  - api-gateway/servicemonitor.yaml
+  - workers/serviceaccount.yaml
+  - workers/deployment.yaml
+  - workers/hpa.yaml
+  - workers/pdb.yaml
+  - workers/podmonitor.yaml
+  - ingress.yaml
+
+# Non-secret runtime config, shared by both api-gateway and worker containers (both run the same
+# image/env contract). KAFKA_BROKER is required by env.validation.ts but unused by any
+# application code — see docs/infrastructure/kubernetes.md for why it's kept as a placeholder
+# rather than removed. REDIS_HOST/REDIS_PORT removed in Phase 9 — now sourced for real from the
+# backend-redis-credentials Secret (below), which also carries REDIS_AUTH_TOKEN/REDIS_TLS that a
+# plain ConfigMap literal could never hold safely.
+configMapGenerator:
+  - name: api-gateway-config
+    literals:
+      - NODE_ENV=production
+      - PORT=3000
+      - LOG_LEVEL=info
+      - LOG_TO_FILE=false
+      - SHUTDOWN_TIMEOUT_MS=10000
+      - STORAGE_DRIVER=cloudinary
+      - KAFKA_BROKER=unused-kafka-broker.example:9092
+      # Real production domain (Phase 9) — matches the frontend repo's own actual Ingress hosts
+      # (infrastructure/kubernetes/base/*/ingress.yaml: customer./restaurant./admin./delivery.
+      # patheyaexpress.com), not cloud-architecture-blueprint.md Section 4's "app./partner." naming,
+      # which the frontend repo's real, already-built Ingress objects never actually used — a
+      # documented, pre-existing inconsistency (see this repo's Phase 9 final report), not
+      # something this phase renamed. CORS must match whatever the frontend is actually reachable
+      # at, so the real value wins over the blueprint's naming example.
+      - CUSTOMER_APP_URL=https://customer.patheyaexpress.com
+      - RESTAURANT_APP_URL=https://restaurant.patheyaexpress.com
+      - ADMIN_APP_URL=https://admin.patheyaexpress.com
+      - DELIVERY_APP_URL=https://delivery.patheyaexpress.com
+
+# Phase 9: the local secretGenerator (secret.env.example) that stood in for real secrets since
+# Phase 1A is retired — `backend-database-url`, `backend-redis-credentials`, and
+# `backend-app-secrets` (all three: patheya-express-terraform's
+# modules/eks-addons/external-secrets.tf, synced by External Secrets Operator, Phase 3/4) are real,
+# rotatable Kubernetes Secrets that already exist in the patheya-backend namespace by the time this
+# overlay is ever actually applied — see api-gateway/deployment.yaml's/workers/deployment.yaml's
+# envFrom. secret.env.example itself is kept in this directory only as the local-development
+# reference for apps/api-gateway/.env's shape, no longer consumed by Kustomize at all.
+
+images:
+  - name: patheya-express-api-gateway
+    newTag: latest
+  - name: patheya-express-api-gateway-migrate
+    newTag: latest

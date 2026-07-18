@@ -9,6 +9,12 @@
 
 ARG NODE_VERSION=24-alpine
 
+# Populated via `docker build --build-arg` (all optional — the image builds and runs fine with
+# their defaults). Purely descriptive OCI labels below; never baked into application behavior.
+ARG VCS_REF=unknown
+ARG BUILD_DATE=unknown
+ARG IMAGE_VERSION=0.0.1
+
 # ---------------------------------------------------------------------------
 # build: installs the full workspace, generates the Prisma client, compiles
 # TypeScript, then produces a production-only dependency set for api-gateway.
@@ -29,7 +35,10 @@ ENV DATABASE_URL="postgresql://placeholder:placeholder@placeholder:5432/placehol
 
 COPY . .
 
-RUN pnpm install --frozen-lockfile
+# Cache-mounted pnpm store persists across builds on the same builder (BuildKit only, already
+# enabled via the `# syntax=` line above) — repeat builds skip re-downloading unchanged packages.
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile
 RUN pnpm --filter api-gateway exec prisma generate
 RUN pnpm --filter api-gateway run build
 # --legacy: api-gateway has no workspace-package dependencies (confirmed — apps/api-gateway
@@ -48,9 +57,47 @@ RUN SRC=$(find /workspace/node_modules/.pnpm -maxdepth 3 -type d -name '.prisma'
     rm -rf "$DEST" && cp -r "$SRC" "$DEST"
 
 # ---------------------------------------------------------------------------
+# migrate: Phase 9's migration Job target — `prisma migrate deploy` needs the `prisma` CLI, which
+# is a devDependency deliberately excluded from `runtime`'s pruned, production-only node_modules
+# (the running service only ever needs `@prisma/client`, never the CLI). Reuses `build`'s full
+# workspace install rather than re-installing anything. Pushed as a second tag
+# (`<tag>-migrate`) in the same ECR repository — never deployed as a long-running service, only
+# run to completion by the migration Job (k8s/base/api-gateway/migrate-job.yaml) as an ArgoCD
+# PreSync hook.
+# ---------------------------------------------------------------------------
+FROM build AS migrate
+
+RUN addgroup -S app && adduser -S app -G app && chown -R app:app /workspace
+
+USER app
+
+WORKDIR /workspace
+
+ENTRYPOINT ["pnpm", "--filter", "api-gateway", "exec", "prisma"]
+
+CMD ["migrate", "deploy"]
+
+# ---------------------------------------------------------------------------
 # runtime: minimal image — no package manager, no dev dependencies, no source.
 # ---------------------------------------------------------------------------
 FROM node:${NODE_VERSION} AS runtime
+
+ARG VCS_REF
+ARG BUILD_DATE
+ARG IMAGE_VERSION
+
+LABEL org.opencontainers.image.title="patheya-express-api-gateway" \
+      org.opencontainers.image.description="Patheya Express NestJS API Gateway" \
+      org.opencontainers.image.source="https://github.com/patheya-express/patheya-express-platform" \
+      org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.version="${IMAGE_VERSION}" \
+      org.opencontainers.image.licenses="UNLICENSED"
+
+# tini (PID 1) forwards signals (SIGTERM from `kubectl delete`/rolling updates) to the actual
+# node process and reaps zombie children — running node directly as PID 1 handles neither
+# correctly by default.
+RUN apk add --no-cache tini
 
 ENV NODE_ENV=production
 ENV PORT=3000
@@ -64,9 +111,12 @@ COPY --from=build --chown=app:app /workspace/apps/api-gateway/dist ./dist
 COPY --from=build --chown=app:app /workspace/apps/api-gateway/prisma ./prisma
 COPY --from=build --chown=app:app /workspace/apps/api-gateway/package.json ./package.json
 
-# Winston's file transport writes to ./logs (relative to CWD) — WORKDIR created this directory
-# as root before the COPY layers above, so the non-root user below can't create it at boot time.
-RUN mkdir -p logs && chown app:app logs
+# Winston's file transport writes to ./logs, and LocalStorageProvider writes to ./uploads (both
+# relative to CWD) — WORKDIR created /app as root before the COPY layers above, so the non-root
+# user below can't create either at boot time. Pre-created here so they exist with the right
+# ownership regardless of whether a volume is later mounted over them (e.g. under Kubernetes with
+# readOnlyRootFilesystem: true, an emptyDir is mounted at exactly these two paths).
+RUN mkdir -p logs uploads && chown app:app logs uploads
 
 USER app
 
@@ -76,5 +126,7 @@ EXPOSE 3000
 # so a transient DB/Redis blip doesn't cause an orchestrator to kill an otherwise-healthy container.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "require('http').get({host:'127.0.0.1',port:process.env.PORT||3000,path:'/api/v1/health/live'}, r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+
+ENTRYPOINT ["/sbin/tini", "--"]
 
 CMD ["node", "dist/src/main.js"]

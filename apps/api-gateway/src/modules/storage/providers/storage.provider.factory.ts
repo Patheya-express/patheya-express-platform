@@ -7,23 +7,26 @@ import {
 
 import { LocalStorageProvider } from './local-storage.provider';
 
-import { S3StorageProvider } from './s3-storage.provider';
+import { CloudinaryStorageProvider } from './cloudinary-storage.provider';
 
 export const StorageProviderFactory = {
   provide: STORAGE_PROVIDER,
 
-  inject: [ConfigService, LocalStorageProvider, S3StorageProvider],
+  inject: [ConfigService, LocalStorageProvider, CloudinaryStorageProvider],
 
   useFactory: (
     config: ConfigService,
     localProvider: LocalStorageProvider,
-    s3Provider: S3StorageProvider,
+    cloudinaryProvider: CloudinaryStorageProvider,
   ) => {
-    const driver = config.get<string>('storage.driver', StorageDriver.LOCAL);
+    const driver = config.get<StorageDriver>(
+      'storage.driver',
+      StorageDriver.LOCAL,
+    );
 
     switch (driver) {
-      case StorageDriver.S3:
-        return s3Provider;
+      case StorageDriver.CLOUDINARY:
+        return cloudinaryProvider;
 
       default:
         return localProvider;

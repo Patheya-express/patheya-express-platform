@@ -170,6 +170,11 @@ export class VerificationService {
       { stage: 'REJECTED', reason },
     );
 
+    await this.eventBus.publish('restaurant.verification.rejected', {
+      restaurantId,
+      reason,
+    });
+
     return updated;
   }
 

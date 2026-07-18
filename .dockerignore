@@ -25,6 +25,8 @@ deploy
 coverage
 logs
 *.log
+uploads
+**/uploads
 
 # Not needed for the api-gateway Docker build
 docs

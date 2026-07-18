@@ -98,6 +98,14 @@ const PUSH_PREFERENCE_BY_TYPE: Record<NotificationType, PushPreferenceKey> = {
   ORDER_CANCELLED_FOR_RESTAURANT: 'orderUpdatesPush',
   REFUND_FOR_RESTAURANT: 'orderUpdatesPush',
   CUSTOMER_MESSAGE_FOR_RESTAURANT: 'systemPush',
+  // Delivery-partner-facing types (EDPH-1) — same rationale as the restaurant-facing block
+  // above: gated by the partner's own settings elsewhere, mapped here only so this stays
+  // exhaustive over NotificationType.
+  DELIVERY_PARTNER_VERIFICATION_SUBMITTED: 'systemPush',
+  DELIVERY_PARTNER_VERIFICATION_APPROVED: 'systemPush',
+  DELIVERY_PARTNER_VERIFICATION_REJECTED: 'systemPush',
+  DELIVERY_PARTNER_CHANGES_REQUESTED: 'systemPush',
+  DELIVERY_PARTNER_DOCUMENT_EXPIRING: 'systemPush',
 };
 
 /**

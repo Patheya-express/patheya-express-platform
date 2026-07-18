@@ -1,0 +1,67 @@
+name: Notify
+description: >
+  Writes a GitHub Actions workflow summary always, and forwards to Slack/PagerDuty only if the
+  corresponding webhook/routing-key secret is actually set — Section 12's "Slack placeholder,
+  PagerDuty placeholder" means the mechanism exists and is wired end-to-end, not that a fake
+  destination is invented. An empty secret is a no-op, not an error.
+
+inputs:
+  status:
+    description: success | failure
+    required: true
+  title:
+    required: true
+  details:
+    description: Markdown body — shown in the workflow summary and, if sent, the Slack message.
+    required: false
+    default: ""
+  slack-webhook-url:
+    required: false
+    default: ""
+  pagerduty-routing-key:
+    description: Only used when status=failure — a Warning-level notification never pages.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Write workflow summary
+      shell: bash
+      env:
+        NOTIFY_STATUS: ${{ inputs.status }}
+        NOTIFY_TITLE: ${{ inputs.title }}
+        NOTIFY_DETAILS: ${{ inputs.details }}
+      run: |
+        icon="❌"
+        [ "$NOTIFY_STATUS" = "success" ] && icon="✅"
+        {
+          echo "## ${icon} ${NOTIFY_TITLE}"
+          echo ""
+          echo "${NOTIFY_DETAILS}"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Notify Slack
+      if: inputs.slack-webhook-url != ''
+      shell: bash
+      env:
+        NOTIFY_STATUS: ${{ inputs.status }}
+        NOTIFY_TITLE: ${{ inputs.title }}
+        NOTIFY_WEBHOOK: ${{ inputs.slack-webhook-url }}
+      run: |
+        payload=$(jq -n --arg status "$NOTIFY_STATUS" --arg title "$NOTIFY_TITLE" \
+          '{text: ($status + ": " + $title)}')
+        curl -sf -X POST -H 'Content-Type: application/json' -d "$payload" "$NOTIFY_WEBHOOK" \
+          || echo "Slack notification failed (non-fatal)."
+
+    - name: Trigger PagerDuty
+      if: inputs.status == 'failure' && inputs.pagerduty-routing-key != ''
+      shell: bash
+      env:
+        NOTIFY_TITLE: ${{ inputs.title }}
+        PD_ROUTING_KEY: ${{ inputs.pagerduty-routing-key }}
+      run: |
+        payload=$(jq -n --arg key "$PD_ROUTING_KEY" --arg summary "$NOTIFY_TITLE" \
+          '{routing_key: $key, event_action: "trigger", payload: {summary: $summary, source: "github-actions", severity: "error"}}')
+        curl -sf -X POST https://events.pagerduty.com/v2/enqueue -H 'Content-Type: application/json' -d "$payload" \
+          || echo "PagerDuty trigger failed (non-fatal)."

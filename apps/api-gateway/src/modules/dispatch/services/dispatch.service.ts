@@ -5,7 +5,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 
-import { AssignmentStatus } from '@prisma/client';
+import { AssignmentStatus, DeliveryPartnerStatus } from '@prisma/client';
 
 import { DispatchRepository } from '../repositories/dispatch.repository';
 
@@ -127,6 +127,18 @@ export class DispatchService {
 
     if (assignment.status !== AssignmentStatus.PENDING) {
       throw new BadRequestException('Only pending assignments can be accepted');
+    }
+
+    // EDPH-1 online-protection, defense-in-depth: assignments are only ever created for
+    // partners findAvailablePartners() already filtered to isVerified+AVAILABLE, but re-check
+    // here too so a partner who loses verification/gets suspended mid-assignment can't accept.
+    if (
+      !partner.isVerified ||
+      partner.status === DeliveryPartnerStatus.SUSPENDED
+    ) {
+      throw new ForbiddenException(
+        'Your account is not eligible to accept assignments',
+      );
     }
 
     await this.dispatchRepository.updateAssignmentStatus(

@@ -1,0 +1,36 @@
+name: Cosign keyless sign (+ SBOM attest)
+description: >
+  Signs a digest-pinned image with Sigstore cosign, keyless/OIDC (no signing key ever exists —
+  cloud-architecture-blueprint.md Section 11, docs/signing-guide.md in the Terraform repo). If an
+  SBOM path is given, also attests it as a CycloneDX predicate (docs/sbom-guide.md). This is the
+  exact trust anchor modules/supply-chain-security's verify-image-signatures/verify-sbom-attestation
+  Kyverno ClusterPolicies check at admission time — the calling workflow's job must set
+  `permissions: id-token: write` or this step fails to mint an OIDC token.
+
+inputs:
+  image-ref:
+    description: Digest-pinned image reference (registry/patheya-express/repo@sha256:...). Never a mutable tag — Sigstore signs a digest, not a tag.
+    required: true
+  sbom-path:
+    description: Path to a CycloneDX SBOM file to attest. Skipped if empty.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install cosign
+      uses: sigstore/cosign-installer@v3
+
+    - name: Sign image (keyless)
+      shell: bash
+      run: cosign sign --yes "${{ inputs.image-ref }}"
+
+    - name: Attest SBOM (keyless)
+      if: inputs.sbom-path != ''
+      shell: bash
+      run: |
+        cosign attest --yes \
+          --predicate "${{ inputs.sbom-path }}" \
+          --type cyclonedx \
+          "${{ inputs.image-ref }}"

@@ -1,0 +1,95 @@
+name: Reusable / Node quality gate
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        default: "."
+      pnpm-version:
+        type: string
+        required: true
+      node-version:
+        type: string
+        default: "24"
+      lint-command:
+        type: string
+        required: true
+      test-command:
+        type: string
+        required: true
+      typecheck-command:
+        type: string
+        default: ""
+      database-url:
+        description: Only meaningful when needs-services is true.
+        type: string
+        default: "postgresql://postgres:postgres@localhost:5432/patheya_ci"
+      redis-host:
+        type: string
+        default: "localhost"
+
+jobs:
+  quality:
+    name: Lint, typecheck, test
+    runs-on: ubuntu-latest
+    # Always provisioned, even for callers (frontend) that don't use them — GitHub Actions can't
+    # conditionally omit a `services:` entry from an expression, and an unused alpine
+    # Postgres/Redis container adds negligible job time versus the complexity of two near-duplicate
+    # reusable workflows.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: patheya_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: ${{ inputs.database-url }}
+      REDIS_HOST: ${{ inputs.redis-host }}
+      REDIS_PORT: "6379"
+      # "test" is not a valid NODE_ENV per the backend's env.validation.ts Joi schema
+      # (development|staging|production only) — using "development" here avoids a false failure
+      # in any test path that ends up constructing the real ConfigModule/Joi validation.
+      NODE_ENV: development
+      PORT: "3000"
+      KAFKA_BROKER: unused-kafka-broker.example:9092
+      JWT_ACCESS_SECRET: ci-only-placeholder-access-secret
+      JWT_REFRESH_SECRET: ci-only-placeholder-refresh-secret
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Patheya-express/patheya-express-platform/.github/actions/setup-pnpm-node@main
+        with:
+          node-version: ${{ inputs.node-version }}
+          pnpm-version: ${{ inputs.pnpm-version }}
+          working-directory: ${{ inputs.working-directory }}
+
+      - name: Lint
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.lint-command }}
+
+      - name: Typecheck
+        if: inputs.typecheck-command != ''
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.typecheck-command }}
+
+      - name: Test
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.test-command }}

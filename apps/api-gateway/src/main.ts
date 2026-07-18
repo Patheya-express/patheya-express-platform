@@ -1,4 +1,4 @@
-import { ValidationPipe } from '@nestjs/common';
+import { RequestMethod, ValidationPipe } from '@nestjs/common';
 
 import { ConfigService } from '@nestjs/config';
 
@@ -22,7 +22,11 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 
 import { AppLoggerService } from './infrastructure/logger/logger.service';
 
-import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { MetricsService } from './modules/metrics/metrics.service';
+
+import { SwaggerModule } from '@nestjs/swagger';
+
+import { buildSwaggerDocument } from './swagger.config';
 
 /** Any localhost/127.0.0.1 origin, regardless of port — dev servers (`ng serve`) don't have a
  *  fixed port across the four apps, and this is local-machine-only convenience, not a security
@@ -76,7 +80,13 @@ async function bootstrap() {
     rawBody: true,
   });
 
-  app.setGlobalPrefix('api/v1');
+  // Behind a K8s Ingress/load balancer, every request otherwise arrives from the proxy's IP —
+  // this makes `req.ip` (and therefore per-client rate limiting) reflect the real client instead.
+  app.set('trust proxy', 1);
+
+  app.setGlobalPrefix('api/v1', {
+    exclude: [{ path: 'metrics', method: RequestMethod.GET }],
+  });
 
   // Serves files written by LocalStorageProvider (e.g. restaurant logos/banners) at the same
   // `/uploads/...` path it returns as the stored URL — outside the `api/v1` prefix, since it's
@@ -111,23 +121,37 @@ async function bootstrap() {
 
   app.useGlobalFilters(new GlobalExceptionFilter(logger));
 
-  app.useGlobalInterceptors(new LoggingInterceptor(logger));
-  const swaggerConfig = new DocumentBuilder()
-    .setTitle('Patheya Express API')
-    .setDescription('Enterprise Backend APIs')
-    .setVersion('1.0')
-    .addBearerAuth(
-      {
-        type: 'http',
-        scheme: 'bearer',
-        bearerFormat: 'JWT',
-        in: 'header',
-      },
-      'JWT-auth',
-    )
-    .build();
+  app.useGlobalInterceptors(
+    new LoggingInterceptor(logger, app.get(MetricsService)),
+  );
 
-  const document = SwaggerModule.createDocument(app, swaggerConfig);
+  // Wires Nest's own onModuleDestroy/onApplicationShutdown lifecycle (Prisma.$disconnect(),
+  // Redis.quit(), etc.) to SIGTERM/SIGINT — without this, those hooks only ever ran when Nest
+  // shut itself down programmatically, never on a real container stop signal.
+  app.enableShutdownHooks();
+
+  const shutdownTimeoutMs = Number(process.env.SHUTDOWN_TIMEOUT_MS) || 10000;
+
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.on(signal, () => {
+      logger.log({ event: 'shutdown_signal_received', signal }, 'Bootstrap');
+
+      // Safety net: if a lifecycle hook hangs, force-exit within the orchestrator's grace
+      // period rather than waiting for a SIGKILL. unref()'d so a clean shutdown that finishes
+      // first isn't held open by this timer.
+      setTimeout(() => {
+        logger.error(
+          { event: 'shutdown_timeout', signal, shutdownTimeoutMs },
+          undefined,
+          'Bootstrap',
+        );
+
+        process.exit(1);
+      }, shutdownTimeoutMs).unref();
+    });
+  }
+
+  const document = buildSwaggerDocument(app);
 
   SwaggerModule.setup('api/docs', app, document, {
     swaggerOptions: {
@@ -140,4 +164,4 @@ async function bootstrap() {
   await app.listen(process.env.PORT || 3000);
 }
 
-bootstrap();
+void bootstrap();

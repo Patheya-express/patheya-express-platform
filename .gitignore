@@ -11,6 +11,11 @@ dist/
 .env.*
 **/.env
 **/.env.*
+# Example/template env files are safe (no secrets) and referenced by docs/deployment.md — they
+# were previously being silently excluded by the blanket rules above and never made it into git.
+!.env.example
+!**/.env.example
+!**/.env.compose.example
 
 # Coverage
 coverage/

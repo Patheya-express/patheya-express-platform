@@ -6,7 +6,7 @@ import { StorageService } from './services/storage.service';
 
 import { LocalStorageProvider } from './providers/local-storage.provider';
 
-import { S3StorageProvider } from './providers/s3-storage.provider';
+import { CloudinaryStorageProvider } from './providers/cloudinary-storage.provider';
 
 import { StorageProviderFactory } from './providers/storage.provider.factory';
 
@@ -19,7 +19,7 @@ import { StorageProviderFactory } from './providers/storage.provider.factory';
 
     LocalStorageProvider,
 
-    S3StorageProvider,
+    CloudinaryStorageProvider,
 
     StorageProviderFactory,
   ],

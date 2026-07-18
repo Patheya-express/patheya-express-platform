@@ -70,7 +70,7 @@ export class HealthController {
       // the message itself rather than passing the DTO as the response body (which would be
       // dropped) — keeps this consistent with how every other error in the API is shaped.
       throw new ServiceUnavailableException(
-        `Not ready: database=${readiness.database}, redis=${readiness.redis}, queues=${readiness.queues}`,
+        `Not ready: database=${readiness.database}, redis=${readiness.redis}, queues=${readiness.queues}, storage=${readiness.storage}`,
       );
     }
 

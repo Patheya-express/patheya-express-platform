@@ -17,6 +17,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
 
 import { RestaurantsModule } from './modules/restaurants/restaurants.module';
+import { OnboardingModule } from './modules/onboarding/onboarding.module';
 
 import { MenuModule } from './modules/menu/menu.module';
 import { OrdersModule } from './modules/orders/orders.module';
@@ -25,6 +26,7 @@ import { AuditModule } from './modules/audit/audit.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { EventsModule } from './modules/events/events.module';
 import { StorageModule } from './modules/storage/storage.module';
+import { MetricsModule } from './modules/metrics/metrics.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
 import { RedisModule } from './infrastructure/redis/redis.module';
 import { SystemModule } from './modules/system/system.module';
@@ -77,6 +79,8 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 
     RestaurantsModule,
 
+    OnboardingModule,
+
     MenuModule,
 
     OrdersModule,
@@ -90,6 +94,8 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
     EventsModule,
 
     StorageModule,
+
+    MetricsModule,
 
     RealtimeModule,
 

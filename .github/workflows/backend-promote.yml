@@ -1,0 +1,55 @@
+name: backend-promote
+
+# Section 7 (Promotion Strategy): development -> staging -> production, GitOps pull-request
+# promotion, protected branches, required approvals, no direct pushes to production.
+# platform-standards.md Section 10: "an image built once is promoted unchanged... never rebuilt per
+# environment." This workflow never builds, scans, or signs anything — it only opens a PR pointing
+# staging/production at a tag that backend-release.yml already built, scanned, signed, and attested.
+# The PR itself is where the human review this phase requires actually happens; this workflow
+# cannot merge its own PR (no auto-merge input is ever passed here).
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment to promote into.
+        type: choice
+        options: [staging, production]
+        required: true
+      image-tag:
+        description: >
+          The exact <semver>-<git-sha-short> tag to promote — must already exist in ECR (i.e.
+          already built, scanned, signed, and attested by a prior backend-release.yml run). This
+          workflow does not verify that here; ArgoCD's own sync will fail loudly if the tag
+          doesn't exist, and ideally Kyverno's verify-image-signatures would also reject an
+          unsigned tag if one were somehow pushed out of band.
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  gitops-promote:
+    name: Open GitOps promotion PR (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ap-south-1
+          role-to-assume: ${{ vars.BACKEND_ECR_PUSH_ROLE_ARN }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr-login
+
+      - name: Open image-update PR
+        uses: Patheya-express/patheya-express-platform/.github/actions/gitops-image-update@main
+        with:
+          github-token: ${{ secrets.GITOPS_PR_TOKEN }}
+          app-path: applications/backend/overlays/${{ inputs.environment }}
+          image-name-old: patheya-express-api-gateway
+          image-name-new: ${{ steps.ecr-login.outputs.registry }}/patheya-express/api-gateway
+          image-tag: ${{ inputs.image-tag }}
+          environment: ${{ inputs.environment }}
+          app-display-name: "Backend (api-gateway)"
+          auto-merge: "false"

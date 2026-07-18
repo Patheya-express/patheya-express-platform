@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   ConflictException,
   NotFoundException,
@@ -7,7 +8,7 @@ import {
   forwardRef,
 } from '@nestjs/common';
 
-import { DeliveryPartnerStatus, OrderStatus } from '@prisma/client';
+import { DeliveryPartnerStatus, OrderStatus, UserStatus } from '@prisma/client';
 
 import { DeliveryRepository } from '../repositories/delivery.repository';
 
@@ -21,6 +22,7 @@ import { AdminDeliveryPartnerResponseDto } from '../dto/admin-delivery-partner-r
 import { PresenceService } from '../../presence/services/presence.service';
 import { UsersService } from '../../users/services/users.service';
 import { OrdersService } from '../../orders/services/orders.service';
+import { EventBusService } from '../../../core/events/event-bus.service';
 import { AuthenticatedUser } from '../../../shared/authorization/order-access.util';
 
 /**
@@ -79,6 +81,7 @@ export class DeliveryService {
     private readonly usersService: UsersService,
     @Inject(forwardRef(() => OrdersService))
     private readonly ordersService: OrdersService,
+    private readonly eventBus: EventBusService,
   ) {}
 
   async onboardPartner(
@@ -93,7 +96,7 @@ export class DeliveryService {
       throw new ConflictException('Delivery partner already exists');
     }
 
-    return this.deliveryRepository.createDeliveryPartner({
+    const partner = await this.deliveryRepository.createDeliveryPartner({
       userId,
 
       vehicleType: dto.vehicleType,
@@ -102,6 +105,13 @@ export class DeliveryService {
 
       licenseNumber: dto.licenseNumber,
     });
+
+    await this.eventBus.publish('delivery.created', {
+      deliveryPartnerId: partner.id,
+      userId,
+    });
+
+    return partner;
   }
 
   async getMe(userId: string) {
@@ -114,7 +124,41 @@ export class DeliveryService {
     return partner;
   }
 
+  /**
+   * EDPH-1 online-protection gate. A delivery partner must never go online/receive orders until
+   * onboarding is complete, verification is APPROVED, and the account is active — enforced here
+   * (goAvailable), in PresenceController.markOnline (the other path a partner can appear
+   * "online" from), and defense-in-depth in DispatchService.acceptAssignment. Dispatch matching
+   * itself already filters on isVerified — this is what keeps that boolean trustworthy.
+   */
+  async assertOnlineEligible(userId: string): Promise<void> {
+    const partner =
+      await this.deliveryRepository.findPartnerWithUserByUserId(userId);
+
+    if (!partner) {
+      throw new NotFoundException('Delivery partner not found');
+    }
+
+    if (!partner.isVerified) {
+      throw new ForbiddenException(
+        'Complete onboarding and verification before going online',
+      );
+    }
+
+    if (partner.status === DeliveryPartnerStatus.SUSPENDED) {
+      throw new ForbiddenException(
+        'Your delivery partner account is suspended',
+      );
+    }
+
+    if (partner.user.status !== UserStatus.ACTIVE) {
+      throw new ForbiddenException('Your account is not active');
+    }
+  }
+
   async goAvailable(userId: string) {
+    await this.assertOnlineEligible(userId);
+
     return this.deliveryRepository.updatePartnerStatus(
       userId,
 

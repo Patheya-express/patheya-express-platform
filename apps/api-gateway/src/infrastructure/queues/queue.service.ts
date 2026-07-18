@@ -62,7 +62,9 @@ export class QueueService {
 
       {
         delay: delayMs,
-        jobId: `order-acceptance-timeout:${orderId}`,
+        // BullMQ rejects custom job ids containing ":" (reserved as its own Redis key
+        // delimiter) — a "-" keeps the same restart-safe, per-order dedup intent.
+        jobId: `order-acceptance-timeout-${orderId}`,
       },
     );
   }
@@ -113,6 +115,39 @@ export class QueueService {
         data: {},
       },
     );
+  }
+
+  /**
+   * Used by `MetricsService` to publish `patheya_bullmq_queue_depth` (docs/ci-cd aside —
+   * modules/observability/prometheus-rules.tf's `patheya:bullmq_queue_depth:current` recording
+   * rule and the "Application Overview" Grafana dashboard were both built already expecting this
+   * exact metric name; this is the one place that satisfies it). "Depth" = waiting + delayed +
+   * active, matching what an operator actually means by "how much work is queued" — completed/
+   * failed counts are a different, already-alerted-on concern (Section 12's
+   * Warning-Worker-JobFailed).
+   */
+  async getQueueDepths(): Promise<Record<string, number>> {
+    const queues: Record<string, Queue> = {
+      dispatch: this.dispatchQueue,
+      notifications: this.notificationQueue,
+      payments: this.paymentsQueue,
+      search: this.searchQueue,
+      tickets: this.ticketsQueue,
+      orders: this.ordersQueue,
+    };
+
+    const entries = await Promise.all(
+      Object.entries(queues).map(async ([name, queue]) => {
+        const counts = await queue.getJobCounts('waiting', 'delayed', 'active');
+
+        const depth =
+          (counts.waiting ?? 0) + (counts.delayed ?? 0) + (counts.active ?? 0);
+
+        return [name, depth] as const;
+      }),
+    );
+
+    return Object.fromEntries(entries);
   }
 
   /**

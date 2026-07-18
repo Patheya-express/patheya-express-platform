@@ -1,0 +1,64 @@
+# Default-deny plus explicit allows, applied to every pod in the namespace via the empty
+# podSelector. NOTE: some CNI implementations route kubelet startup/readiness/liveness probe
+# traffic through the same policy path as pod-to-pod traffic; if probes start failing after
+# applying these in your cluster, your CNI needs an explicit allow for node-originated probe
+# traffic (most managed CNIs — GKE, EKS w/ Calico, AKS — exempt this by default). See
+# docs/infrastructure/kubernetes.md.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Postgres, Redis, Cloudinary, Razorpay, and SMTP are external managed services with addressing
+# that varies per environment/cluster — left open here and meant to be tightened once real
+# endpoints are known (e.g. restrict to a managed-database security group's CIDR, or a specific
+# in-cluster Service if Postgres/Redis are ever moved in-cluster).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-external-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: patheya-express
+  policyTypes:
+    - Egress
+  egress:
+    - {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-api-gateway
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: api-gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 3000

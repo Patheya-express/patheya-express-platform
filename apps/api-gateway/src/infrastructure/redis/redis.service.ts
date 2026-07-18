@@ -2,16 +2,14 @@ import { Injectable, OnModuleDestroy } from '@nestjs/common';
 
 import Redis from 'ioredis';
 
+import { getRedisConnectionOptions } from './redis-connection.config';
+
 @Injectable()
 export class RedisService implements OnModuleDestroy {
   private readonly redis: Redis;
 
   constructor() {
-    this.redis = new Redis({
-      host: process.env.REDIS_HOST,
-
-      port: Number(process.env.REDIS_PORT),
-    });
+    this.redis = new Redis(getRedisConnectionOptions());
   }
 
   getClient() {

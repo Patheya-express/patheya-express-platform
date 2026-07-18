@@ -7,6 +7,7 @@ import {
   MessageBody,
   OnGatewayConnection,
   OnGatewayDisconnect,
+  OnGatewayInit,
   SubscribeMessage,
   WebSocketGateway,
   WebSocketServer,
@@ -14,9 +15,15 @@ import {
 
 import { Server, Socket } from 'socket.io';
 
+import Redis from 'ioredis';
+
+import { createAdapter } from '@socket.io/redis-adapter';
+
 import { UserRole } from '@prisma/client';
 
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
+
+import { getRedisConnectionOptions } from '../../../infrastructure/redis/redis-connection.config';
 
 import {
   AuthenticatedUser,
@@ -30,13 +37,53 @@ interface JoinRoomResult {
   error?: string;
 }
 
+/** Same allowlist `main.ts`'s `buildCorsOriginValidator` enforces for the REST API — this decorator
+ *  config is evaluated once at module load (no ConfigService/DI available yet), so it reads
+ *  `process.env` directly rather than sharing that function verbatim. Previously hardcoded
+ *  `origin: '*'`, flagged as inconsistent since Phase 1A's audit
+ *  (`docs/infrastructure/socketio.md`) — fixed here rather than left for a future phase. */
+const LOCALHOST_ORIGIN_PATTERN = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+
+function buildRealtimeCorsOrigin(
+  origin: string | undefined,
+  callback: (err: Error | null, allow?: boolean) => void,
+): void {
+  if (!origin) {
+    callback(null, true);
+    return;
+  }
+
+  const allowedOrigins = [
+    process.env.CUSTOMER_APP_URL,
+    process.env.RESTAURANT_APP_URL,
+    process.env.ADMIN_APP_URL,
+    process.env.DELIVERY_APP_URL,
+  ].filter((value): value is string => Boolean(value));
+
+  if (allowedOrigins.includes(origin)) {
+    callback(null, true);
+    return;
+  }
+
+  if (
+    process.env.NODE_ENV !== 'production' &&
+    LOCALHOST_ORIGIN_PATTERN.test(origin)
+  ) {
+    callback(null, true);
+    return;
+  }
+
+  callback(new Error(`Origin "${origin}" is not allowed by CORS`), false);
+}
+
 @WebSocketGateway({
   cors: {
-    origin: '*',
+    origin: buildRealtimeCorsOrigin,
+    credentials: true,
   },
 })
 export class RealtimeGateway
-  implements OnGatewayConnection, OnGatewayDisconnect
+  implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit
 {
   private readonly logger = new Logger(RealtimeGateway.name);
 
@@ -48,6 +95,27 @@ export class RealtimeGateway
 
     private readonly prisma: PrismaService,
   ) {}
+
+  /**
+   * Closes the cross-pod fanout gap `docs/infrastructure/socketio.md` and
+   * `cloud-architecture-blueprint.md` Section 6/8 both flagged as a known, scheduled-but-not-yet-
+   * built gap: without this adapter, `server.to(room).emit()` only reaches sockets connected to
+   * the *same* pod, and only nginx's cookie-based sticky-session affinity (`k8s/base/ingress.yaml`)
+   * papered over it — which cannot guarantee two independent clients (e.g. a delivery partner and
+   * the customer tracking them) ever land on the same pod. Two dedicated ioredis connections
+   * (never the shared `RedisService`/BullMQ connections — the adapter's pub/sub subscriber
+   * connection cannot issue any other command once subscribed, so it must never be shared).
+   */
+  afterInit(server: Server): void {
+    const pubClient = new Redis(getRedisConnectionOptions());
+    const subClient = pubClient.duplicate();
+
+    server.adapter(createAdapter(pubClient, subClient));
+
+    this.logger.log(
+      'Socket.IO Redis adapter attached — cross-pod fanout enabled',
+    );
+  }
 
   /**
    * Every socket must present a valid access token on connect (via `auth.token` — the

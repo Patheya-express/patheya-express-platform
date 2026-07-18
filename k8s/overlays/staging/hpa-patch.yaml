@@ -1,0 +1,18 @@
+# Explicit even though it matches base's defaults (min=2) — staging intentionally mirrors
+# production's topology at lower scale, capped lower since it never needs to absorb full
+# production peak load.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-gateway
+spec:
+  minReplicas: 2
+  maxReplicas: 6
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker
+spec:
+  minReplicas: 2
+  maxReplicas: 4

@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
-import { AddressLabel } from '@prisma/client';
+import { AddressLabel, LocationSource, MapProvider } from '@prisma/client';
 
 export class AddressResponseDto {
   @ApiProperty()
@@ -41,6 +41,36 @@ export class AddressResponseDto {
 
   @ApiPropertyOptional()
   longitude?: number;
+
+  @ApiPropertyOptional()
+  accuracy?: number;
+
+  @ApiPropertyOptional()
+  altitude?: number;
+
+  @ApiPropertyOptional()
+  heading?: number;
+
+  @ApiPropertyOptional()
+  speed?: number;
+
+  @ApiPropertyOptional({ enum: LocationSource })
+  locationSource?: LocationSource;
+
+  @ApiPropertyOptional({ enum: MapProvider })
+  provider?: MapProvider;
+
+  @ApiPropertyOptional()
+  providerPlaceId?: string;
+
+  @ApiPropertyOptional()
+  providerMetadata?: Record<string, unknown>;
+
+  @ApiProperty()
+  verified: boolean;
+
+  @ApiPropertyOptional()
+  verifiedAt?: Date;
 
   @ApiProperty()
   isDefault: boolean;

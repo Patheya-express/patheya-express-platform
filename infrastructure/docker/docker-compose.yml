@@ -1,36 +1,70 @@
-version: '3.9'
+# Local development stack: Postgres, Redis, Kafka/Zookeeper, and the api-gateway app itself,
+# built from the repo-root Dockerfile. Values are sourced from a `.env` file next to this compose
+# file (copy `.env.compose.example` -> `.env`) — Compose loads that automatically for ${VAR}
+# substitution below; every variable has a working default so `docker compose up` runs with none.
+#
+#   cp infrastructure/docker/.env.compose.example infrastructure/docker/.env
+#   docker compose -f infrastructure/docker/docker-compose.yml up
+#
+# Prefer running the app natively against these containers instead (faster inner loop, see
+# scripts/start-dev.ps1 and docs/deployment.md)? Just omit the `api-gateway` service:
+#
+#   docker compose -f infrastructure/docker/docker-compose.yml up postgres redis kafka zookeeper
+#
+# See docs/infrastructure/docker.md for the full explanation of every service and profile.
+
+name: patheya-express
 
 services:
 
   postgres:
-    image: postgres:16
+    image: postgres:16-alpine
     container_name: patheya-express-postgres
-    restart: always
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: patheya_express_db
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-patheya_express_db}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-patheya_express_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   redis:
-    image: redis:7
+    image: redis:7-alpine
     container_name: patheya-express-redis
-    restart: always
+    restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
 
+  # Not used by any application code today (no Kafka client library is even a dependency) — kept
+  # only because KAFKA_BROKER is a required env var (env.validation.ts) and removing it is an
+  # application-behavior decision out of scope for this infra phase. See docs/infrastructure/docker.md.
   zookeeper:
     image: confluentinc/cp-zookeeper:latest
     container_name: patheya-express-zookeeper
+    restart: unless-stopped
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
-    ports:
-      - "2181:2181"
 
   kafka:
     image: confluentinc/cp-kafka:latest
     container_name: patheya-express-kafka
+    restart: unless-stopped
     depends_on:
       - zookeeper
     ports:
@@ -40,3 +74,90 @@ services:
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  api-gateway:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: patheya-express-api-gateway
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: 3000
+      LOG_TO_FILE: ${LOG_TO_FILE:-true}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-patheya_express_db}?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      KAFKA_BROKER: kafka:9092
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev-access-secret-change-me}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-dev-refresh-secret-change-me}
+      STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
+      CUSTOMER_APP_URL: ${CUSTOMER_APP_URL:-http://localhost:4200}
+      RESTAURANT_APP_URL: ${RESTAURANT_APP_URL:-http://localhost:4201}
+      ADMIN_APP_URL: ${ADMIN_APP_URL:-http://localhost:4202}
+      DELIVERY_APP_URL: ${DELIVERY_APP_URL:-http://localhost:4203}
+      # `RazorpayProvider` (apps/api-gateway/src/modules/payments/providers/razorpay.provider.ts)
+      # constructs the Razorpay SDK client unconditionally in its constructor — unlike
+      # CloudinaryStorageProvider's lazy config-on-use pattern, this makes RAZORPAY_KEY_ID/SECRET
+      # required at boot in every environment even though neither env.validation.ts nor
+      # docs/deployment.md's "optional, feature-gated" note treats them that way. A dev-mode
+      # placeholder is supplied here so the app can start; real payment flows need real keys.
+      # See docs/infrastructure/README.md's audit findings.
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-dev-razorpay-key-id}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-dev-razorpay-key-secret}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-dev-razorpay-webhook-secret}
+      # Bare (no `=value`) on purpose: env.validation.ts's Joi schema allows these to be *absent*
+      # (`.optional()`) but not present-and-empty (a bare `.string()` rejects ""). A `${VAR:-}`
+      # default here would set the key to "" whenever unset in .env, which fails Joi validation
+      # at boot even with STORAGE_DRIVER=local. This form passes the real value through when set
+      # in `infrastructure/docker/.env`, and omits the key entirely (not empty) when unset.
+      CLOUDINARY_CLOUD_NAME:
+      CLOUDINARY_API_KEY:
+      CLOUDINARY_API_SECRET:
+    ports:
+      - "${API_PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - uploads-data:/app/uploads
+
+  # Same image as api-gateway, not published on any port — a second BullMQ-processing replica for
+  # exercising the "workers" topology locally. Opt-in: `docker compose --profile worker up`.
+  # See docs/infrastructure/workers.md for why this (not a separate entrypoint) is the worker model.
+  worker:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: patheya-express-worker
+    restart: unless-stopped
+    profiles: ["worker"]
+    # Runs the dedicated worker entrypoint (queue processors + minimal /api/v1/health/* surface,
+    # no business HTTP controllers) instead of the image's default CMD (`main.js`, the full
+    # api-gateway app) — matches k8s/base/workers/deployment.yaml's `args` override exactly.
+    command: ["node", "dist/src/worker-main.js"]
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: 3001
+      LOG_TO_FILE: ${LOG_TO_FILE:-true}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-patheya_express_db}?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      KAFKA_BROKER: kafka:9092
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev-access-secret-change-me}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-dev-refresh-secret-change-me}
+      STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - uploads-data:/app/uploads
+
+volumes:
+  postgres-data:
+  redis-data:
+  uploads-data:

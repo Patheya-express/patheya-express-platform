@@ -1,4 +1,12 @@
-import { Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  forwardRef,
+  Get,
+  Inject,
+  Param,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
 
 import {
   ApiTags,
@@ -19,18 +27,24 @@ import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 
 import { PresenceService } from '../services/presence.service';
 
+import { DeliveryService } from '../../delivery/services/delivery.service';
+
 @ApiTags('Presence')
 @ApiBearerAuth('JWT-auth')
 @Controller('presence')
 export class PresenceController {
-  constructor(private readonly presenceService: PresenceService) {}
+  constructor(
+    private readonly presenceService: PresenceService,
+    @Inject(forwardRef(() => DeliveryService))
+    private readonly deliveryService: DeliveryService,
+  ) {}
 
   @UseGuards(JwtAuthGuard)
   @Post('online')
   @ApiOperation({
     summary: 'Mark delivery partner online',
     description:
-      'Marks the authenticated delivery partner as online and available for realtime presence tracking.',
+      'Marks the authenticated delivery partner as online and available for realtime presence tracking. Rejected until onboarding/verification is complete and the account is active (EDPH-1 online protection).',
   })
   @ApiOkResponse({
     description: 'Partner marked online successfully',
@@ -42,6 +56,8 @@ export class PresenceController {
     @CurrentUser()
     user: any,
   ) {
+    await this.deliveryService.assertOnlineEligible(user.userId);
+
     return this.presenceService.markOnline(user.userId);
   }
 

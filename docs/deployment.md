@@ -1,5 +1,9 @@
 # Deployment
 
+For the full infrastructure picture (Kubernetes manifests, Docker Compose profiles, health check
+contract, worker/Socket.IO scaling constraints, disaster recovery notes), see
+[`docs/infrastructure/`](./infrastructure/README.md). This page stays the quick-start entry point.
+
 ## Building the image
 
 The Docker build context is the **repository root**, not `apps/api-gateway` — the Dockerfile
@@ -23,8 +27,9 @@ The image is a multi-stage build:
 docker run -p 3000:3000 --env-file apps/api-gateway/.env patheya-express-api-gateway
 ```
 
-The container needs a reachable Postgres and Redis — see `infrastructure/docker/docker-compose.yml`
-for a local dependency stack (development only; it does not run the API itself).
+The container needs a reachable Postgres and Redis — `infrastructure/docker/docker-compose.yml`
+runs a full local stack including the API itself (`docker compose -f infrastructure/docker/docker-compose.yml up`);
+see [`docs/infrastructure/docker.md`](./infrastructure/docker.md) for every service and profile.
 
 ## Required environment variables
 
@@ -41,19 +46,32 @@ production requires:
 | `CUSTOMER_APP_URL` / `RESTAURANT_APP_URL` / `ADMIN_APP_URL` / `DELIVERY_APP_URL` | Deployed origin of each frontend app — the CORS allowlist |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | Password-reset email delivery |
 
-Optional, feature-gated variables (`STORAGE_DRIVER=s3` + `S3_*`, `BANK_ACCOUNT_ENCRYPTION_KEY`)
-are validated at the point of use, not at boot — an environment that never exercises that feature
-doesn't need them set.
+Optional, feature-gated variables (`STORAGE_DRIVER=cloudinary` + `CLOUDINARY_*`,
+`BANK_ACCOUNT_ENCRYPTION_KEY`) are validated at the point of use, not at boot — an environment
+that never exercises that feature doesn't need them set. `STORAGE_DRIVER` supports only `local`
+(writes to disk, the default) and `cloudinary`.
 
 ## Health checks
 
 - `GET /api/v1/health/live` — process-only liveness. Use this for the container/orchestrator
   liveness probe. Always 200 if the Node process is running.
-- `GET /api/v1/health/ready` — readiness. Verifies Postgres and Redis are reachable. Use this for
-  the readiness probe / load-balancer target health check, not liveness — a transient DB blip
-  should not cause a healthy container to be killed and restarted.
+- `GET /api/v1/health/ready` — readiness. Verifies Postgres, Redis, BullMQ, and storage are
+  reachable. Use this for the readiness probe / load-balancer target health check, not liveness —
+  a transient DB blip should not cause a healthy container to be killed and restarted.
 
-The image's own `HEALTHCHECK` instruction targets `/health/live` for exactly this reason.
+The image's own `HEALTHCHECK` instruction targets `/health/live` for exactly this reason. Full
+contract (response shape, what each field means): [`docs/infrastructure/health-checks.md`](./infrastructure/health-checks.md).
+
+## Kubernetes
+
+`k8s/` (Kustomize base + development/staging/production overlays) is the real production
+deployment target — see [`docs/infrastructure/kubernetes.md`](./infrastructure/kubernetes.md).
+Quick start:
+
+```bash
+kubectl kustomize k8s/overlays/development   # render only, no cluster required
+kubectl apply -k k8s/overlays/development      # apply to the current context
+```
 
 ## Frontend builds
 

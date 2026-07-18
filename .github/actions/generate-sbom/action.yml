@@ -1,0 +1,32 @@
+name: Generate CycloneDX SBOM
+description: >
+  Generates a CycloneDX SBOM for a digest-pinned image via Syft — docs/sbom-guide.md (Terraform
+  repo) names this as the exact format Kyverno's verify-sbom-attestation policy checks for.
+
+inputs:
+  image-ref:
+    description: Digest-pinned image reference (registry/patheya-express/repo@sha256:...).
+    required: true
+  output-file:
+    required: false
+    default: sbom.cdx.json
+
+outputs:
+  sbom-path:
+    value: ${{ steps.sbom.outputs.sbom-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Generate SBOM (Syft, CycloneDX JSON)
+      uses: anchore/sbom-action@v0
+      with:
+        image: ${{ inputs.image-ref }}
+        format: cyclonedx-json
+        output-file: ${{ inputs.output-file }}
+        upload-artifact: false
+
+    - name: Set output path
+      id: sbom
+      shell: bash
+      run: echo "sbom-path=${{ inputs.output-file }}" >> "$GITHUB_OUTPUT"
