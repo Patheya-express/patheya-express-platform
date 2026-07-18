@@ -44,6 +44,8 @@ production requires:
 | `KAFKA_BROKER` | Kafka broker address |
 | `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | Live Razorpay credentials |
 | `CUSTOMER_APP_URL` / `RESTAURANT_APP_URL` / `ADMIN_APP_URL` / `DELIVERY_APP_URL` | Deployed origin of each frontend app — the CORS allowlist |
+| `API_PUBLIC_URL` | Optional — this API's own public origin, so Swagger UI's "Try it out" (served by this same process) isn't rejected by the CORS allowlist. Not needed in local dev (localhost is always allowed there) |
+| `EXTRA_ALLOWED_ORIGINS` | Optional, comma-separated — further CORS-allowed origins for future expansion, without a code change |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | Password-reset email delivery |
 
 Optional, feature-gated variables (`STORAGE_DRIVER=cloudinary` + `CLOUDINARY_*`,

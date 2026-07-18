@@ -59,6 +59,14 @@ envVarGroups:
         sync: false
       - key: DELIVERY_APP_URL
         sync: false
+      # This API's own public origin — allows Swagger UI (served by this same process at
+      # /api/docs) to call /api/v1/* without being rejected by the CORS allowlist. Render's
+      # default domain is predictable from the service name below, so this is a literal value,
+      # not sync:false — update it if a custom domain is ever attached instead.
+      - key: API_PUBLIC_URL
+        value: https://patheya-express-api-gateway-qa.onrender.com
+      # EXTRA_ALLOWED_ORIGINS (optional, comma-separated) — not needed in QA today; add via the
+      # Render dashboard if a future need arises, no render.yaml change required.
 
       # --- SMTP ---
       - key: SMTP_HOST

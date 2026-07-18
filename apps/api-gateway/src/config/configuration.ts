@@ -59,4 +59,23 @@ export default () => ({
     adminApp: process.env.ADMIN_APP_URL,
     deliveryApp: process.env.DELIVERY_APP_URL,
   },
+
+  cors: {
+    /** This API's own externally-reachable origin (e.g. `https://api.patheyaexpress.com`).
+     *  Swagger UI is served by this same process at `/api/docs`, and browsers attach an `Origin`
+     *  header to same-origin XHR/fetch requests too (notably Swagger UI's "Try it out") — without
+     *  this in the allowlist, the API rejects its own Swagger UI's requests in every deployed
+     *  environment (local dev is unaffected: `LOCALHOST_ORIGIN_PATTERN` already covers it).
+     *  Optional — omit in environments where Swagger's "Try it out" isn't used against a
+     *  non-localhost origin. */
+    apiPublicUrl: process.env.API_PUBLIC_URL,
+
+    /** Comma-separated list of additional origins to allow, for future expansion (a new preview
+     *  environment, an internal admin tool, etc.) without requiring a code change. Optional;
+     *  empty/unset yields no extra origins. */
+    extraAllowedOrigins: (process.env.EXTRA_ALLOWED_ORIGINS || '')
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean),
+  },
 });

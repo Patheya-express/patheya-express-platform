@@ -83,6 +83,8 @@ requires these to be human-chosen, only random and stable).
 | Razorpay | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | `sync: false` |
 | Logging | `LOG_TO_FILE`, `LOG_LEVEL` | literal (`false`, `info`) |
 | Application | `NODE_ENV`, `KAFKA_BROKER`, `STORAGE_DRIVER`, `SHUTDOWN_TIMEOUT_MS`, `APP_NAME` (per-service), `CUSTOMER_APP_URL`/`RESTAURANT_APP_URL`/`ADMIN_APP_URL`/`DELIVERY_APP_URL` | mixed — see `render.yaml`'s comments per variable |
+| CORS (Swagger self-origin) | `API_PUBLIC_URL` | literal — Render's default domain is predictable from the service name, so this is set directly (`https://patheya-express-api-gateway-qa.onrender.com`), not `sync: false`; update it if a custom domain is ever attached |
+| CORS (future expansion) | `EXTRA_ALLOWED_ORIGINS` | not set — optional, comma-separated, add via the dashboard only if a future need arises |
 
 `PORT` is deliberately **not set** for either service: Render auto-injects it for Web Services (the
 app already reads `process.env.PORT`, `main.ts:164`), and the worker doesn't need one at all (its

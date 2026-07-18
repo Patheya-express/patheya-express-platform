@@ -33,11 +33,29 @@ import { buildSwaggerDocument } from './swagger.config';
  *  boundary. Never matches in production (NODE_ENV check happens at the call site). */
 const LOCALHOST_ORIGIN_PATTERN = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
 
+/** Strips a trailing slash so a config value like `https://api.example.com/` still matches the
+ *  browser's `Origin` header, which never has one (e.g. `https://api.example.com`). Applied to
+ *  every allowlist entry below — a trailing slash is an easy, otherwise-silent misconfiguration. */
+function normalizeOrigin(origin: string): string {
+  return origin.replace(/\/+$/, '');
+}
+
 /**
- * Builds the CORS allowlist from the four deployed frontend origins (env-driven, same
- * `frontendOrigins` config the password-reset email link uses) plus, outside production, any
- * localhost origin. Replaces the previous `origin: true` (reflects any origin) which is unsafe
- * for a credentialed API.
+ * Builds the CORS allowlist from:
+ *  - the four deployed frontend origins (env-driven, same `frontendOrigins` config the
+ *    password-reset email link uses),
+ *  - this API's own public origin (`cors.apiPublicUrl`), so Swagger UI — served by this same
+ *    process at `/api/docs` — can call `/api/v1/*` without being rejected. Browsers attach an
+ *    `Origin` header to same-origin XHR/fetch requests too (notably Swagger UI's "Try it out"),
+ *    and this CORS middleware evaluates every request that carries one, regardless of whether the
+ *    browser itself would also enforce cross-origin restrictions on it,
+ *  - any further origins listed in `cors.extraAllowedOrigins` (optional, comma-separated, for
+ *    future expansion without a code change),
+ *  - plus, outside production, any localhost origin.
+ *
+ * Replaces the previous `origin: true` (reflects any origin), which is unsafe for a credentialed
+ * API — every branch below is still an explicit allowlist match; nothing here reintroduces a
+ * wildcard or weakens the credentialed-CORS posture.
  */
 function buildCorsOriginValidator(
   config: ConfigService,
@@ -50,7 +68,11 @@ function buildCorsOriginValidator(
     config.get<string>('frontendOrigins.restaurantApp'),
     config.get<string>('frontendOrigins.adminApp'),
     config.get<string>('frontendOrigins.deliveryApp'),
-  ].filter((origin): origin is string => Boolean(origin));
+    config.get<string>('cors.apiPublicUrl'),
+    ...config.get<string[]>('cors.extraAllowedOrigins', []),
+  ]
+    .filter((origin): origin is string => Boolean(origin))
+    .map(normalizeOrigin);
 
   const isProduction = config.get<string>('app.nodeEnv') === 'production';
 
@@ -61,7 +83,7 @@ function buildCorsOriginValidator(
       return;
     }
 
-    if (allowedOrigins.includes(origin)) {
+    if (allowedOrigins.includes(normalizeOrigin(origin))) {
       callback(null, true);
       return;
     }

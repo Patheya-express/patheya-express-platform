@@ -46,4 +46,10 @@ export const envValidationSchema = Joi.object({
   RESTAURANT_APP_URL: Joi.string().optional(),
   ADMIN_APP_URL: Joi.string().optional(),
   DELIVERY_APP_URL: Joi.string().optional(),
+
+  // This API's own public origin (Swagger UI self-origin allowlisting) and an optional,
+  // comma-separated list of further origins — both optional, both feed the same CORS allowlist
+  // as the four *_APP_URL vars above (main.ts's buildCorsOriginValidator).
+  API_PUBLIC_URL: Joi.string().optional(),
+  EXTRA_ALLOWED_ORIGINS: Joi.string().optional(),
 });
