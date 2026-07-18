@@ -52,4 +52,16 @@ export const envValidationSchema = Joi.object({
   // as the four *_APP_URL vars above (main.ts's buildCorsOriginValidator).
   API_PUBLIC_URL: Joi.string().optional(),
   EXTRA_ALLOWED_ORIGINS: Joi.string().optional(),
+
+  // Super Admin bootstrap (AdminBootstrapService) — deliberately `.optional()` here even though
+  // the bootstrap process treats all five as mandatory for itself: making these Joi-`.required()`
+  // would crash the entire application at ConfigModule validation time in any environment that
+  // hasn't set them yet, which is exactly the crash bootstrap itself is required never to cause.
+  // AdminBootstrapService performs its own presence check and skips bootstrap (logged, not
+  // thrown) when any of these are missing.
+  SUPER_ADMIN_EMAIL: Joi.string().optional(),
+  SUPER_ADMIN_PASSWORD: Joi.string().optional(),
+  SUPER_ADMIN_FIRST_NAME: Joi.string().optional(),
+  SUPER_ADMIN_LAST_NAME: Joi.string().optional(),
+  SUPER_ADMIN_PHONE: Joi.string().optional(),
 });

@@ -85,6 +85,21 @@ requires these to be human-chosen, only random and stable).
 | Application | `NODE_ENV`, `KAFKA_BROKER`, `STORAGE_DRIVER`, `SHUTDOWN_TIMEOUT_MS`, `APP_NAME` (per-service), `CUSTOMER_APP_URL`/`RESTAURANT_APP_URL`/`ADMIN_APP_URL`/`DELIVERY_APP_URL` | mixed — see `render.yaml`'s comments per variable |
 | CORS (Swagger self-origin) | `API_PUBLIC_URL` | literal — Render's default domain is predictable from the service name, so this is set directly (`https://patheya-express-api-gateway-qa.onrender.com`), not `sync: false`; update it if a custom domain is ever attached |
 | CORS (future expansion) | `EXTRA_ALLOWED_ORIGINS` | not set — optional, comma-separated, add via the dashboard only if a future need arises |
+| Super Admin bootstrap | `SUPER_ADMIN_EMAIL`, `SUPER_ADMIN_PASSWORD`, `SUPER_ADMIN_FIRST_NAME`, `SUPER_ADMIN_LAST_NAME`, `SUPER_ADMIN_PHONE` | `sync: false` — all five required together for `AdminBootstrapService` to create the first SUPER_ADMIN on startup; missing any one skips bootstrap (logged, not thrown), it never blocks either service from starting |
+
+### Super Admin bootstrap
+
+`AdminBootstrapService` (`src/modules/admin/bootstrap/`) runs automatically on every startup of
+both services via `OnApplicationBootstrap` — no API endpoint exists anywhere to create a
+SUPER_ADMIN, this is the only path. It checks for an existing active `SUPER_ADMIN` inside a
+`Serializable` Prisma transaction and creates one only if none exists; the same transaction's
+isolation level plus `User.email`'s `@unique` constraint together prevent two SUPER_ADMINs ever
+being created even if the Web Service and Worker (or several replicas of either) start
+simultaneously against the same Neon database — whichever one loses the race gets a Prisma
+serialization or unique-constraint error, both treated as "already exists," not a crash. Since both
+services import `AuthModule` for `PasswordService` already (indirectly, via this new module),
+either one bootstrapping is sufficient — in practice only one instance actually creates the row,
+regardless of how many services/replicas run this code path.
 
 `PORT` is deliberately **not set** for either service: Render auto-injects it for Web Services (the
 app already reads `process.env.PORT`, `main.ts:164`), and the worker doesn't need one at all (its

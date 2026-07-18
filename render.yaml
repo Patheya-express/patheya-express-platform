@@ -80,6 +80,20 @@ envVarGroups:
       - key: SMTP_FROM
         value: "Patheya Express QA <no-reply@patheyaexpress.com>"
 
+      # --- Super Admin bootstrap (AdminBootstrapService) — creates the first SUPER_ADMIN
+      # automatically on startup if one doesn't exist yet; no API endpoint for this exists. All
+      # five are secret-shaped (the password especially) so all use sync:false. ---
+      - key: SUPER_ADMIN_EMAIL
+        sync: false
+      - key: SUPER_ADMIN_PASSWORD
+        sync: false
+      - key: SUPER_ADMIN_FIRST_NAME
+        sync: false
+      - key: SUPER_ADMIN_LAST_NAME
+        sync: false
+      - key: SUPER_ADMIN_PHONE
+        sync: false
+
       # --- Logging ---
       - key: LOG_TO_FILE
         value: false
