@@ -16,6 +16,8 @@ dist/
 !.env.example
 !**/.env.example
 !**/.env.compose.example
+!.env.qa.example
+!**/.env.qa.example
 
 # Coverage
 coverage/
