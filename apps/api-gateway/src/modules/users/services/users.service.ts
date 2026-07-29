@@ -28,7 +28,16 @@ import { PasswordService } from '../../auth/services/password.service';
 import { AuthService } from '../../auth/services/auth.service';
 import { AuditService } from '../../audit/services/audit.service';
 import { StorageService } from '../../storage/services/storage.service';
+import { RealtimeService } from '../../realtime/services/realtime.service';
+import { RedisService } from '../../../infrastructure/redis/redis.service';
 import type { UploadFile } from '../../../shared/types/upload-file.type';
+
+/** Redis key set by suspendUser()/blockUser(), cleared by activateUser()/restoreUser(), and
+ *  read by JwtStrategy on every authenticated request — see jwt.strategy.ts's doc comment. No
+ *  TTL: it must persist until an admin explicitly reactivates the account, not expire on its own. */
+function blockedKey(userId: string): string {
+  return `auth:blocked:${userId}`;
+}
 
 const PROFILE_COMPLETION_FIELDS = [
   'lastName',
@@ -101,6 +110,8 @@ export class UsersService {
     private readonly authService: AuthService,
     private readonly auditService: AuditService,
     private readonly storageService: StorageService,
+    private readonly realtimeService: RealtimeService,
+    private readonly redisService: RedisService,
   ) {}
 
   async getProfile(userId: string) {
@@ -311,6 +322,8 @@ export class UsersService {
       UserStatus.SUSPENDED,
     );
 
+    await this.revokeAllSessions(targetUserId);
+
     return toSafeUser(updated);
   }
 
@@ -334,6 +347,10 @@ export class UsersService {
       targetUserId,
       UserStatus.ACTIVE,
     );
+
+    // Mirror image of suspend/block's blockedKey write below — safe to call even if it was
+    // never set (e.g. restoring straight from a state this method doesn't actually reach today).
+    await this.redisService.del(blockedKey(targetUserId));
 
     return toSafeUser(updated);
   }
@@ -367,6 +384,37 @@ export class UsersService {
       UserStatus.BLOCKED,
     );
 
+    await this.revokeAllSessions(targetUserId);
+
     return toSafeUser(updated);
+  }
+
+  /**
+   * Shared by suspendUser() and blockUser() — both need the exact same "kill every existing
+   * session" treatment, just landing on a different final status. Three independent mechanisms,
+   * matching the three ways a session persists (see jwt.strategy.ts / auth.service.ts / this
+   * sprint's report for the full reasoning):
+   *  - Redis `auth:blocked:<id>` flag: makes already-issued access tokens stop working within
+   *    one Redis round-trip, rather than surviving up to their full 15-minute lifetime.
+   *  - revokeAllRefreshTokens: stops the account from minting any *new* access tokens via
+   *    /auth/refresh once the current one(s) expire or get rejected by the flag above.
+   *  - disconnectUser: drops any live Socket.IO connection(s) immediately, rather than leaving
+   *    them open until the client's next HTTP call happens to hit the blocked check.
+   * Best-effort on the Redis/socket steps specifically (failures there are logged, not thrown) —
+   * the DB status change and the durable refresh-token revocation above are what must never be
+   * allowed to silently fail, and both already happened before this runs.
+   */
+  private async revokeAllSessions(userId: string): Promise<void> {
+    await this.authService.revokeAllRefreshTokens(userId);
+
+    try {
+      await this.redisService.set(blockedKey(userId), '1');
+    } catch {
+      // Redis unavailable — the refresh-token revocation above still holds; the access-token
+      // window is bounded to at most 15 minutes regardless, same fail-open posture as
+      // jwt.strategy.ts's own Redis calls.
+    }
+
+    this.realtimeService.disconnectUser(userId);
   }
 }

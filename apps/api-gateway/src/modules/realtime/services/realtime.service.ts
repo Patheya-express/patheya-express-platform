@@ -58,4 +58,9 @@ export class RealtimeService {
   isReady(): boolean {
     return !!this.gateway.server;
   }
+
+  /** Force-disconnects every live socket for this user — see RealtimeGateway.disconnectUser. */
+  disconnectUser(userId: string): void {
+    this.gateway.disconnectUser(userId);
+  }
 }

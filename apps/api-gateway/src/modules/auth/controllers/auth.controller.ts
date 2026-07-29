@@ -1,4 +1,6 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+
+import type { Request } from 'express';
 
 import {
   ApiBearerAuth,
@@ -226,8 +228,20 @@ export class AuthController {
   logout(
     @Body()
     dto: RefreshTokenDto,
+
+    @Req()
+    request: Request,
   ) {
-    return this.authService.logout(dto.refreshToken);
+    // Deliberately not @UseGuards(JwtAuthGuard) — logout must still revoke the refresh token
+    // (the guarantee that matters) even if the caller's access token has already expired.
+    // The access token, if present and still valid, is used only as a best-effort extra signal
+    // (see AuthService.logout) — never required.
+    const authHeader = request.headers.authorization;
+    const accessToken = authHeader?.startsWith('Bearer ')
+      ? authHeader.slice(7)
+      : undefined;
+
+    return this.authService.logout(dto.refreshToken, accessToken);
   }
 
   @Post('forgot-password')

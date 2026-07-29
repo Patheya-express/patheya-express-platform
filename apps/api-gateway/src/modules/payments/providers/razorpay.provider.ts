@@ -4,6 +4,24 @@ import Razorpay from 'razorpay';
 
 import * as crypto from 'crypto';
 
+/**
+ * Constant-time signature comparison — a plain `===` leaks timing information proportional to
+ * how many leading bytes match, which is a textbook (if hard-to-exploit-remotely) side channel
+ * for guessing a valid signature byte-by-byte. `crypto.timingSafeEqual` throws if the two
+ * buffers differ in length, so that's checked first — an attacker-supplied signature of the
+ * wrong length is simply invalid, not a crash.
+ */
+function timingSafeEqualStrings(a: string, b: string): boolean {
+  const bufferA = Buffer.from(a);
+  const bufferB = Buffer.from(b);
+
+  if (bufferA.length !== bufferB.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(bufferA, bufferB);
+}
+
 @Injectable()
 export class RazorpayProvider {
   private readonly razorpay: Razorpay;
@@ -26,7 +44,7 @@ export class RazorpayProvider {
     });
   }
 
-  async verifySignature(payload: any) {
+  verifySignature(payload: any): boolean {
     const generatedSignature = crypto
       .createHmac(
         'sha256',
@@ -38,7 +56,10 @@ export class RazorpayProvider {
 
       .digest('hex');
 
-    return generatedSignature === payload.razorpay_signature;
+    return timingSafeEqualStrings(
+      generatedSignature,
+      payload.razorpay_signature ?? '',
+    );
   }
 
   verifyWebhookSignature(payload: string, signature: string): boolean {
@@ -53,7 +74,7 @@ export class RazorpayProvider {
 
       .digest('hex');
 
-    return generatedSignature === signature;
+    return timingSafeEqualStrings(generatedSignature, signature ?? '');
   }
 
   async refund(paymentId: string, amount: number) {

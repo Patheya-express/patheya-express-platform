@@ -23,6 +23,7 @@ import {
   AdminComplianceController,
 } from './controllers/compliance.controller';
 import { ProfileController } from './controllers/profile.controller';
+import { ProofController } from './controllers/proof.controller';
 
 import { DeliveryService } from './services/delivery.service';
 import { VehiclesService } from './services/vehicles.service';
@@ -32,6 +33,7 @@ import { VerificationService } from './services/verification.service';
 import { OnboardingService } from './services/onboarding.service';
 import { ComplianceService } from './services/compliance.service';
 import { ProfileService } from './services/profile.service';
+import { ProofService } from './services/proof.service';
 
 import { DeliveryRepository } from './repositories/delivery.repository';
 import { VehiclesRepository } from './repositories/vehicles.repository';
@@ -40,6 +42,7 @@ import { BankAccountRepository } from './repositories/bank-account.repository';
 import { VerificationRepository } from './repositories/verification.repository';
 import { OnboardingRepository } from './repositories/onboarding.repository';
 import { ComplianceRepository } from './repositories/compliance.repository';
+import { ProofRepository } from './repositories/proof.repository';
 
 import { DeliveryPartnerCreatedOnboardingListener } from './listeners/delivery-partner-created-onboarding.listener';
 
@@ -48,6 +51,7 @@ import { UsersModule } from '../users/users.module';
 import { OrdersModule } from '../orders/orders.module';
 import { AuditModule } from '../audit/audit.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
   imports: [
@@ -56,6 +60,9 @@ import { NotificationsModule } from '../notifications/notifications.module';
     forwardRef(() => OrdersModule),
     AuditModule,
     NotificationsModule,
+    // Only needed for PasswordService (Sprint 4.1 — reused to hash/compare proof OTP codes the
+    // same way user passwords are hashed, rather than adding a second bcrypt wrapper).
+    AuthModule,
   ],
 
   controllers: [
@@ -72,6 +79,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     DeliveryComplianceController,
     AdminComplianceController,
     ProfileController,
+    ProofController,
   ],
 
   providers: [
@@ -90,6 +98,8 @@ import { NotificationsModule } from '../notifications/notifications.module';
     ComplianceService,
     ComplianceRepository,
     ProfileService,
+    ProofService,
+    ProofRepository,
     DeliveryPartnerCreatedOnboardingListener,
   ],
 

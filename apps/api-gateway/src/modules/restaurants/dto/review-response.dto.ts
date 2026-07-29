@@ -29,4 +29,15 @@ export class ReviewResponseDto {
 
   @ApiProperty()
   updatedAt: Date;
+
+  @ApiPropertyOptional({
+    description: 'The restaurant owner/manager reply, if one has been posted.',
+  })
+  replyText?: string;
+
+  @ApiPropertyOptional()
+  replyCreatedAt?: Date;
+
+  @ApiPropertyOptional()
+  replyUpdatedAt?: Date;
 }

@@ -41,9 +41,27 @@ export class PaymentsRepository {
   }
 
   async findByProviderOrderId(providerOrderId: string) {
-    return this.prisma.payment.findFirst({
+    return this.prisma.payment.findUnique({
       where: {
         providerOrderId,
+      },
+    });
+  }
+
+  /** Same lookup, plus the order's customerId — used only by the client-driven verify endpoint,
+   *  which (unlike the webhook) has an authenticated caller whose identity must be checked
+   *  against the order being verified. */
+  async findByProviderOrderIdWithOwner(providerOrderId: string) {
+    return this.prisma.payment.findUnique({
+      where: {
+        providerOrderId,
+      },
+      include: {
+        order: {
+          select: {
+            customerId: true,
+          },
+        },
       },
     });
   }
@@ -96,6 +114,38 @@ export class PaymentsRepository {
       data: {
         status,
         providerPaymentId,
+        ...(method ? { method } : {}),
+      },
+    });
+  }
+
+  /**
+   * The atomic claim behind every payment status transition (see
+   * PaymentsService.transitionPaymentStatus / payment-state-machine.ts's
+   * getAllowedSourceStatuses doc comment for the full reasoning). `updateMany`'s `WHERE status IN
+   * (...)` is evaluated and applied by Postgres as a single atomic statement — two concurrent
+   * callers racing to transition the same payment (e.g. the client's verify call and Razorpay's
+   * webhook both reporting the same capture) can never both succeed: whichever commits first
+   * changes the row's status out of the allowed set, so the second one's `WHERE` no longer
+   * matches and it legitimately affects zero rows. No SELECT ... FOR UPDATE, advisory lock, or
+   * SERIALIZABLE isolation needed — a plain conditional UPDATE already serializes at the
+   * row-lock level regardless of isolation level.
+   */
+  async claimStatusTransition(
+    paymentId: string,
+    allowedFromStatuses: TransactionStatus[],
+    nextStatus: TransactionStatus,
+    providerPaymentId?: string,
+    method?: PaymentMethod,
+  ): Promise<{ count: number }> {
+    return this.prisma.payment.updateMany({
+      where: {
+        id: paymentId,
+        status: { in: allowedFromStatuses },
+      },
+      data: {
+        status: nextStatus,
+        ...(providerPaymentId ? { providerPaymentId } : {}),
         ...(method ? { method } : {}),
       },
     });

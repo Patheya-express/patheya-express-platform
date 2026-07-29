@@ -13,6 +13,8 @@ import { PaymentsModule } from '../payments/payments.module';
 import { RestaurantsModule } from '../restaurants/restaurants.module';
 import { AddressesModule } from '../addresses/addresses.module';
 import { AuditModule } from '../audit/audit.module';
+import { PricingModule } from '../pricing/pricing.module';
+import { CouponsModule } from '../coupons/coupons.module';
 
 @Module({
   imports: [
@@ -21,6 +23,8 @@ import { AuditModule } from '../audit/audit.module';
     RestaurantsModule,
     AddressesModule,
     AuditModule,
+    PricingModule,
+    CouponsModule,
   ],
 
   controllers: [OrdersController],

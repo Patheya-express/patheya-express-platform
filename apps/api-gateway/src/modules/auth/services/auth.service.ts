@@ -35,6 +35,8 @@ import { hashToken } from '../../../shared/crypto/crypto.util';
 
 import { AppLoggerService } from '../../../infrastructure/logger/logger.service';
 
+import { RedisService } from '../../../infrastructure/redis/redis.service';
+
 const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const PASSWORD_RESET_TOKEN_TTL_MS = 30 * 60 * 1000;
@@ -59,6 +61,8 @@ export class AuthService {
     private readonly config: ConfigService,
 
     private readonly logger: AppLoggerService,
+
+    private readonly redisService: RedisService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -279,8 +283,52 @@ export class AuthService {
     return this.issueTokens(existingToken.user);
   }
 
-  async logout(refreshToken: string) {
+  /**
+   * Revoking the refresh token (DB-backed, durable) is the guarantee that matters most — it's
+   * what makes "no reusable refresh token" true regardless of Redis availability. Blacklisting
+   * the presented access token's `jti` on top of that is defense-in-depth: it closes the
+   * remaining (at most ACCESS_TOKEN_EXPIRES-long, currently 15 minutes) window where a
+   * just-logged-out access token would otherwise still pass JwtStrategy. Deliberately best-effort
+   * and scoped to only the access token actually presented at logout — not a revoke-all, so
+   * other devices/tabs the same user is still legitimately logged in on are unaffected. If no
+   * access token was presented, or it's already invalid/expired, or Redis is unavailable, logout
+   * still succeeds (refresh-token revocation already happened) — this never blocks logout itself.
+   */
+  async logout(refreshToken: string, accessToken?: string) {
     await this.authRepository.revokeRefreshToken(hashToken(refreshToken));
+
+    if (accessToken) {
+      try {
+        const payload = await this.tokenService.verifyAccessToken(accessToken);
+
+        if (
+          typeof payload.jti === 'string' &&
+          typeof payload.exp === 'number'
+        ) {
+          const ttlSeconds = payload.exp - Math.floor(Date.now() / 1000);
+
+          if (ttlSeconds > 0) {
+            await this.redisService.set(
+              `auth:blacklist:${payload.jti}`,
+              '1',
+              ttlSeconds,
+            );
+          }
+        }
+      } catch (error) {
+        // Either the access token itself was already invalid/expired (nothing to blacklist —
+        // it wouldn't have passed JwtStrategy anyway) or Redis is unavailable. Either way this
+        // is a defense-in-depth step on top of the refresh-token revocation above, which already
+        // succeeded — never let this fail the logout call itself.
+        this.logger.warn(
+          {
+            event: 'auth_logout_blacklist_skipped',
+            reason: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'AuthService',
+        );
+      }
+    }
 
     this.logger.log({ event: 'auth_logout' }, 'AuthService');
 

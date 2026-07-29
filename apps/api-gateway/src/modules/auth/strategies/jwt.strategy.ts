@@ -1,12 +1,21 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 
 import { PassportStrategy } from '@nestjs/passport';
 
 import { ExtractJwt, Strategy } from 'passport-jwt';
 
+import { RedisService } from '../../../infrastructure/redis/redis.service';
+
+interface AccessTokenPayload {
+  sub: string;
+  email: string | null;
+  role: string;
+  jti?: string;
+}
+
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
-  constructor() {
+  constructor(private readonly redisService: RedisService) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
 
@@ -16,13 +25,53 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  async validate(payload: any) {
+  /**
+   * Runs on every authenticated request. Two lightweight Redis lookups (not a DB query) close
+   * the two gaps a stateless, signature-only JWT otherwise leaves open:
+   *  - `auth:blacklist:<jti>` — set by AuthService.logout() for the specific access token that
+   *    was just logged out (TTL'd to that token's own remaining lifetime, so the key never
+   *    outlives the token it guards).
+   *  - `auth:blocked:<userId>` — set by UsersService.suspendUser()/blockUser() (cleared by
+   *    activateUser()/restoreUser()), so a suspended/blocked account's already-issued access
+   *    tokens stop working within one Redis round-trip rather than surviving up to their full
+   *    15-minute lifetime.
+   * Both keys are looked up in parallel. If Redis itself is unavailable, this fails OPEN (logs
+   * and allows the request through on signature/expiry alone, same as before this existed) —
+   * matching this codebase's established Redis-resiliency convention elsewhere (see
+   * RedisService.tryLock's doc comment): a cache/optimization outage must never take down the
+   * whole API, and the JWT's own signature+expiry check still applies regardless.
+   */
+  async validate(payload: AccessTokenPayload) {
+    let blacklisted: string | null = null;
+    let blocked: string | null = null;
+
+    try {
+      [blacklisted, blocked] = await Promise.all([
+        payload.jti
+          ? this.redisService.get(`auth:blacklist:${payload.jti}`)
+          : Promise.resolve(null),
+        this.redisService.get(`auth:blocked:${payload.sub}`),
+      ]);
+    } catch {
+      // Redis unavailable — fail open, see doc comment above.
+    }
+
+    if (blacklisted) {
+      throw new UnauthorizedException('Session has been logged out');
+    }
+
+    if (blocked) {
+      throw new UnauthorizedException('Account is no longer active');
+    }
+
     return {
       userId: payload.sub,
 
       email: payload.email,
 
       role: payload.role,
+
+      jti: payload.jti,
     };
   }
 }

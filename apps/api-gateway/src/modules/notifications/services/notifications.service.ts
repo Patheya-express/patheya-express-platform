@@ -90,6 +90,7 @@ const PUSH_PREFERENCE_BY_TYPE: Record<NotificationType, PushPreferenceKey> = {
   REFERRAL_REWARD: 'systemPush',
   TICKET_STATUS_CHANGED: 'systemPush',
   TICKET_MESSAGE: 'systemPush',
+  REVIEW_REPLIED: 'reviewsPush',
   GENERAL: 'systemPush',
   // Restaurant-facing types are gated by RestaurantSettings notification preferences
   // (see getRestaurantNotificationPreferences), not by this customer-facing preference map —
@@ -106,6 +107,12 @@ const PUSH_PREFERENCE_BY_TYPE: Record<NotificationType, PushPreferenceKey> = {
   DELIVERY_PARTNER_VERIFICATION_REJECTED: 'systemPush',
   DELIVERY_PARTNER_CHANGES_REQUESTED: 'systemPush',
   DELIVERY_PARTNER_DOCUMENT_EXPIRING: 'systemPush',
+  // Delivery Proof & Trust (Sprint 4.1) — pickup/delivery OTP events are order-lifecycle
+  // notifications, gated the same way ORDER_STATUS_CHANGED already is.
+  PICKUP_OTP_GENERATED: 'orderUpdatesPush',
+  DELIVERY_OTP_GENERATED: 'orderUpdatesPush',
+  PICKUP_VERIFIED: 'orderUpdatesPush',
+  DELIVERY_VERIFIED: 'orderUpdatesPush',
 };
 
 /**

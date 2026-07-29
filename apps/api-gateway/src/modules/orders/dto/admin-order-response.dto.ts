@@ -68,6 +68,12 @@ export class AdminOrderResponseDto {
   @ApiProperty()
   taxAmount: number;
 
+  @ApiPropertyOptional()
+  couponId?: string;
+
+  @ApiProperty()
+  discountAmount: number;
+
   @ApiProperty()
   totalAmount: number;
 

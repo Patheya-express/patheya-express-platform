@@ -12,6 +12,7 @@ import {
   PaymentStatus,
   PaymentProvider as ProviderType,
   PaymentMethod,
+  type Payment,
 } from '@prisma/client';
 
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
@@ -26,6 +27,7 @@ import { QueueService } from '../../../infrastructure/queues/queue.service';
 import { AppLoggerService } from '../../../infrastructure/logger/logger.service';
 import { PAYMENT_EVENTS } from '../events/payment-events.constants';
 import { PaymentStatusValidator } from '../Validators/payment-status.validator';
+import { getAllowedSourceStatuses } from '../constants/payment-state-machine';
 import { GetAdminPaymentsQueryDto } from '../dto/get-admin-payments-query.dto';
 import { PaginatedAdminPaymentsResponseDto } from '../dto/paginated-admin-payments-response.dto';
 import { AdminPaymentResponseDto } from '../dto/admin-payment-response.dto';
@@ -40,6 +42,17 @@ const RAZORPAY_METHOD_MAP: Record<string, string> = {
   netbanking: 'NETBANKING',
   wallet: 'WALLET',
 };
+
+/** The subset of Razorpay's payment entity this service actually reads — both from a webhook
+ *  delivery and from a direct `payments.fetch()` call (see RazorpayProvider.fetchPayment). */
+interface RazorpayPaymentEntity {
+  id: string;
+  order_id: string;
+  amount: number;
+  currency: string;
+  status?: string;
+  method?: string;
+}
 
 /**
  * Flattens the raw Prisma include shape (order.customer as a full User row) into the documented
@@ -187,7 +200,14 @@ export class PaymentsService {
     };
   }
 
-  async verifyPayment(payload: any) {
+  /**
+   * The client-driven verification path (called right after the Razorpay checkout widget's
+   * success handler — see frontend `PaymentsCheckoutService.payForOrder`). `userId` is the
+   * authenticated caller's id (Sprint 1.5 — this endpoint previously had no auth guard at all,
+   * so anything binding the request to the right customer had to be added here); every other
+   * check below was already present or is new in the same sprint, noted inline.
+   */
+  async verifyPayment(payload: any, userId: string) {
     const isValid = await this.razorpayProvider.verifySignature(payload);
 
     if (!isValid) {
@@ -203,57 +223,149 @@ export class PaymentsService {
       throw new ConflictException('Invalid payment signature');
     }
 
-    const payment = await this.paymentsRepository.findByProviderOrderId(
-      payload.razorpay_order_id,
-    );
+    const payment =
+      await this.paymentsRepository.findByProviderOrderIdWithOwner(
+        payload.razorpay_order_id,
+      );
 
     if (!payment) {
       throw new NotFoundException('Payment not found');
     }
 
+    // Ownership check (Sprint 1.5) — the signature alone only proves the request came from
+    // someone who saw a genuine Razorpay callback for this order; it says nothing about who's
+    // presenting it. Without this, any authenticated customer could replay another customer's
+    // (observed/leaked) verify payload and have it processed against someone else's order.
+    if (payment.order.customerId !== userId) {
+      this.logger.error(
+        {
+          event: 'payment_verify_ownership_mismatch',
+          paymentId: payment.id,
+          orderId: payment.orderId,
+          userId,
+        },
+        undefined,
+        'PaymentsService',
+      );
+
+      throw new ForbiddenException('You do not have access to this payment');
+    }
+
     if (payment.status === TransactionStatus.SUCCESS) {
+      // Already processed — a duplicate verify call (double-click, browser retry, or a race
+      // with the webhook) is a no-op, not an error.
       return payment;
     }
 
-    await this.paymentsRepository.deactivateOrderAttempts(payment.orderId);
-
-    const updatedPayment = await this.transitionPaymentStatus(
-      payment.id,
-
-      TransactionStatus.SUCCESS,
-
+    // Amount/currency/capture confirmation (Sprint 1.5) — the HMAC ties order_id to payment_id,
+    // but never on its own confirms what Razorpay actually captured. Asking Razorpay directly
+    // for the authoritative amount/currency/status closes that gap before any money is treated
+    // as received.
+    await this.assertProviderPaymentMatches(
+      payment,
       payload.razorpay_payment_id,
     );
 
-    await this.eventBus.publish(
-      'payment.success',
+    await this.paymentsRepository.deactivateOrderAttempts(payment.orderId);
 
-      {
-        paymentId: payment.id,
+    const { payment: updatedPayment, transitioned } =
+      await this.transitionPaymentStatus(
+        payment.id,
 
-        orderId: payment.orderId,
-      },
-    );
+        TransactionStatus.SUCCESS,
 
-    await this.queueService.addNotificationJob({
-      type: 'payment-success',
+        payload.razorpay_payment_id,
+      );
 
-      orderId: payment.orderId,
-    });
+    if (transitioned) {
+      await this.eventBus.publish(
+        'payment.success',
 
-    this.logger.log(
-      {
-        event: 'payment_verified_client_side',
-        paymentId: payment.id,
-        orderId: payment.orderId,
-      },
-      'PaymentsService',
-    );
+        {
+          paymentId: payment.id,
+
+          orderId: payment.orderId,
+        },
+      );
+
+      await this.enqueuePaymentSuccessNotification(payment.orderId);
+
+      this.logger.log(
+        {
+          event: 'payment_verified_client_side',
+          paymentId: payment.id,
+          orderId: payment.orderId,
+        },
+        'PaymentsService',
+      );
+    }
 
     return updatedPayment;
   }
+
+  /** Fetches the payment directly from Razorpay and confirms it was actually captured, for the
+   *  expected amount, in the expected currency — see verifyPayment's doc comment. */
+  private async assertProviderPaymentMatches(
+    payment: { id: string; orderId: string; amount: any },
+    providerPaymentId: string,
+  ): Promise<void> {
+    const providerPayment = (await this.razorpayProvider.fetchPayment(
+      providerPaymentId,
+    )) as Partial<RazorpayPaymentEntity>;
+    const expectedAmountPaise = Math.round(Number(payment.amount) * 100);
+
+    const matches =
+      providerPayment?.amount === expectedAmountPaise &&
+      providerPayment?.currency === 'INR' &&
+      providerPayment?.status === 'captured';
+
+    if (!matches) {
+      this.logger.error(
+        {
+          event: 'payment_amount_mismatch',
+          paymentId: payment.id,
+          orderId: payment.orderId,
+          expectedAmountPaise,
+          actualAmount: providerPayment?.amount,
+          actualCurrency: providerPayment?.currency,
+          actualStatus: providerPayment?.status,
+        },
+        undefined,
+        'PaymentsService',
+      );
+
+      throw new ConflictException(
+        'Payment amount, currency, or status does not match the expected order',
+      );
+    }
+  }
+
+  /** Best-effort — Redis/BullMQ being unavailable must never fail payment verification itself;
+   *  the DB write (Payment.status, the source of truth) has already committed by the time this
+   *  runs. Same fail-open posture as other best-effort steps elsewhere in this codebase (e.g.
+   *  AuthService.logout's best-effort server-side revoke). */
+  private async enqueuePaymentSuccessNotification(
+    orderId: string,
+  ): Promise<void> {
+    try {
+      await this.queueService.addNotificationJob({
+        type: 'payment-success',
+        orderId,
+      });
+    } catch (error) {
+      this.logger.error(
+        {
+          event: 'payment_notification_enqueue_failed',
+          orderId,
+          reason: error instanceof Error ? error.message : 'Unknown error',
+        },
+        error instanceof Error ? error.stack : undefined,
+        'PaymentsService',
+      );
+    }
+  }
   private async handlePaymentCaptured(payload: any) {
-    const entity = payload.payload.payment.entity;
+    const entity = payload.payload.payment.entity as RazorpayPaymentEntity;
 
     const payment = await this.paymentsRepository.findByProviderOrderId(
       entity.order_id,
@@ -264,43 +376,72 @@ export class PaymentsService {
     }
 
     if (payment.status === TransactionStatus.SUCCESS) {
+      // Already processed — a duplicate webhook delivery (Razorpay retries undelivered/
+      // unacknowledged webhooks) or a race with the client-driven verify call is a no-op.
       return;
     }
 
-    const updatedPayment = await this.transitionPaymentStatus(
-      payment.id,
+    // Amount/currency confirmation (Sprint 1.5) — the webhook's own payload already carries
+    // Razorpay's authoritative captured amount/currency, so unlike verifyPayment this needs no
+    // extra API call; it's the same check applied to the other entry point into SUCCESS.
+    const expectedAmountPaise = Math.round(Number(payment.amount) * 100);
 
-      TransactionStatus.SUCCESS,
+    if (entity.amount !== expectedAmountPaise || entity.currency !== 'INR') {
+      this.logger.error(
+        {
+          event: 'payment_webhook_amount_mismatch',
+          paymentId: payment.id,
+          orderId: payment.orderId,
+          expectedAmountPaise,
+          actualAmount: entity.amount,
+          actualCurrency: entity.currency,
+        },
+        undefined,
+        'PaymentsService',
+      );
 
-      entity.id,
+      // Deliberately does not transition the payment and does not throw — throwing here would
+      // make processWebhook() 500 and cause Razorpay to endlessly retry an event that will
+      // never match. The webhook is still acknowledged (processWebhook's own return), and the
+      // mismatch is logged loudly for manual reconciliation.
+      return;
+    }
 
-      RAZORPAY_METHOD_MAP[entity.method] as PaymentMethod | undefined,
-    );
+    const { payment: updatedPayment, transitioned } =
+      await this.transitionPaymentStatus(
+        payment.id,
 
-    await this.eventBus.publish(
-      'payment.success',
+        TransactionStatus.SUCCESS,
 
-      {
-        paymentId: payment.id,
+        entity.id,
 
-        orderId: payment.orderId,
-      },
-    );
+        entity.method
+          ? (RAZORPAY_METHOD_MAP[entity.method] as PaymentMethod | undefined)
+          : undefined,
+      );
 
-    await this.queueService.addNotificationJob({
-      type: 'payment-success',
+    if (transitioned) {
+      await this.eventBus.publish(
+        'payment.success',
 
-      orderId: payment.orderId,
-    });
+        {
+          paymentId: payment.id,
 
-    this.logger.log(
-      {
-        event: 'payment_captured_webhook',
-        paymentId: payment.id,
-        orderId: payment.orderId,
-      },
-      'PaymentsService',
-    );
+          orderId: payment.orderId,
+        },
+      );
+
+      await this.enqueuePaymentSuccessNotification(payment.orderId);
+
+      this.logger.log(
+        {
+          event: 'payment_captured_webhook',
+          paymentId: payment.id,
+          orderId: payment.orderId,
+        },
+        'PaymentsService',
+      );
+    }
 
     return updatedPayment;
   }
@@ -326,35 +467,34 @@ export class PaymentsService {
       return payment;
     }
 
-    const updatedPayment = await this.transitionPaymentStatus(
-      payment.id,
+    const { payment: updatedPayment, transitioned } =
+      await this.transitionPaymentStatus(
+        payment.id,
 
-      TransactionStatus.SUCCESS,
+        TransactionStatus.SUCCESS,
 
-      providerPaymentId,
-    );
+        providerPaymentId,
+      );
 
-    await this.eventBus.publish(
-      'payment.success',
+    if (transitioned) {
+      await this.eventBus.publish(
+        'payment.success',
 
-      {
-        paymentId: payment.id,
+        {
+          paymentId: payment.id,
 
-        orderId: payment.orderId,
-      },
-    );
+          orderId: payment.orderId,
+        },
+      );
 
-    await this.queueService.addNotificationJob({
-      type: 'payment-success',
-
-      orderId: payment.orderId,
-    });
+      await this.enqueuePaymentSuccessNotification(payment.orderId);
+    }
 
     return updatedPayment;
   }
 
   private async handlePaymentFailed(payload: any) {
-    const entity = payload.payload.payment.entity;
+    const entity = payload.payload.payment.entity as RazorpayPaymentEntity;
 
     const payment = await this.paymentsRepository.findByProviderOrderId(
       entity.order_id,
@@ -368,7 +508,7 @@ export class PaymentsService {
       return;
     }
 
-    await this.transitionPaymentStatus(
+    const { transitioned } = await this.transitionPaymentStatus(
       payment.id,
 
       TransactionStatus.FAILED,
@@ -376,26 +516,47 @@ export class PaymentsService {
       entity.id,
     );
 
-    await this.eventBus.publish(
-      'payment.failed',
+    if (transitioned) {
+      await this.eventBus.publish(
+        'payment.failed',
 
-      {
-        paymentId: payment.id,
+        {
+          paymentId: payment.id,
 
-        orderId: payment.orderId,
-      },
-    );
+          orderId: payment.orderId,
+        },
+      );
 
-    this.logger.error(
-      {
-        event: 'payment_failed_webhook',
-        paymentId: payment.id,
-        orderId: payment.orderId,
-      },
-      undefined,
-      'PaymentsService',
-    );
+      this.logger.error(
+        {
+          event: 'payment_failed_webhook',
+          paymentId: payment.id,
+          orderId: payment.orderId,
+        },
+        undefined,
+        'PaymentsService',
+      );
+    }
   }
+  /**
+   * The single choke point every payment status write goes through (verifyPayment,
+   * handlePaymentCaptured, handlePaymentFailed, markPaymentSucceededFromReconciliation,
+   * refundPayment). Sprint 1.5 — this used to be read-status / validate-in-memory / write-status
+   * as three separate calls, a classic check-then-act race: the client's verify call and
+   * Razorpay's webhook (or two overlapping deliveries of either) both reading PENDING before
+   * either had written SUCCESS could both proceed to write. Replaced with an atomic conditional
+   * UPDATE (PaymentsRepository.claimStatusTransition) — see its doc comment and
+   * payment-state-machine.ts's getAllowedSourceStatuses for the full reasoning.
+   *
+   * Returns `transitioned: true` only when THIS call was the one that actually moved the row —
+   * never when it merely confirmed a transition some other, concurrent caller already made.
+   * That distinction is what every call site below uses to decide whether to fire the
+   * once-only downstream effects (event publish, notification) — the atomic claim alone stops
+   * the *row* from being written twice, but every one of N concurrent callers would otherwise
+   * still reach the "success" code path and each fire its own event/notification, since none of
+   * them throws. `transitioned: false` is not an error case; it's the correct, expected outcome
+   * for every loser of the race (or a plain replay of an already-applied transition).
+   */
   private async transitionPaymentStatus(
     paymentId: string,
 
@@ -404,21 +565,33 @@ export class PaymentsService {
     providerPaymentId?: string,
 
     method?: PaymentMethod,
-  ) {
+  ): Promise<{ payment: Payment; transitioned: boolean }> {
     const payment = await this.paymentsRepository.findById(paymentId);
 
     if (!payment) {
       throw new NotFoundException('Payment not found');
     }
 
+    if (payment.status === nextStatus) {
+      // Already there — idempotent no-op, not an error, and not this call's transition.
+      return { payment, transitioned: false };
+    }
+
+    // Fast-fail for a target status this payment could never legally reach from its
+    // last-observed status — cheap, and gives a clean error message without touching the DB
+    // again. This read can be stale by the time the atomic claim below runs; that's fine, since
+    // the claim's own WHERE clause (not this check) is what actually enforces the transition
+    // against a concurrent writer.
     PaymentStatusValidator.validateTransition(
       payment.status,
 
       nextStatus,
     );
 
-    return this.paymentsRepository.updatePaymentStatus(
-      payment.id,
+    const claim = await this.paymentsRepository.claimStatusTransition(
+      paymentId,
+
+      getAllowedSourceStatuses(nextStatus),
 
       nextStatus,
 
@@ -426,6 +599,26 @@ export class PaymentsService {
 
       method,
     );
+
+    if (claim.count === 0) {
+      // Lost the race to a concurrent transition, or the transition was never valid — re-read
+      // to tell the two apart. The row can't have vanished between the reads above and here
+      // (Payment rows are never deleted independently of their Order), so a non-null assertion
+      // is safe.
+      const current = (await this.paymentsRepository.findById(paymentId))!;
+
+      if (current.status === nextStatus) {
+        return { payment: current, transitioned: false };
+      }
+
+      throw new ConflictException(
+        `Invalid payment status transition: ${current.status} -> ${nextStatus}`,
+      );
+    }
+
+    const updated = (await this.paymentsRepository.findById(paymentId))!;
+
+    return { payment: updated, transitioned: true };
   }
 
   async refundPayment(paymentId: string, amount: number, reason?: string) {

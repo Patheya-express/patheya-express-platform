@@ -3,6 +3,7 @@ import {
   IsEnum,
   IsOptional,
   IsString,
+  IsUUID,
   ValidateNested,
 } from 'class-validator';
 
@@ -50,6 +51,13 @@ export class CreateOrderDto {
   @IsString()
   notes?: string;
 
+  @ApiPropertyOptional({
+    description: 'A coupon code to apply to this order, if any.',
+  })
+  @IsOptional()
+  @IsString()
+  couponCode?: string;
+
   @ApiProperty({
     type: [CreateOrderItemDto],
   })
@@ -59,4 +67,15 @@ export class CreateOrderDto {
   })
   @Type(() => CreateOrderItemDto)
   items: CreateOrderItemDto[];
+
+  @ApiProperty({
+    description:
+      'Client-generated UUID identifying this checkout attempt. Generate one per attempt and ' +
+      'reuse the SAME value on any retry of the same attempt (double-click, network timeout, ' +
+      'browser/mobile resubmit) — replaying a key that already produced an order returns that ' +
+      'same order instead of creating a new one. Generate a new UUID only after a successful ' +
+      'order or an explicit cancel.',
+  })
+  @IsUUID('4')
+  idempotencyKey: string;
 }

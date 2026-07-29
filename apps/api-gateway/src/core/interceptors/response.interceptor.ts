@@ -3,6 +3,7 @@ import {
   NestInterceptor,
   ExecutionContext,
   CallHandler,
+  StreamableFile,
 } from '@nestjs/common';
 
 import { Observable } from 'rxjs';
@@ -17,13 +18,23 @@ export class ResponseInterceptor implements NestInterceptor {
     next: CallHandler,
   ): Observable<any> {
     return next.handle().pipe(
-      map((data) => ({
-        success: true,
+      map((data) => {
+        // StreamableFile responses (file downloads) must reach Nest's built-in stream
+        // handling untouched — wrapping one in the envelope turns it into a plain object,
+        // which Nest can no longer recognize as a stream, and the file body gets
+        // JSON-serialized instead of streamed.
+        if (data instanceof StreamableFile) {
+          return data;
+        }
 
-        timestamp: new Date().toISOString(),
+        return {
+          success: true,
 
-        data,
-      })),
+          timestamp: new Date().toISOString(),
+
+          data,
+        };
+      }),
     );
   }
 }

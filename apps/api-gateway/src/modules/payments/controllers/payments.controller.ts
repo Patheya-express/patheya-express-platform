@@ -148,10 +148,11 @@ export class PaymentsController {
     );
   }
 
+  @ApiBearerAuth('JWT-auth')
   @ApiOperation({
     summary: 'Verify payment',
     description:
-      'Verifies the Razorpay payment signature and marks the payment as successful.',
+      'Verifies the Razorpay payment signature and marks the payment as successful. Requires the caller to be the customer who owns the order being paid for.',
   })
   @ApiBody({
     type: VerifyPaymentDto,
@@ -160,12 +161,16 @@ export class PaymentsController {
     description: 'Payment verified successfully',
     type: PaymentResponseDto,
   })
+  @UseGuards(JwtAuthGuard)
   @Post('verify')
   verifyPayment(
+    @CurrentUser()
+    user: any,
+
     @Body()
     dto: VerifyPaymentDto,
   ) {
-    return this.paymentsService.verifyPayment(dto);
+    return this.paymentsService.verifyPayment(dto, user.userId);
   }
 
   @ApiBearerAuth('JWT-auth')

@@ -68,6 +68,23 @@ export class OrdersRepository extends BaseRepository {
     });
   }
 
+  /** Backs OrdersService.placeOrder's idempotent-replay check — single indexed lookup against
+   *  the (customerId, idempotencyKey) unique index, same shape/include as createOrder so either
+   *  path can be returned to the controller identically. */
+  async findOrderByIdempotencyKey(customerId: string, idempotencyKey: string) {
+    return this.prisma.order.findUnique({
+      where: {
+        customerId_idempotencyKey: { customerId, idempotencyKey },
+      },
+
+      include: {
+        items: {
+          include: ORDER_ITEM_INCLUDE,
+        },
+      },
+    });
+  }
+
   /**
    * Paginated, filterable order history for the customer-facing "my orders" screen — mirrors
    * the shape of findAllForAdmin but pre-scoped to a single customerId (never accepts one as a

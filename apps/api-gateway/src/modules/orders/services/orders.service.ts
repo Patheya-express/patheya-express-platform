@@ -3,9 +3,12 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  ConflictException,
   Inject,
   forwardRef,
 } from '@nestjs/common';
+
+import { randomBytes } from 'crypto';
 
 import {
   OrderStatus,
@@ -14,6 +17,9 @@ import {
   TransactionStatus,
   AuditAction,
   UserRole,
+  DeliveryProofType,
+  DeliveryProofOtpStatus,
+  Prisma,
 } from '@prisma/client';
 
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
@@ -33,7 +39,7 @@ import { CancelOrderDto } from '../dto/cancel-order.dto';
 import { ForceCompleteOrderDto } from '../dto/force-complete-order.dto';
 import { RefundOrderDto } from '../dto/refund-order.dto';
 
-import { EventBusService } from 'src/core/events/event-bus.service';
+import { EventBusService } from '../../../core/events/event-bus.service';
 
 import { OrderPlacedEvent } from '../events/order-placed.event';
 
@@ -56,13 +62,57 @@ import {
 } from '../../../shared/authorization/order-access.util';
 import { getRestaurantOrderSettings } from '../../../shared/restaurant/restaurant-order-settings.util';
 import { QueueService } from '../../../infrastructure/queues/queue.service';
+import { RedisService } from '../../../infrastructure/redis/redis.service';
 import { AuditService } from '../../audit/services/audit.service';
 import { AppLoggerService } from '../../../infrastructure/logger/logger.service';
+import { PricingEngineService } from '../../pricing/pricing.service';
+import { CouponsService } from '../../coupons/services/coupons.service';
 
 const TERMINAL_ORDER_STATUSES: OrderStatus[] = [
   OrderStatus.DELIVERED,
   OrderStatus.CANCELLED,
 ];
+
+/**
+ * How long the fast-path placement lock (see placeOrder) is held for, worst-case. Generous
+ * relative to the normal sub-second pipeline duration so a slow-but-legitimate request is never
+ * pre-empted by its own retry; just a safety net if the holder crashes before its `finally`
+ * releases the lock — the DB unique constraint on (customerId, idempotencyKey) remains correct
+ * regardless of what this TTL is set to, so this value is a latency/UX tuning knob, not a
+ * correctness one.
+ */
+const ORDER_PLACEMENT_LOCK_TTL_MS = 30_000;
+
+/**
+ * Sprint 1.2A review finding: the previous `ORD-${Date.now()}` scheme has no collision
+ * resistance under real concurrency — two unrelated orders placed in the same millisecond
+ * (entirely plausible multi-restaurant platform traffic, not a contrived edge case) generate the
+ * identical orderNumber and the losing request's createOrder() crashes on `orders.orderNumber`'s
+ * existing @unique constraint. That failure is unrelated to and NOT caught by the
+ * idempotency-key P2002 handling in placeOrder() (it's a different unique index), so it would
+ * have surfaced as an opaque 500 for a perfectly legitimate, distinct order.
+ *
+ * Fix: a UTC date prefix (human-readable, lets support/admin search "today's orders" via the
+ * existing `contains` search on this same field — see OrdersRepository.findCustomerOrders/
+ * findAllForAdmin, unchanged) plus 24 bits of random suffix (~16.7M values/day — collision
+ * probability only becomes meaningful in the thousands of orders/day range, at which point the
+ * pre-existing `orders.orderNumber` unique constraint still fails closed rather than silently
+ * duplicating). Not sequential/predictable (no information about order volume or ordering is
+ * leaked), not a UUID (kept short and human-speakable for phone/support use, matching how
+ * orderNumber is actually displayed — see OrderDetailsPage, admin/restaurant/delivery dashboards,
+ * and the Razorpay payment description). No schema change: `orderNumber` was already a plain
+ * `String @unique` column with no format assumption baked into it anywhere.
+ */
+function generateOrderNumber(): string {
+  const now = new Date();
+  const datePart =
+    `${now.getUTCFullYear()}` +
+    `${String(now.getUTCMonth() + 1).padStart(2, '0')}` +
+    `${String(now.getUTCDate()).padStart(2, '0')}`;
+  const randomPart = randomBytes(3).toString('hex').toUpperCase();
+
+  return `ORD-${datePart}-${randomPart}`;
+}
 
 /**
  * Single order-status state machine, shared by every caller (restaurant/admin-facing
@@ -100,6 +150,24 @@ const DELIVERY_PARTNER_ONLY_STATUSES: OrderStatus[] = [
   OrderStatus.OUT_FOR_DELIVERY,
   OrderStatus.DELIVERED,
 ];
+
+/**
+ * Delivery Proof & Trust (Sprint 4.1) — the proof-of-pickup/proof-of-delivery OTP type that must
+ * have a VERIFIED DeliveryProofOtp row before a delivery partner (not admin — see the isAdmin
+ * bypass in assertProofVerifiedForStatus) may advance an order to that status. Closes the gap
+ * this sprint exists for: previously a delivery partner could call this same
+ * updateOrderStatus/assertActorAllowedForStatus path directly (via either
+ * PATCH /orders/:orderId/status or PATCH /delivery/orders/:orderId/status — both land here) and
+ * flip OUT_FOR_DELIVERY/DELIVERED with zero customer-side confirmation. ProofService.verify()
+ * marks the OTP VERIFIED *before* calling into this same updateOrderStatus method, so the proof
+ * flow itself always satisfies this check by construction.
+ */
+const REQUIRED_PROOF_TYPE_FOR_STATUS: Partial<
+  Record<OrderStatus, DeliveryProofType>
+> = {
+  [OrderStatus.OUT_FOR_DELIVERY]: DeliveryProofType.PICKUP,
+  [OrderStatus.DELIVERED]: DeliveryProofType.DELIVERY,
+};
 
 const RESTAURANT_STAFF_ROLES: UserRole[] = [
   UserRole.RESTAURANT_OWNER,
@@ -176,6 +244,8 @@ function toAdminOrder(order: any): AdminOrderResponseDto {
     subtotalAmount: order.subtotalAmount,
     deliveryFee: order.deliveryFee,
     taxAmount: order.taxAmount,
+    couponId: order.couponId ?? undefined,
+    discountAmount: order.discountAmount,
     totalAmount: order.totalAmount,
     deliveryAddress: order.deliveryAddress,
     notes: order.notes,
@@ -201,8 +271,11 @@ export class OrdersService {
     private readonly addressesService: AddressesService,
     private readonly realtimeService: RealtimeService,
     private readonly queueService: QueueService,
+    private readonly redisService: RedisService,
     private readonly auditService: AuditService,
     private readonly logger: AppLoggerService,
+    private readonly pricingEngineService: PricingEngineService,
+    private readonly couponsService: CouponsService,
   ) {}
 
   /** Throws unless the acting user is this order's customer, its assigned delivery partner, its restaurant's owner/manager, or an admin. */
@@ -267,6 +340,33 @@ export class OrdersService {
     }
   }
 
+  /** See REQUIRED_PROOF_TYPE_FOR_STATUS's doc comment. Admins bypass this (support overrides), matching the isAdmin escape hatch already used throughout the delivery/dispatch/tracking modules. */
+  private async assertProofVerifiedForStatus(
+    orderId: string,
+    status: OrderStatus,
+    user: AuthenticatedUser,
+  ): Promise<void> {
+    if (user.role !== UserRole.DELIVERY_PARTNER) {
+      return;
+    }
+
+    const requiredType = REQUIRED_PROOF_TYPE_FOR_STATUS[status];
+
+    if (!requiredType) {
+      return;
+    }
+
+    const otp = await this.prisma.deliveryProofOtp.findUnique({
+      where: { orderId_type: { orderId, type: requiredType } },
+    });
+
+    if (!otp || otp.status !== DeliveryProofOtpStatus.VERIFIED) {
+      throw new ForbiddenException(
+        `A verified ${requiredType.toLowerCase()} OTP is required before marking this order as ${status}`,
+      );
+    }
+  }
+
   /** Lightweight ownership lookup reused by other modules (e.g. tracking) that need to authorize against an order without fetching its full item graph. */
   async getOrderOwnership(orderId: string) {
     const order = await this.ordersRepository.findOrderOwnership(orderId);
@@ -287,11 +387,110 @@ export class OrdersService {
     return order;
   }
 
+  /**
+   * Enterprise order idempotency (Sprint 1.2). `dto.idempotencyKey` is a client-generated UUID,
+   * one per checkout attempt, reused verbatim on any retry of that same attempt (double-click,
+   * network timeout, browser/mobile resubmit, proxy retry). Two layers, in order:
+   *
+   *  1. Fast path — a single indexed lookup on (customerId, idempotencyKey). If a row already
+   *     exists for this key (the attempt already succeeded, however long ago), return it
+   *     unchanged: no new order, no re-running pricing/coupon/payment logic, no duplicate side
+   *     effects of any kind. This alone covers the overwhelming majority of real retries (the
+   *     client got a timeout/disconnect but the first request actually succeeded server-side).
+   *
+   *  2. Durable correctness — the DB's own @@unique([customerId, idempotencyKey]) constraint on
+   *     Order (see schema.prisma) guarantees at most one row can ever exist for a given key, even
+   *     under true concurrency (two requests racing past step 1 before either has committed).
+   *     If this request's own createOrder() loses that race, its insert fails with Prisma P2002;
+   *     that's caught below and the winning row is fetched and returned instead — never a 500,
+   *     never a second order. This guarantee holds unconditionally, with zero dependency on Redis
+   *     or any other infrastructure being available.
+   *
+   * A short-lived Redis advisory lock (tryLock) sits in front of step 2 purely as a latency/UX
+   * optimization: it lets a rapid duplicate (e.g. 5 retries in 300ms from a flaky connection)
+   * fail fast with a clear "already processing" error instead of every copy redundantly
+   * re-running menu lookups/pricing/coupon validation before being disambiguated at the final
+   * insert. It is explicitly best-effort and fails OPEN: if Redis is unavailable, that's caught,
+   * logged, and placement proceeds without the fast lock — correctness is carried entirely by #2
+   * above regardless.
+   */
   async placeOrder(
     customerId: string,
 
     dto: CreateOrderDto,
   ) {
+    const existingOrder = await this.ordersRepository.findOrderByIdempotencyKey(
+      customerId,
+      dto.idempotencyKey,
+    );
+
+    if (existingOrder) {
+      this.logger.log(
+        {
+          event: 'order_placement_idempotent_replay',
+          customerId,
+          idempotencyKey: dto.idempotencyKey,
+          orderId: existingOrder.id,
+        },
+        'OrdersService',
+      );
+
+      return {
+        ...existingOrder,
+
+        items: flattenOrderItems(existingOrder.items),
+      };
+    }
+
+    const lockKey = `order-placement-lock:${customerId}:${dto.idempotencyKey}`;
+    let lockAcquired = false;
+
+    try {
+      lockAcquired = await this.redisService.tryLock(
+        lockKey,
+        ORDER_PLACEMENT_LOCK_TTL_MS,
+      );
+
+      if (!lockAcquired) {
+        throw new ConflictException(
+          'A request with this idempotency key is already being processed. Please retry shortly.',
+        );
+      }
+    } catch (error) {
+      if (error instanceof ConflictException) {
+        throw error;
+      }
+
+      // Redis unavailable/erroring — proceed without the fast-path lock. Correctness is still
+      // fully guaranteed by the DB unique constraint caught around createOrder() below.
+      this.logger.warn(
+        {
+          event: 'order_placement_lock_unavailable',
+          customerId,
+          idempotencyKey: dto.idempotencyKey,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'OrdersService',
+      );
+    }
+
+    try {
+      return await this.placeOrderInternal(customerId, dto);
+    } finally {
+      if (lockAcquired) {
+        await this.redisService.releaseLock(lockKey).catch(() => {
+          // Best-effort — worst case the TTL expires it later; never let cleanup failure mask
+          // the real result of order placement.
+        });
+      }
+    }
+  }
+
+  /** The actual placement pipeline, unchanged from before Sprint 1.2 except for
+   *  (a) threading idempotencyKey into the created row and (b) the P2002 race-loss handling
+   *  around createOrder(). Split out from placeOrder() purely so the idempotency/locking
+   *  wrapper above stays readable — no behavioral significance to the split itself. */
+  private async placeOrderInternal(customerId: string, dto: CreateOrderDto) {
     let deliveryAddress: string;
     let latitude: number | undefined;
     let longitude: number | undefined;
@@ -332,8 +531,6 @@ export class OrdersService {
         },
       },
     });
-
-    let subtotal = 0;
 
     const orderItems = dto.items.map((item) => {
       const menuItem = menuItems.find((m) => m.id === item.menuItemId);
@@ -414,8 +611,6 @@ export class OrdersService {
 
       const totalPrice = (unitPrice + addonsTotal) * item.quantity;
 
-      subtotal += totalPrice;
-
       return {
         menuItemId: item.menuItemId,
 
@@ -435,47 +630,127 @@ export class OrdersService {
       };
     });
 
-    const deliveryFee = 40;
+    const pricingPreview = this.pricingEngineService.calculate(orderItems);
 
-    const taxAmount = subtotal * 0.05;
+    // Sprint 1.3: this atomically claims the usage slot (SERIALIZABLE transaction + conditional
+    // update — see CouponsRepository.reserveRedemption) BEFORE the order is created, so an order
+    // is never created carrying a discount that turns out to be invalid under concurrent load.
+    // If order creation below doesn't pan out for any reason, this claim is released again (see
+    // the catch block) — a failed/superseded attempt must never permanently consume a slot.
+    const reservation = dto.couponCode
+      ? await this.couponsService.reserveRedemption(
+          customerId,
+          dto.couponCode,
+          dto.restaurantId,
+          pricingPreview.subtotal,
+        )
+      : null;
 
-    const totalAmount = subtotal + deliveryFee + taxAmount;
+    const coupon = reservation?.coupon ?? null;
 
-    const orderNumber = `ORD-${Date.now()}`;
+    const pricing = coupon
+      ? this.pricingEngineService.calculate(orderItems, coupon)
+      : pricingPreview;
 
-    const order = await this.ordersRepository.createOrder({
-      customerId,
+    const orderNumber = generateOrderNumber();
 
-      restaurantId: dto.restaurantId,
+    let order;
 
-      branchId: dto.branchId,
+    try {
+      order = await this.ordersRepository.createOrder({
+        customerId,
 
-      addressId,
+        restaurantId: dto.restaurantId,
 
-      paymentMode: dto.paymentMode ?? PaymentMode.ONLINE,
+        branchId: dto.branchId,
 
-      orderNumber,
+        addressId,
 
-      subtotalAmount: subtotal,
+        paymentMode: dto.paymentMode ?? PaymentMode.ONLINE,
 
-      deliveryFee,
+        orderNumber,
 
-      taxAmount,
+        idempotencyKey: dto.idempotencyKey,
 
-      totalAmount,
+        subtotalAmount: pricing.subtotal,
 
-      deliveryAddress,
+        deliveryFee: pricing.deliveryFee,
 
-      latitude,
+        taxAmount: pricing.taxAmount,
 
-      longitude,
+        couponId: coupon?.id,
 
-      notes: dto.notes,
+        discountAmount: pricing.discountAmount,
 
-      items: {
-        create: orderItems,
-      },
-    });
+        totalAmount: pricing.totalAmount,
+
+        deliveryAddress,
+
+        latitude,
+
+        longitude,
+
+        notes: dto.notes,
+
+        items: {
+          create: orderItems,
+        },
+      });
+    } catch (error) {
+      // The order attempt did not produce a real order — whatever coupon slot was reserved above
+      // must not be left permanently consumed (Sprint 1.3: "cancelled/failed attempts release
+      // coupon usage"). Applies to every failure path below, not just the idempotency-race one.
+      if (reservation) {
+        await this.couponsService.releaseRedemption(
+          reservation.coupon.id,
+          reservation.redemptionId,
+        );
+      }
+
+      // Lost a race to a concurrent request for the SAME idempotency key that committed first
+      // (possible whenever the fast-path lock above didn't run — Redis was down — or two
+      // requests both landed inside the same lock's TTL window). The unique
+      // (customerId, idempotencyKey) index guarantees the row that's now visible IS the one
+      // order for this attempt: fetch and return it rather than surfacing an error or, worse,
+      // silently creating a duplicate.
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        const winner = await this.ordersRepository.findOrderByIdempotencyKey(
+          customerId,
+          dto.idempotencyKey,
+        );
+
+        if (winner) {
+          this.logger.log(
+            {
+              event: 'order_placement_lost_race',
+              customerId,
+              idempotencyKey: dto.idempotencyKey,
+              orderId: winner.id,
+            },
+            'OrdersService',
+          );
+
+          return {
+            ...winner,
+
+            items: flattenOrderItems(winner.items),
+          };
+        }
+      }
+
+      throw error;
+    }
+
+    if (reservation) {
+      await this.couponsService.finalizeRedemption(
+        reservation.redemptionId,
+        order.id,
+        pricing.discountAmount,
+      );
+    }
 
     await this.ordersRepository.createStatusHistory({
       orderId: order.id,
@@ -862,6 +1137,8 @@ export class OrdersService {
     }
 
     this.assertActorAllowedForStatus(dto.status, user);
+
+    await this.assertProofVerifiedForStatus(orderId, dto.status, user);
 
     const updatedOrder = await this.ordersRepository.updateOrderStatus(
       orderId,

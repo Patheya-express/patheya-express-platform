@@ -153,6 +153,20 @@ export class RealtimeGateway
     this.logger.log(`Disconnected: ${client.id}`);
   }
 
+  /**
+   * Force-disconnects every socket belonging to this user, across every device/tab and every
+   * pod (via the Redis adapter attached in afterInit — `disconnectSockets` is adapter-aware, not
+   * just local to this process). Used by UsersService on suspend/block, where the whole account
+   * should lose realtime access immediately, not just the one session being acted on. Relies on
+   * the client having already joined its own `user:<id>` room (which every authenticated client
+   * does today for notifications/wallet/order-tracking pushes) — a socket that never joined that
+   * room will still be rejected on its next `join-room`/HTTP call by the blacklist/blocked check
+   * (jwt.strategy.ts), so this is a fast-path, not the only backstop.
+   */
+  disconnectUser(userId: string): void {
+    void this.server.in(`user:${userId}`).disconnectSockets(true);
+  }
+
   private extractToken(client: Socket): string | undefined {
     const authToken = client.handshake.auth?.['token'] as string | undefined;
 

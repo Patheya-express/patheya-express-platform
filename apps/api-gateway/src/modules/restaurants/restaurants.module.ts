@@ -46,9 +46,10 @@ import { HolidaysRepository } from './repositories/holidays.repository';
 
 import { OffersModule } from '../offers/offers.module';
 import { AuditModule } from '../audit/audit.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
-  imports: [OffersModule, AuditModule],
+  imports: [OffersModule, AuditModule, NotificationsModule],
 
   controllers: [
     RestaurantsController,

@@ -391,6 +391,7 @@ enum NotificationType {
   REFERRAL_REWARD
   TICKET_STATUS_CHANGED
   TICKET_MESSAGE
+  REVIEW_REPLIED
   GENERAL
 
   /**
@@ -412,6 +413,16 @@ enum NotificationType {
   DELIVERY_PARTNER_VERIFICATION_REJECTED
   DELIVERY_PARTNER_CHANGES_REQUESTED
   DELIVERY_PARTNER_DOCUMENT_EXPIRING
+
+  /**
+   * Delivery Proof & Trust (Sprint 4.1) — pickup/delivery OTP lifecycle. The GENERATED types go
+   * to the customer (who reads the code to their delivery partner); the VERIFIED types go to the
+   * delivery partner (confirmation their entered code was accepted).
+   */
+  PICKUP_OTP_GENERATED
+  DELIVERY_OTP_GENERATED
+  PICKUP_VERIFIED
+  DELIVERY_VERIFIED
 }
 
 enum OfferType {
@@ -421,6 +432,17 @@ enum OfferType {
   BUY_ONE_GET_ONE
   CASHBACK
   OTHER
+}
+
+enum CouponType {
+  PERCENTAGE
+  FLAT
+  FREE_DELIVERY
+}
+
+enum CouponScope {
+  PLATFORM
+  RESTAURANT
 }
 
 enum NotificationChannel {
@@ -636,6 +658,7 @@ model User {
   referralsMade      Referral[]          @relation("ReferralsMade")
   referralReceived   Referral?           @relation("ReferralsReceived")
   recentSearches     RecentSearch[]
+  couponRedemptions  CouponRedemption[]
 
   customerTickets   SupportTicket[]    @relation("CustomerTickets")
   assignedTickets   SupportTicket[]    @relation("AssignedTickets")
@@ -949,6 +972,8 @@ model Restaurant {
   reviews Review[]
 
   offers Offer[]
+
+  coupons Coupon[]
 
   carts Cart[]
 
@@ -1547,6 +1572,19 @@ model Review {
 
   updatedAt DateTime @updatedAt
 
+  /// The restaurant owner/manager's reply text. Null means no reply yet — one reply per review
+  /// (edited in place, not appended), enforced in ReviewsService rather than a separate table
+  /// since a review can only ever have a single, current reply.
+  replyText String?
+
+  replyCreatedAt DateTime?
+
+  replyUpdatedAt DateTime?
+
+  /// Which restaurant-side user authored/last-edited the reply — for audit purposes only, never
+  /// customer-visible.
+  repliedByUserId String?
+
   restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
 
   customer User @relation(fields: [customerId], references: [id], onDelete: Cascade)
@@ -1623,6 +1661,113 @@ model Offer {
   @@index([isActive])
   @@index([type])
   @@map("offers")
+}
+
+model Coupon {
+  id String @id @default(uuid())
+
+  code String @unique
+
+  name String
+
+  description String?
+
+  type CouponType
+
+  /**
+   * Percentage points (e.g. 10 = 10%) for PERCENTAGE, a flat rupee amount for FLAT, ignored for FREE_DELIVERY.
+   */
+  value Decimal @db.Decimal(10, 2)
+
+  /**
+   * Caps the computed discount for PERCENTAGE coupons. Ignored for FLAT and FREE_DELIVERY.
+   */
+  maxDiscountAmount Decimal? @db.Decimal(10, 2)
+
+  minOrderAmount Decimal @default(0) @db.Decimal(10, 2)
+
+  scope CouponScope @default(PLATFORM)
+
+  /**
+   * Required when scope is RESTAURANT, ignored when scope is PLATFORM.
+   */
+  restaurantId String?
+
+  /**
+   * Total redemptions allowed across all customers. Null means unlimited.
+   */
+  usageLimit Int?
+
+  /**
+   * Redemptions allowed per individual customer.
+   */
+  usagePerUser Int @default(1)
+
+  totalUsed Int @default(0)
+
+  startsAt DateTime
+
+  endsAt DateTime
+
+  active Boolean @default(true)
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant? @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  redemptions CouponRedemption[]
+
+  orders Order[]
+
+  @@index([code])
+  @@index([restaurantId])
+  @@index([active])
+  @@index([scope])
+  @@map("coupons")
+}
+
+/**
+ * One row per order a coupon was actually applied to — the ledger `CouponsService` reads to
+ * enforce usageLimit/usagePerUser and that OrdersService writes exactly once per order at
+ * placement time. `orderId` is unique: a single order can redeem at most one coupon.
+ */
+model CouponRedemption {
+  id String @id @default(uuid())
+
+  couponId String
+
+  userId String
+
+  /**
+   * Nullable (Sprint 1.3): CouponsRepository.reserveRedemption inserts this row immediately,
+   * atomically alongside claiming the usage slot — BEFORE the order it belongs to exists — so
+   * that a concurrent reservation attempt by the same user genuinely has something to count
+   * against (closes a per-user race that a later-created row couldn't; see that method's doc
+   * comment). `orderId` is filled in once the order is actually created
+   * (OrdersService.placeOrderInternal -> CouponsService.finalizeRedemption). A row that never
+   * gets linked (the order attempt it was reserved for failed or lost an idempotency race) is
+   * deleted by releaseRedemption rather than left with a null orderId. Still unique when set —
+   * Postgres treats multiple NULLs as distinct, so any number of not-yet-linked rows can coexist
+   * without colliding on this constraint.
+   */
+  orderId String? @unique
+
+  discountAmount Decimal @db.Decimal(10, 2)
+
+  redeemedAt DateTime @default(now())
+
+  coupon Coupon @relation(fields: [couponId], references: [id], onDelete: Cascade)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  order Order? @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([couponId])
+  @@index([userId])
+  @@index([couponId, userId])
+  @@map("coupon_redemptions")
 }
 
 model MenuCategory {
@@ -1777,6 +1922,16 @@ model Order {
 
   orderNumber String @unique
 
+  /**
+   * Client-generated UUID, one per checkout attempt (retried on failure, regenerated after
+   * success) — see OrdersService.placeOrder. Scoped per-customer rather than globally unique so
+   * two different customers can never collide even in the astronomically unlikely case of a
+   * non-random client. This unique index is the actual concurrency-safety mechanism for
+   * duplicate-order prevention: Postgres guarantees at most one row can ever exist for a given
+   * (customerId, idempotencyKey) pair, independent of any application-level locking.
+   */
+  idempotencyKey String?
+
   status OrderStatus @default(PENDING)
 
   paymentStatus PaymentStatus @default(PENDING)
@@ -1790,6 +1945,10 @@ model Order {
   deliveryFee Decimal @db.Decimal(10, 2)
 
   taxAmount Decimal @db.Decimal(10, 2)
+
+  couponId String?
+
+  discountAmount Decimal @default(0) @db.Decimal(10, 2)
 
   totalAmount Decimal @db.Decimal(10, 2)
 
@@ -1824,22 +1983,29 @@ model Order {
 
   address Address? @relation(fields: [addressId], references: [id])
 
+  coupon Coupon? @relation(fields: [couponId], references: [id])
+
+  couponRedemption CouponRedemption?
+
   items OrderItem[]
 
   statusHistory OrderStatusHistory[]
 
   deliveryAssignments DeliveryAssignment[]
 
+  proofOtps DeliveryProofOtp[]
+
   walletTransactions WalletTransaction[]
 
   supportTickets SupportTicket[]
 
-  @@index([customerId])
+  @@unique([customerId, idempotencyKey])
   @@index([restaurantId])
   @@index([deliveryPartnerId])
   @@index([status])
   @@index([paymentStatus])
   @@index([createdAt])
+  @@index([couponId])
   @@map("orders")
 }
 
@@ -2560,6 +2726,54 @@ model DeliveryAssignment {
   @@index([deliveryPartnerId])
   @@index([status])
   @@map("delivery_assignments")
+}
+
+enum DeliveryProofType {
+  PICKUP
+  DELIVERY
+}
+
+enum DeliveryProofOtpStatus {
+  PENDING
+  VERIFIED
+  EXPIRED
+  EXCEEDED
+}
+
+/**
+ * One row per (orderId, type) — Sprint 4.1. Generating (or regenerating) an OTP overwrites the
+ * existing row in place rather than appending a new one, mirroring the singleton-per-owner
+ * pattern already used by DeliveryBankAccount/DeliveryComplianceSnapshot; history of the action
+ * itself is captured via AuditService.log, not by keeping old OTP rows around. `otpHash` is
+ * bcrypt-hashed, never the raw 6-digit code, so a DB read alone can't recover it.
+ */
+model DeliveryProofOtp {
+  id String @id @default(uuid())
+
+  orderId String
+
+  type DeliveryProofType
+
+  otpHash String
+
+  status DeliveryProofOtpStatus @default(PENDING)
+
+  attempts Int @default(0)
+
+  maxAttempts Int @default(5)
+
+  expiresAt DateTime
+
+  verifiedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([orderId, type])
+  @@map("delivery_proof_otps")
 }
 
 // ---------------------------------------------------------------------------

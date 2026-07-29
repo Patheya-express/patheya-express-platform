@@ -30,6 +30,12 @@ export class OfferResponseDto {
   })
   type?: OfferType;
 
+  @ApiProperty({
+    description:
+      'Whether the offer is currently enabled. Every offer returned by a customer-facing endpoint is always true here — this only varies on the restaurant-owner management endpoints (GET /offers/manage/:restaurantId), which also return disabled offers.',
+  })
+  isActive: boolean;
+
   @ApiPropertyOptional({
     description:
       'Present when the offer is scoped to a specific restaurant rather than platform-wide.',
