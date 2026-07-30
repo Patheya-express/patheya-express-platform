@@ -1,0 +1,24 @@
+# Scrapes /metrics (src/modules/metrics) on the same port the Service already exposes — Phase 9
+# closes the "no ServiceMonitor targets patheya-backend/patheya-frontend yet" gap
+# patheya-express-terraform's modules/observability/servicemonitors.tf explicitly left open for
+# this moment (that file covers only platform add-ons: nginx-ingress, pgbouncer, karpenter, etc.).
+# Lives here, not in Terraform, because this ServiceMonitor is an application-layer resource
+# (like the Service/Ingress next to it), not platform bootstrap infra. No `release:`-style label
+# is required for Prometheus to pick this up — modules/observability/prometheus-stack.tf sets
+# `serviceMonitorSelectorNilUsesHelmValues = false` with no `serviceMonitorSelector` block, which
+# Prometheus Operator treats as "select every ServiceMonitor in the cluster," not a label match.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: api-gateway
+  labels:
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/component: api
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api-gateway
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s

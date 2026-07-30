@@ -1,0 +1,147 @@
+# Render Blueprint — QA environment only. See docs/deployment/render-blueprint.md.
+#
+# Two services, one repository, one Dockerfile (root). No secrets are stored here — every
+# secret-shaped variable uses `sync: false`, which makes Render prompt for a value in its own
+# dashboard and never persists it to this file or git history. Plain, non-secret structural values
+# (NODE_ENV, feature flags, ports, non-sensitive defaults) are set directly since there's nothing
+# to protect.
+#
+# AWS/Aurora/ElastiCache/Terraform/GitOps/Kubernetes are entirely untouched by this file — it only
+# describes how Render (QA) builds and runs the same application code.
+
+envVarGroups:
+  - name: patheya-qa-shared
+    envVars:
+      # --- Core ---
+      - key: NODE_ENV
+        value: staging
+      - key: DATABASE_URL
+        sync: false # Neon connection string, e.g. postgresql://...?sslmode=require
+      - key: REDIS_HOST
+        sync: false # Upstash endpoint
+      - key: REDIS_PORT
+        value: 6379
+      - key: REDIS_TLS
+        value: true
+      - key: REDIS_AUTH_TOKEN
+        sync: false # Upstash password
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: KAFKA_BROKER
+        value: localhost:9092 # required by env.validation.ts's Joi schema; no Kafka client exists in the codebase
+
+      # --- Storage (Cloudinary) ---
+      - key: STORAGE_DRIVER
+        value: cloudinary
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+
+      # --- Payments (Razorpay) ---
+      - key: RAZORPAY_KEY_ID
+        sync: false
+      - key: RAZORPAY_KEY_SECRET
+        sync: false
+      - key: RAZORPAY_WEBHOOK_SECRET
+        sync: false
+
+      # --- CORS allowlist / frontend origins (Vercel QA URLs) ---
+      - key: CUSTOMER_APP_URL
+        sync: false
+      - key: RESTAURANT_APP_URL
+        sync: false
+      - key: ADMIN_APP_URL
+        sync: false
+      - key: DELIVERY_APP_URL
+        sync: false
+      # This API's own public origin — allows Swagger UI (served by this same process at
+      # /api/docs) to call /api/v1/* without being rejected by the CORS allowlist. Render's
+      # default domain is predictable from the service name below, so this is a literal value,
+      # not sync:false — update it if a custom domain is ever attached instead.
+      - key: API_PUBLIC_URL
+        value: https://patheya-express-api-gateway-qa.onrender.com
+      # EXTRA_ALLOWED_ORIGINS (optional, comma-separated) — not needed in QA today; add via the
+      # Render dashboard if a future need arises, no render.yaml change required.
+
+      # --- SMTP ---
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: 587
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        value: "Patheya Express QA <no-reply@patheyaexpress.com>"
+
+      # --- Super Admin bootstrap (AdminBootstrapService) — creates the first SUPER_ADMIN
+      # automatically on startup if one doesn't exist yet; no API endpoint for this exists. All
+      # five are secret-shaped (the password especially) so all use sync:false. ---
+      - key: SUPER_ADMIN_EMAIL
+        sync: false
+      - key: SUPER_ADMIN_PASSWORD
+        sync: false
+      - key: SUPER_ADMIN_FIRST_NAME
+        sync: false
+      - key: SUPER_ADMIN_LAST_NAME
+        sync: false
+      - key: SUPER_ADMIN_PHONE
+        sync: false
+
+      # --- Logging ---
+      - key: LOG_TO_FILE
+        value: false
+      - key: LOG_LEVEL
+        value: info
+
+      # --- Shutdown ---
+      - key: SHUTDOWN_TIMEOUT_MS
+        value: 10000
+
+services:
+  # 1. api-gateway — Render Web Service. Serves HTTP/WebSocket traffic. Builds from the root
+  #    Dockerfile's default (final) stage, `runtime` — no dockerCommand override needed since the
+  #    image's own CMD (`node dist/src/main.js`) is already byte-for-byte identical to the
+  #    `start:prod` npm script.
+  - type: web
+    name: patheya-express-api-gateway-qa
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    # /api/v1/health/ready (not /api/v1/health) — Render's health check gates whether an instance
+    # receives traffic, and only /health/ready returns a real non-200 (503) when database/Redis/
+    # queues/storage are actually down. /health always returns 200 even when its `status` field
+    # reports 'degraded', so it can't protect against a bad deploy via Render's gate. See
+    # docs/deployment/render-blueprint.md's Health check section (Phase DEV-7.5).
+    healthCheckPath: /api/v1/health/ready
+    envVars:
+      - fromGroup: patheya-qa-shared
+      - key: APP_NAME
+        value: api-gateway
+    autoDeploy: true
+
+  # 2. worker — Render Background Worker. Processes BullMQ jobs only, no inbound traffic, no
+  #    health check (Render Background Workers don't support the Web Service health-check gate).
+  #    Same image as api-gateway; dockerCommand overrides only the container's CMD (tini stays PID
+  #    1, unaffected) to run worker-main.js instead — the exact command `start:worker` runs,
+  #    invoked directly rather than via `pnpm start:worker` because the `runtime` stage
+  #    deliberately has no pnpm/corepack installed (production-only, pruned node_modules).
+  - type: worker
+    name: patheya-express-worker-qa
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: node dist/src/worker-main.js
+    plan: starter
+    envVars:
+      - fromGroup: patheya-qa-shared
+      - key: APP_NAME
+        value: worker
+    autoDeploy: true

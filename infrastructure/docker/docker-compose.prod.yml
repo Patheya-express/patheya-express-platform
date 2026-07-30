@@ -1,0 +1,69 @@
+# Production-shaped local rehearsal — NOT a Kubernetes replacement (see k8s/ for the real
+# production target). Runs the built image against EXTERNAL Postgres/Redis (no local database
+# containers here — production data stores are never a `docker compose` responsibility). Useful
+# for smoke-testing the built image and the api-gateway/worker split before deploying to k8s.
+#
+#   docker build -f Dockerfile -t patheya-express-api-gateway:local .
+#   IMAGE_TAG=local docker compose -f infrastructure/docker/docker-compose.prod.yml up
+#
+# Real secrets go in `infrastructure/docker/.env.production` (gitignored, never committed) — see
+# `.env.compose.example` for the full variable list. See docs/infrastructure/docker.md.
+
+name: patheya-express-prod
+
+services:
+
+  api-gateway:
+    image: patheya-express-api-gateway:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      LOG_TO_FILE: "false"
+    env_file:
+      - path: .env.production
+        required: false
+    ports:
+      - "${API_PORT:-3000}:3000"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1024M
+        reservations:
+          cpus: "0.25"
+          memory: 512M
+    volumes:
+      - uploads-data:/app/uploads
+
+  # Identical image, no published port — receives no external traffic, only processes BullMQ jobs.
+  # This is the same "same-image, traffic-excluded" worker model used in k8s/base/workers/
+  # (see docs/infrastructure/workers.md for why: the app has no standalone worker entrypoint).
+  worker:
+    image: patheya-express-api-gateway:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    # Runs the dedicated worker entrypoint instead of the image's default CMD (`main.js`, the
+    # full api-gateway app) — matches k8s/base/workers/deployment.yaml's `args` override exactly.
+    # This is also the exact command a Render Background Worker service should be configured
+    # with when deployed from this same image (see docs/deployment/render.md).
+    command: ["node", "dist/src/worker-main.js"]
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      LOG_TO_FILE: "false"
+    env_file:
+      - path: .env.production
+        required: false
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+        reservations:
+          cpus: "0.1"
+          memory: 256M
+    volumes:
+      - uploads-data:/app/uploads
+
+volumes:
+  uploads-data:

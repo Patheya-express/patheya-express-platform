@@ -1,0 +1,163 @@
+name: backend-release
+
+# Section 9 (Release Management) + Section 2 (Backend Pipeline)'s publish stage. Triggered only
+# once backend-ci.yml has actually passed on the merge commit (workflow_run, not a duplicated
+# trigger) — this is the one workflow in this repo with AWS/ECR credentials and the one that opens
+# a GitOps PR. It never calls kubectl/helm/argocd (DO NOT IMPLEMENT).
+
+on:
+  workflow_run:
+    workflows: ["backend-ci"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write # git tag + GitHub Release
+  id-token: write # AWS OIDC + cosign keyless
+  attestations: write
+  security-events: write
+
+jobs:
+  version:
+    name: Compute version
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      semver: ${{ steps.version.outputs.version }}
+      image-tag: ${{ steps.image-tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      # platform-standards.md Section 3: internal-only changes (infra/docs/CI) don't bump the
+      # application version. This is a repo-wide semver counter, not per-app, matching the
+      # single-repo/single-image reality of this backend (api-gateway + workers share one image —
+      # docs/infrastructure/workers.md).
+      - name: Compute next semantic version
+        id: semver
+        uses: paulhatch/semantic-version@v5.4.0
+        with:
+          tag_prefix: "v"
+          major_pattern: "/(BREAKING CHANGE:|!:)/"
+          minor_pattern: "/^feat(\\(.+\\))?:/"
+          version_format: "${major}.${minor}.${patch}"
+          bump_each_commit: false
+
+      - id: version
+        run: echo "version=${{ steps.semver.outputs.version }}" >> "$GITHUB_OUTPUT"
+
+      - id: image-tag
+        run: echo "tag=${{ steps.semver.outputs.version }}-${{ steps.semver.outputs.current_commit }}" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Build, scan, sign, publish
+    needs: version
+    uses: Patheya-express/patheya-express-platform/.github/workflows/reusable-docker-publish.yml@main
+    with:
+      ecr-repository: api-gateway
+      image-tag: ${{ needs.version.outputs.image-tag }}
+      context: .
+      dockerfile: Dockerfile
+      aws-region: ap-south-1
+      role-to-assume: ${{ vars.BACKEND_ECR_PUSH_ROLE_ARN }}
+
+  publish-migrate:
+    name: Build, scan, sign, publish (migrate image)
+    needs: version
+    uses: Patheya-express/patheya-express-platform/.github/workflows/reusable-docker-publish.yml@main
+    with:
+      ecr-repository: api-gateway
+      image-tag: ${{ needs.version.outputs.image-tag }}-migrate
+      context: .
+      dockerfile: Dockerfile
+      target: migrate
+      sarif-category: api-gateway-migrate
+      aws-region: ap-south-1
+      role-to-assume: ${{ vars.BACKEND_ECR_PUSH_ROLE_ARN }}
+
+  release:
+    name: Tag + GitHub Release
+    needs: [version, publish]
+    runs-on: ubuntu-latest
+    outputs:
+      tag: v${{ needs.version.outputs.semver }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      # backend-ci.yml's `openapi` job uploaded this artifact in the run this workflow was
+      # triggered from — pulled by run-id since it's a different workflow run, not this one.
+      - name: Download OpenAPI artifact from backend-ci
+        uses: actions/download-artifact@v4
+        with:
+          name: openapi-spec
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: .
+
+      - name: Create tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="v${{ needs.version.outputs.semver }}"
+          gh release create "$tag" \
+            --target "${{ github.event.workflow_run.head_sha }}" \
+            --title "$tag" \
+            --generate-notes \
+            --notes "Image: \`${{ needs.publish.outputs.image-uri }}\`  \nDigest: \`${{ needs.publish.outputs.image-digest }}\`" \
+            openapi.json
+
+  notify-frontend-sdk:
+    name: Notify frontend of updated OpenAPI document
+    needs: [version, release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch openapi-updated event
+        env:
+          GH_TOKEN: ${{ secrets.PLATFORM_RELEASE_READ_TOKEN }}
+        run: |
+          gh api repos/Patheya-express/frontend/dispatches \
+            -f event_type=openapi-updated \
+            -f "client_payload[release_tag]=${{ needs.release.outputs.tag }}"
+
+  gitops-update-development:
+    name: Open GitOps PR (development)
+    needs: [version, publish, publish-migrate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open image-update PR
+        uses: Patheya-express/patheya-express-platform/.github/actions/gitops-image-update@main
+        with:
+          github-token: ${{ secrets.GITOPS_PR_TOKEN }}
+          app-path: applications/backend/overlays/development
+          image-name-old: patheya-express-api-gateway
+          image-name-new: ${{ needs.publish.outputs.image-name }}
+          image-tag: ${{ needs.version.outputs.image-tag }}
+          migrate-image-name-old: patheya-express-api-gateway-migrate
+          migrate-image-name-new: ${{ needs.publish-migrate.outputs.image-name }}
+          migrate-image-tag: ${{ needs.version.outputs.image-tag }}-migrate
+          git-commit-sha: ${{ github.event.workflow_run.head_sha }}
+          build-id: ${{ github.run_id }}
+          environment: development
+          app-display-name: "Backend (api-gateway)"
+          auto-merge: "true"
+
+  notify:
+    name: Notify
+    needs: [version, publish, publish-migrate, release, gitops-update-development]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Patheya-express/patheya-express-platform/.github/actions/notify@main
+        with:
+          status: ${{ (contains(needs.*.result, 'failure') && 'failure') || 'success' }}
+          title: "backend-release: v${{ needs.version.outputs.semver }}"
+          details: |
+            Image: `${{ needs.publish.outputs.image-uri }}`
+            GitOps PR (development): see gitops-update-development job
+          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          pagerduty-routing-key: ${{ secrets.PAGERDUTY_ROUTING_KEY }}

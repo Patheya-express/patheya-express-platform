@@ -1,0 +1,41 @@
+# Generic nginx-ingress annotations — no cloud-specific (ALB) annotations, since TLS terminates at
+# the NLB itself (patheya-express-terraform's modules/eks-addons/variables.tf: "acm_certificate_arn
+# ... used by the NLB ... for TLS termination"), not at this Ingress — nginx receives plaintext
+# HTTP from the NLB, so it must never force its own HTTPS redirect (that would redirect-loop a
+# connection that's already been decrypted upstream). Cookie-based session affinity is a stopgap
+# for Socket.IO's cross-pod fanout — Phase 9 added the Redis adapter (docs/infrastructure/
+# socketio.md), so this affinity is now a secondary defense (faster room-membership warm cache on
+# reconnect-to-same-pod) rather than the only thing making multi-pod realtime work at all.
+#
+# `host` below is the real production domain (Phase 9 — previously a
+# `patheya-express.example.com` placeholder inconsistent with
+# cloud-architecture-blueprint.md Section 6's actual `patheyaexpress.com` apex); overlays patch
+# this to the per-environment subdomain (see overlays/*/ingress-patch.yaml).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-gateway
+  labels:
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/component: api
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/affinity-mode: "persistent"
+    nginx.ingress.kubernetes.io/session-cookie-name: "px-lb-affinity"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: api.patheyaexpress.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 80

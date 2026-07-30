@@ -1,0 +1,144 @@
+name: Open a GitOps image-update PR
+description: >
+  Bumps a Kustomize `images:` entry in patheya-express-gitops via a pull request — never a direct
+  commit to a protected branch, never kubectl/argocd. This is the only mechanism this platform's CI
+  uses to propose a deploy (OBJECTIVE: "CI publishes artifacts. GitOps deploys artifacts."). ArgoCD
+  reconciles once a human (or, for development only, auto-merge) merges the PR — this action never
+  calls ArgoCD or the cluster.
+
+inputs:
+  gitops-repo:
+    required: false
+    default: Patheya-express/patheya-express-gitops
+  github-token:
+    description: >
+      Token with contents:write + pull-requests:write on the gitops repo. A GitHub App
+      installation token is the recommended source (short-lived, scoped, auditable — see
+      docs/ci-cd/ci-cd-guide.md) rather than a long-lived PAT; this action accepts whatever token
+      string it's given and doesn't mint one itself.
+    required: true
+  app-path:
+    description: Path within the gitops repo to the overlay directory, e.g. applications/backend/overlays/development.
+    required: true
+  image-name-old:
+    description: The `images.name` match key already present in that overlay's kustomization.yaml.
+    required: true
+  image-name-new:
+    description: The real ECR image name (registry/patheya-express/repo) to replace it with.
+    required: true
+  image-tag:
+    required: true
+  migrate-image-name-old:
+    description: >
+      Optional second image to bump in the same PR (e.g. the backend's
+      patheya-express-api-gateway-migrate tag, alongside the main app image) — the migration Job
+      and the Deployment it precedes must always advance together, never as two separate PRs that
+      could land out of order. All three migrate-image-* inputs must be set together or not at all.
+    required: false
+    default: ""
+  migrate-image-name-new:
+    required: false
+    default: ""
+  migrate-image-tag:
+    required: false
+    default: ""
+  environment:
+    description: development | staging | production — drives the branch/PR naming and whether auto-merge is attempted.
+    required: true
+  app-display-name:
+    description: Human-readable name for the PR title/body, e.g. "Backend (api-gateway)".
+    required: true
+  git-commit-sha:
+    description: >
+      Full commit SHA this build was produced from — stamped as the patheya-express.io/git-commit
+      annotation (kustomization-wide, via `kustomize edit set annotation`) so Kyverno's
+      require-annotations baseline policy sees a real value instead of the checked-in "unset"
+      placeholder. Skipped entirely if empty. Deliberately an annotation, never a label — a label
+      transformer risks also touching a Deployment's `spec.selector.matchLabels` (immutable after
+      creation; a dynamic value there would break every future rollout), which is exactly why
+      `app.kubernetes.io/version` is NOT similarly automated here yet — see
+      docs/ci-cd/workflow-guide.md.
+    required: false
+    default: ""
+  build-id:
+    description: CI run id — stamped as the patheya-express.io/build-id annotation alongside git-commit-sha. Skipped entirely if empty.
+    required: false
+    default: ""
+  auto-merge:
+    description: "\"true\" only for development (platform-standards.md Section 6: continuous deploy on every merge to main). Never true for staging/production — those PRs wait for the human review Section 7 requires."
+    required: false
+    default: "false"
+
+outputs:
+  pull-request-number:
+    value: ${{ steps.cpr.outputs.pull-request-number }}
+  pull-request-url:
+    value: ${{ steps.cpr.outputs.pull-request-url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout gitops repo
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.gitops-repo }}
+        token: ${{ inputs.github-token }}
+        path: gitops-repo
+
+    - name: Install kustomize
+      shell: bash
+      run: |
+        curl -sfL "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash -s -- 5.4.1 /usr/local/bin
+
+    - name: Bump image reference
+      shell: bash
+      working-directory: gitops-repo/${{ inputs.app-path }}
+      run: |
+        kustomize edit set image "${{ inputs.image-name-old }}=${{ inputs.image-name-new }}:${{ inputs.image-tag }}"
+
+    - name: Bump migration image reference
+      if: inputs.migrate-image-name-old != '' && inputs.migrate-image-name-new != '' && inputs.migrate-image-tag != ''
+      shell: bash
+      working-directory: gitops-repo/${{ inputs.app-path }}
+      run: |
+        kustomize edit set image "${{ inputs.migrate-image-name-old }}=${{ inputs.migrate-image-name-new }}:${{ inputs.migrate-image-tag }}"
+
+    - name: Stamp git-commit/build-id annotations
+      if: inputs.git-commit-sha != '' && inputs.build-id != ''
+      shell: bash
+      working-directory: gitops-repo/${{ inputs.app-path }}
+      run: |
+        kustomize edit set annotation "patheya-express.io/git-commit:${{ inputs.git-commit-sha }}"
+        kustomize edit set annotation "patheya-express.io/build-id:${{ inputs.build-id }}"
+
+    - name: Open pull request
+      id: cpr
+      uses: peter-evans/create-pull-request@v7
+      with:
+        token: ${{ inputs.github-token }}
+        path: gitops-repo
+        branch: ci/bump-${{ inputs.environment }}-${{ inputs.app-display-name }}
+        delete-branch: true
+        commit-message: "chore(${{ inputs.environment }}): bump ${{ inputs.app-display-name }} to ${{ inputs.image-tag }}"
+        title: "chore(${{ inputs.environment }}): bump ${{ inputs.app-display-name }} to ${{ inputs.image-tag }}"
+        body: |
+          Automated image-tag bump, opened by CI — this PR is the only change ArgoCD will ever
+          reconcile from; nothing in this pipeline calls `kubectl`/`argocd` directly
+          (platform-standards.md Section 1, principle 5).
+
+          - **App**: ${{ inputs.app-display-name }}
+          - **Environment**: ${{ inputs.environment }}
+          - **New tag**: `${{ inputs.image-tag }}`
+          - **Image**: `${{ inputs.image-name-new }}:${{ inputs.image-tag }}`
+
+          Signature, SBOM attestation, and Trivy scan already passed before this PR was opened —
+          see the originating workflow run for evidence. See docs/ci-cd/promotion-guide.md.
+        labels: gitops-image-update,${{ inputs.environment }}
+
+    - name: Enable auto-merge (development only)
+      if: inputs.auto-merge == 'true' && steps.cpr.outputs.pull-request-number != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        gh pr merge --auto --squash "${{ steps.cpr.outputs.pull-request-number }}" --repo "${{ inputs.gitops-repo }}"

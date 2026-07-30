@@ -1,9 +1,7 @@
 export interface ApiResponse<T> {
+  success: boolean;
 
-    success: boolean;
-  
-    timestamp: string;
-  
-    data: T;
-  
-  }
+  timestamp: string;
+
+  data: T;
+}

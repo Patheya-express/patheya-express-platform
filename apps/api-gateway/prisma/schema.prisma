@@ -15,6 +15,9 @@ enum UserRole {
   SUPPORT_AGENT
   ADMIN
   SUPER_ADMIN
+  /** Additive (see migration 20260718160000_add_dispatch_manager_role) — authorizes manual
+   *  dispatch assignment (POST /admin/orders/:orderId/assign) alongside SUPER_ADMIN. */
+  DISPATCH_MANAGER
 }
 
 enum UserStatus {
@@ -31,6 +34,12 @@ enum AuthProvider {
   PHONE
 }
 
+enum ThemePreference {
+  LIGHT
+  DARK
+  SYSTEM
+}
+
 enum RestaurantStatus {
   PENDING
 
@@ -39,6 +48,171 @@ enum RestaurantStatus {
   REJECTED
 
   SUSPENDED
+}
+
+enum RestaurantStaffRole {
+  OWNER
+
+  CO_OWNER
+
+  BRANCH_MANAGER
+
+  KITCHEN_MANAGER
+
+  FINANCE_MANAGER
+
+  STAFF
+}
+
+enum RestaurantStaffStatus {
+  INVITED
+
+  ACTIVE
+
+  REVOKED
+}
+
+enum RestaurantVerificationStage {
+  DRAFT
+
+  SUBMITTED
+
+  DOCUMENT_REVIEW
+
+  GST_VERIFICATION
+
+  FSSAI_VERIFICATION
+
+  BANK_VERIFICATION
+
+  COMPLIANCE_REVIEW
+
+  APPROVED
+
+  REJECTED
+
+  SUSPENDED
+}
+
+/**
+ * ERPH-2B.1 — tracks the mandatory onboarding wizard's own progress, deliberately separate from
+ * both RestaurantVerificationStage (the admin-side detailed review sub-state-machine) and
+ * RestaurantStatus (pure operational status). CHANGES_REQUESTED in particular has no equivalent
+ * anywhere else in the schema. UNDER_REVIEW/APPROVED/REJECTED here are kept in sync with
+ * RestaurantVerificationStage by OnboardingVerificationListener reacting to the existing
+ * verification events — this enum is not a second copy of that state, it is the
+ * onboarding-wizard-facing projection of it (plus the wizard-only states DRAFT/IN_PROGRESS/
+ * CHANGES_REQUESTED that verification has no concept of).
+ */
+enum OnboardingStatus {
+  DRAFT
+
+  IN_PROGRESS
+
+  SUBMITTED
+
+  UNDER_REVIEW
+
+  CHANGES_REQUESTED
+
+  APPROVED
+
+  REJECTED
+}
+
+enum RestaurantDocumentType {
+  GST
+
+  FSSAI
+
+  PAN
+
+  TRADE_LICENSE
+
+  FIRE_NOC
+
+  SHOP_ESTABLISHMENT
+
+  LIQUOR_LICENSE
+
+  HALAL
+
+  CANCELLED_CHEQUE
+
+  PASSBOOK
+
+  AADHAAR
+
+  PAN_CARD
+
+  RENTAL_AGREEMENT
+
+  UTILITY_BILL
+
+  OTHER
+}
+
+/**
+ * Shared verification lifecycle for documents, GST, FSSAI, and bank accounts.
+ */
+enum VerificationStatus {
+  PENDING
+
+  UNDER_REVIEW
+
+  VERIFIED
+
+  REJECTED
+
+  EXPIRED
+}
+
+enum BusinessType {
+  PROPRIETORSHIP
+
+  PARTNERSHIP
+
+  LLP
+
+  PRIVATE_LIMITED
+
+  PUBLIC_LIMITED
+
+  TRUST
+
+  SOCIETY
+
+  OTHER
+}
+
+enum ServiceChargeType {
+  NONE
+
+  FLAT
+
+  PERCENTAGE
+}
+
+enum RestaurantMediaType {
+  LOGO
+
+  BANNER
+
+  FRONT_VIEW
+
+  EXTERIOR
+
+  KITCHEN
+
+  DINING
+
+  INTERIOR
+
+  SIGN_BOARD
+
+  GALLERY
+
+  VIDEO
 }
 
 enum OrderStatus {
@@ -85,6 +259,109 @@ enum VehicleType {
   BICYCLE
 
   CAR
+
+  ELECTRIC_VEHICLE
+}
+
+enum Gender {
+  MALE
+
+  FEMALE
+
+  OTHER
+
+  PREFER_NOT_TO_SAY
+}
+
+enum FuelType {
+  PETROL
+
+  DIESEL
+
+  ELECTRIC
+
+  CNG
+
+  HYBRID
+}
+
+/**
+ * EDPH-1 — the delivery-partner analog of RestaurantDocumentType. One generic enum for the long
+ * tail of KYC/vehicle document types rather than N near-identical tables, exactly mirroring the
+ * restaurant document system. SELFIE/BACKGROUND_VERIFICATION are manual-admin-review only — no
+ * biometric/background-check vendor is integrated.
+ */
+enum DeliveryDocumentType {
+  DRIVING_LICENSE
+
+  AADHAAR
+
+  PAN
+
+  VEHICLE_RC
+
+  VEHICLE_INSURANCE
+
+  VEHICLE_FITNESS
+
+  VEHICLE_POLLUTION
+
+  PROFILE_PHOTO
+
+  SELFIE
+
+  BACKGROUND_VERIFICATION
+
+  VEHICLE_PHOTO
+
+  OTHER
+}
+
+/**
+ * EDPH-1 — deliberately simpler than RestaurantVerificationStage: no granular per-category
+ * sub-stages (DOCUMENT_REVIEW/BANK_VERIFICATION/etc.) because delivery documents are reviewed
+ * atomically per-document via the Documents API rather than via sequential category gates.
+ * CHANGES_REQUESTED lives only on DeliveryOnboardingStatus, exactly like the Restaurant split.
+ */
+enum DeliveryVerificationStage {
+  DRAFT
+
+  SUBMITTED
+
+  UNDER_REVIEW
+
+  APPROVED
+
+  REJECTED
+
+  SUSPENDED
+}
+
+/**
+ * EDPH-1 — exact mirror of OnboardingStatus, scoped to the delivery-partner wizard.
+ */
+enum DeliveryOnboardingStatus {
+  DRAFT
+
+  IN_PROGRESS
+
+  SUBMITTED
+
+  UNDER_REVIEW
+
+  CHANGES_REQUESTED
+
+  APPROVED
+
+  REJECTED
+}
+
+enum ComplianceOverallStatus {
+  COMPLIANT
+
+  AT_RISK
+
+  NON_COMPLIANT
 }
 
 enum AuditAction {
@@ -103,6 +380,77 @@ enum AuditAction {
   APPROVE
 
   REJECT
+}
+
+enum NotificationType {
+  ORDER_PLACED
+  ORDER_STATUS_CHANGED
+  DELIVERY_PARTNER_ASSIGNED
+  OFFER
+  WALLET_CREDIT
+  REFERRAL_REWARD
+  TICKET_STATUS_CHANGED
+  TICKET_MESSAGE
+  REVIEW_REPLIED
+  GENERAL
+
+  /**
+   * Restaurant-facing notification types (ERPH-2A) — sent to restaurant owners/active staff
+   * rather than customers. Kept in the same enum as the customer-facing types above since both
+   * sides share one Notification table/user-scoped delivery model.
+   */
+  NEW_ORDER_FOR_RESTAURANT
+  ORDER_CANCELLED_FOR_RESTAURANT
+  REFUND_FOR_RESTAURANT
+  CUSTOMER_MESSAGE_FOR_RESTAURANT
+
+  /**
+   * Delivery-partner-facing notification types (EDPH-1) — mirrors the restaurant-facing
+   * additions above, same shared Notification table/user-scoped delivery model.
+   */
+  DELIVERY_PARTNER_VERIFICATION_SUBMITTED
+  DELIVERY_PARTNER_VERIFICATION_APPROVED
+  DELIVERY_PARTNER_VERIFICATION_REJECTED
+  DELIVERY_PARTNER_CHANGES_REQUESTED
+  DELIVERY_PARTNER_DOCUMENT_EXPIRING
+
+  /**
+   * Delivery Proof & Trust (Sprint 4.1) — pickup/delivery OTP lifecycle. The GENERATED types go
+   * to the customer (who reads the code to their delivery partner); the VERIFIED types go to the
+   * delivery partner (confirmation their entered code was accepted).
+   */
+  PICKUP_OTP_GENERATED
+  DELIVERY_OTP_GENERATED
+  PICKUP_VERIFIED
+  DELIVERY_VERIFIED
+
+  /**
+   * Sprint 1.8 — sent to the customer once a refund (full or partial, wallet and/or Razorpay
+   * leg) actually completes, via OrdersService.refundOrder's order-level refund-completed event.
+   * No customer-facing refund notification existed before this (only a WalletTransaction ledger
+   * row and a restaurant-side notification did).
+   */
+  REFUND_ISSUED
+}
+
+enum OfferType {
+  PERCENTAGE_OFF
+  FLAT_OFF
+  FREE_DELIVERY
+  BUY_ONE_GET_ONE
+  CASHBACK
+  OTHER
+}
+
+enum CouponType {
+  PERCENTAGE
+  FLAT
+  FREE_DELIVERY
+}
+
+enum CouponScope {
+  PLATFORM
+  RESTAURANT
 }
 
 enum NotificationChannel {
@@ -134,6 +482,56 @@ enum PaymentMethod {
   NETBANKING
 
   WALLET
+
+  COD
+}
+
+enum PaymentMode {
+  ONLINE
+
+  COD
+}
+
+/**
+ * How a location's coordinates were captured — surfaced in the Address Preview / audit trail,
+ * never used for authorization.
+ */
+enum LocationSource {
+  GPS
+
+  MANUAL
+
+  AUTOCOMPLETE
+
+  REVERSE_GEOCODE
+
+  MAP_CLICK
+
+  MARKER_DRAG
+}
+
+/**
+ * Which AddressProvider implementation resolved this location — lets the backend validate/
+ * audit coordinates without caring which map SDK the frontend used.
+ */
+enum MapProvider {
+  GOOGLE_MAPS
+
+  MAPBOX
+
+  HERE_MAPS
+
+  OPENSTREETMAP
+
+  AZURE_MAPS
+}
+
+enum AddressLabel {
+  HOME
+
+  WORK
+
+  OTHER
 }
 
 enum TransactionStatus {
@@ -158,6 +556,54 @@ enum AssignmentStatus {
   EXPIRED
 }
 
+enum WalletTransactionType {
+  CASHBACK
+  REFERRAL_REWARD
+  REFUND_CREDIT
+  ORDER_PAYMENT
+  ADMIN_ADJUSTMENT
+}
+
+enum WalletTransactionStatus {
+  COMPLETED
+  REVERSED
+}
+
+enum ReferralStatus {
+  PENDING
+  REWARDED
+}
+
+enum TicketCategory {
+  ORDER_ISSUE
+  PAYMENT_ISSUE
+  REFUND_REQUEST
+  CANCELLATION_REQUEST
+  ACCOUNT_ISSUE
+  GENERAL
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  WAITING_ON_CUSTOMER
+  RESOLVED
+  CLOSED
+}
+
+enum TicketMessageSenderType {
+  CUSTOMER
+  AGENT
+  SYSTEM
+}
+
 model User {
   id String @id @default(uuid())
 
@@ -179,6 +625,19 @@ model User {
 
   lastLoginAt DateTime?
 
+  avatarUrl String?
+
+  preferredLanguage String @default("en")
+
+  themePreference ThemePreference @default(SYSTEM)
+
+  marketingOptIn Boolean @default(false)
+
+  timezone String @default("Asia/Kolkata")
+
+  referralCode   String? @unique
+  referredByCode String?
+
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   deletedAt DateTime?
@@ -190,16 +649,164 @@ model User {
   notifications          Notification[]
   notificationPreference NotificationPreference?
   pushTokens             PushToken[]
+  reviews                Review[]
+  restaurantFavorites    RestaurantFavorite[]
+  menuItemFavorites      MenuItemFavorite[]
 
   customerOrders Order[] @relation("CustomerOrders")
   deliveryOrders Order[] @relation("DeliveryOrders")
 
   deliveryPartnerProfile DeliveryPartner?
 
+  addresses Address[]
+
+  cart Cart?
+
+  walletTransactions WalletTransaction[]
+  referralsMade      Referral[]          @relation("ReferralsMade")
+  referralReceived   Referral?           @relation("ReferralsReceived")
+  recentSearches     RecentSearch[]
+  couponRedemptions  CouponRedemption[]
+
+  customerTickets   SupportTicket[]    @relation("CustomerTickets")
+  assignedTickets   SupportTicket[]    @relation("AssignedTickets")
+  ticketMessages    TicketMessage[]
+  ticketAttachments TicketAttachment[]
+
+  restaurantStaffMemberships RestaurantStaff[]
+
+  passwordResetTokens PasswordResetToken[]
+
   @@index([email])
   @@index([phone])
   @@index([role])
   @@map("users")
+}
+
+model Address {
+  id String @id @default(uuid())
+
+  customerId String
+
+  label AddressLabel @default(HOME)
+
+  customLabel String?
+
+  addressLine1 String
+
+  addressLine2 String?
+
+  city String
+
+  state String
+
+  postalCode String
+
+  landmark String?
+
+  deliveryInstructions String?
+
+  latitude Float?
+
+  longitude Float?
+
+  accuracy Float?
+
+  altitude Float?
+
+  heading Float?
+
+  speed Float?
+
+  locationSource LocationSource?
+
+  provider MapProvider?
+
+  providerPlaceId String?
+
+  providerMetadata Json?
+
+  verified Boolean @default(false)
+
+  verifiedAt DateTime?
+
+  isDefault Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  customer User @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  orders Order[]
+
+  @@index([customerId])
+  @@map("addresses")
+}
+
+model Cart {
+  id String @id @default(uuid())
+
+  customerId String @unique
+
+  restaurantId String?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  customer User @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  restaurant Restaurant? @relation(fields: [restaurantId], references: [id])
+
+  items CartItem[]
+
+  @@map("carts")
+}
+
+model CartItem {
+  id String @id @default(uuid())
+
+  cartId String
+
+  menuItemId String
+
+  variantId String?
+
+  quantity Int
+
+  specialInstructions String?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  cart Cart @relation(fields: [cartId], references: [id], onDelete: Cascade)
+
+  menuItem MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+
+  variant MenuItemVariant? @relation(fields: [variantId], references: [id], onDelete: Cascade)
+
+  addonOptions CartItemAddonOption[]
+
+  @@index([cartId])
+  @@index([menuItemId])
+  @@map("cart_items")
+}
+
+model CartItemAddonOption {
+  id String @id @default(uuid())
+
+  cartItemId String
+
+  addonOptionId String
+
+  cartItem CartItem @relation(fields: [cartItemId], references: [id], onDelete: Cascade)
+
+  addonOption MenuItemAddonOption @relation(fields: [addonOptionId], references: [id], onDelete: Cascade)
+
+  @@index([cartItemId])
+  @@map("cart_item_addon_options")
 }
 
 model Session {
@@ -243,6 +850,31 @@ model RefreshToken {
   @@map("refresh_tokens")
 }
 
+/**
+ * Single-use, short-lived token for the forgot-password flow. Only the SHA-256 hash of the raw
+ * token is ever stored (same pattern as RefreshToken) — the raw value exists only in the email
+ * sent to the user and is never persisted. `usedAt` enforces single-use; a used or expired
+ * token is rejected exactly like a missing one, without revealing which.
+ */
+model PasswordResetToken {
+  id String @id @default(uuid())
+
+  userId String
+
+  tokenHash String @unique
+
+  expiresAt DateTime
+
+  usedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
 model OtpVerification {
   id String @id @default(uuid())
 
@@ -267,7 +899,23 @@ model Restaurant {
 
   ownerId String
 
+  /**
+   * Plain forward-compatible pointer — no Business aggregate/table exists yet. Reserved for a
+   * future multi-restaurant Business entity so ownership never has to assume one owner owns
+   * only one restaurant brand.
+   */
+  businessId String?
+
   name String
+
+  /**
+   * Registered legal name, distinct from the public-facing `name`/`brandName`.
+   */
+  legalBusinessName String?
+
+  tradeName String?
+
+  brandName String?
 
   slug String @unique
 
@@ -277,6 +925,16 @@ model Restaurant {
 
   email String?
 
+  supportEmail String?
+
+  supportPhone String?
+
+  businessEmail String?
+
+  businessPhone String?
+
+  website String?
+
   logoUrl String?
 
   bannerUrl String?
@@ -284,6 +942,24 @@ model Restaurant {
   status RestaurantStatus @default(PENDING)
 
   isActive Boolean @default(true)
+
+  featured Boolean @default(false)
+
+  avgRating Float @default(0)
+
+  ratingCount Int @default(0)
+
+  avgPreparationTimeMinutes Int?
+
+  avgDeliveryTimeMinutes Int?
+
+  deliveredOrderCount Int @default(0)
+
+  /**
+   * Derived from its menu items — recomputed by MenuRepository whenever an item's veg/vegan flag changes.
+   */
+  hasVegOptions   Boolean @default(false)
+  hasVeganOptions Boolean @default(false)
 
   createdAt DateTime @default(now())
 
@@ -301,8 +977,40 @@ model Restaurant {
 
   orders Order[]
 
+  reviews Review[]
+
+  offers Offer[]
+
+  coupons Coupon[]
+
+  carts Cart[]
+
+  favoritedBy RestaurantFavorite[]
+
+  staff RestaurantStaff[]
+
+  verification RestaurantVerification?
+
+  documents RestaurantDocument[]
+
+  taxProfile RestaurantTaxProfile?
+
+  bankAccount RestaurantBankAccount?
+
+  media RestaurantMedia[]
+
+  settings RestaurantSettings?
+
+  holidays RestaurantHoliday[]
+
+  onboarding RestaurantOnboarding?
+
   @@index([ownerId])
+  @@index([businessId])
   @@index([status])
+  @@index([featured])
+  @@index([hasVegOptions])
+  @@index([hasVeganOptions])
   @@map("restaurants")
 }
 
@@ -323,24 +1031,56 @@ model RestaurantBranch {
 
   postalCode String
 
+  landmark String?
+
   latitude Float?
 
   longitude Float?
 
+  timezone String?
+
+  /**
+   * Simple radius in kilometers for now — polygon/geofence support is future work.
+   */
+  deliveryRadiusKm Float?
+
   phone String?
 
+  emergencyContactName String?
+
+  emergencyContactPhone String?
+
   isActive Boolean @default(true)
+
+  /**
+   * Explicit "which branch is the default for legacy single-branch flows" flag — replaces the
+   * implicit `branches[0]` assumption used throughout the platform prior to ERPH-1.
+   */
+  isPrimary Boolean @default(false)
 
   createdAt DateTime @default(now())
 
   updatedAt DateTime @updatedAt
+
+  deletedAt DateTime?
 
   restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
 
   operatingHours OperatingHour[]
   orders         Order[]
 
+  staff RestaurantStaff[]
+
+  documents RestaurantDocument[]
+
+  media RestaurantMedia[]
+
+  menuCategories MenuCategory[]
+
+  holidays RestaurantHoliday[]
+
   @@index([restaurantId])
+  @@index([isPrimary])
   @@map("restaurant_branches")
 }
 
@@ -369,6 +1109,279 @@ model RestaurantCuisine {
   @@map("restaurant_cuisines")
 }
 
+model RestaurantStaff {
+  id String @id @default(uuid())
+
+  restaurantId String
+
+  userId String
+
+  /**
+   * Null means "restaurant-wide" — e.g. OWNER/CO_OWNER/FINANCE_MANAGER typically aren't scoped
+   * to one branch, while BRANCH_MANAGER/KITCHEN_MANAGER/STAFF usually are.
+   */
+  branchId String?
+
+  role RestaurantStaffRole @default(STAFF)
+
+  status RestaurantStaffStatus @default(INVITED)
+
+  /**
+   * Plain attribution field, not a Prisma relation — kept lightweight like other audit-only
+   * references in this schema (see RestaurantDocument.uploadedById).
+   */
+  invitedById String?
+
+  invitedAt DateTime @default(now())
+
+  respondedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  branch RestaurantBranch? @relation(fields: [branchId], references: [id], onDelete: SetNull)
+
+  @@unique([restaurantId, userId])
+  @@index([restaurantId])
+  @@index([userId])
+  @@index([branchId])
+  @@map("restaurant_staff")
+}
+
+/**
+ * Dedicated verification aggregate — deliberately separate from RestaurantStatus, which stays a
+ * small, stable enum with existing consumers (public listing filter, admin 4-state chip). This
+ * richer sub-state-machine feeds into RestaurantStatus rather than replacing it: a restaurant
+ * only becomes RestaurantStatus.APPROVED once this reaches RestaurantVerificationStage.APPROVED.
+ */
+model RestaurantVerification {
+  id String @id @default(uuid())
+
+  restaurantId String @unique
+
+  stage RestaurantVerificationStage @default(DRAFT)
+
+  submittedAt DateTime?
+
+  decidedAt DateTime?
+
+  decidedById String?
+
+  rejectedReason String?
+
+  notes String?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@index([stage])
+  @@map("restaurant_verifications")
+}
+
+/**
+ * One generic table for the long tail of document types (trade license, fire NOC, halal, etc.)
+ * rather than N near-identical tables — new document types are an enum addition, not a
+ * migration. GST/FSSAI/bank still get their canonical numbers and expiry dates as typed,
+ * indexed columns on RestaurantTaxProfile/RestaurantBankAccount for cheap expiry queries; this
+ * table holds the uploaded certificate/proof file for every document type, including GST/FSSAI.
+ */
+model RestaurantDocument {
+  id String @id @default(uuid())
+
+  restaurantId String
+
+  branchId String?
+
+  documentType RestaurantDocumentType
+
+  documentNumber String?
+
+  issueDate DateTime?
+
+  expiryDate DateTime?
+
+  status VerificationStatus @default(PENDING)
+
+  storageUrl String
+
+  fileName String
+
+  mimeType String
+
+  sizeBytes Int
+
+  uploadedById String
+
+  verifiedById String?
+
+  verifiedAt DateTime?
+
+  rejectedReason String?
+
+  metadata Json?
+
+  version Int @default(1)
+
+  isLatest Boolean @default(true)
+
+  /**
+   * Plain attribution field pointing at the prior version's id — avoids a self-relation for a
+   * simple linear version chain that's walked in application code, not via Prisma include.
+   */
+  previousVersionId String?
+
+  deletedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  branch RestaurantBranch? @relation(fields: [branchId], references: [id], onDelete: SetNull)
+
+  @@index([restaurantId])
+  @@index([branchId])
+  @@index([documentType])
+  @@index([status])
+  @@index([expiryDate])
+  @@map("restaurant_documents")
+}
+
+model RestaurantTaxProfile {
+  id String @id @default(uuid())
+
+  restaurantId String @unique
+
+  gstin String?
+
+  gstLegalName String?
+
+  gstRegisteredAddress String?
+
+  gstBusinessCategory String?
+
+  gstRegistrationState String?
+
+  gstVerificationStatus VerificationStatus @default(PENDING)
+
+  gstVerifiedById String?
+
+  gstVerifiedAt DateTime?
+
+  fssaiNumber String?
+
+  fssaiLicenseType String?
+
+  fssaiIssueDate DateTime?
+
+  fssaiExpiryAt DateTime?
+
+  fssaiVerificationStatus VerificationStatus @default(PENDING)
+
+  fssaiVerifiedById String?
+
+  fssaiVerifiedAt DateTime?
+
+  pan String?
+
+  cin String?
+
+  businessType BusinessType?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@index([fssaiExpiryAt])
+  @@map("restaurant_tax_profiles")
+}
+
+model RestaurantBankAccount {
+  id String @id @default(uuid())
+
+  restaurantId String @unique
+
+  accountHolderName String
+
+  bankName String
+
+  branchName String?
+
+  /**
+   * AES-256-GCM ciphertext (iv + authTag + ciphertext, base64-joined) — see
+   * shared/crypto/crypto.util.ts. The full number is never returned by any API response.
+   */
+  accountNumberEncrypted String
+
+  accountNumberLast4 String
+
+  ifsc String
+
+  upiId String?
+
+  /**
+   * Plain reference to the RestaurantDocument row holding the uploaded cancelled cheque.
+   */
+  cancelledChequeDocumentId String?
+
+  verificationStatus VerificationStatus @default(PENDING)
+
+  verifiedById String?
+
+  verifiedAt DateTime?
+
+  /**
+   * Reserved for a future payout integration (Razorpay Route / Cashfree Payouts).
+   */
+  payoutProviderRef String?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@map("restaurant_bank_accounts")
+}
+
+model RestaurantMedia {
+  id String @id @default(uuid())
+
+  restaurantId String
+
+  branchId String?
+
+  type RestaurantMediaType
+
+  url String
+
+  sortOrder Int @default(0)
+
+  uploadedById String
+
+  createdAt DateTime @default(now())
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  branch RestaurantBranch? @relation(fields: [branchId], references: [id], onDelete: SetNull)
+
+  @@index([restaurantId])
+  @@index([branchId])
+  @@index([type])
+  @@map("restaurant_media")
+}
+
 model OperatingHour {
   id String @id @default(uuid())
 
@@ -384,14 +1397,398 @@ model OperatingHour {
 
   branch RestaurantBranch @relation(fields: [branchId], references: [id], onDelete: Cascade)
 
+  /**
+   * Deliberately no unique constraint on [branchId, dayOfWeek] — split shifts (e.g. a lunch
+   * window and a separate dinner window on the same day) are modeled as two rows sharing the
+   * same dayOfWeek rather than a single row with multiple time ranges.
+   */
   @@index([branchId])
+  @@index([branchId, dayOfWeek])
   @@map("operating_hours")
+}
+
+/**
+ * Restaurant-wide (optionally branch-scoped) exceptions to the regular weekly OperatingHour
+ * schedule — a specific calendar date that is either fully closed or has special hours (e.g.
+ * festival hours). Takes precedence over OperatingHour for that date; see computeIsOpenNow().
+ */
+model RestaurantHoliday {
+  id String @id @default(uuid())
+
+  restaurantId String
+
+  /**
+   * Null applies to every branch of the restaurant; set to override for one branch only.
+   */
+  branchId String?
+
+  date DateTime @db.Date
+
+  name String
+
+  isClosed Boolean @default(true)
+
+  specialOpensAt String?
+
+  specialClosesAt String?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  branch RestaurantBranch? @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([restaurantId, branchId, date])
+  @@index([restaurantId])
+  @@index([branchId])
+  @@index([date])
+  @@map("restaurant_holidays")
+}
+
+/**
+ * Restaurant-wide operational configuration additive to ERPH-1 — one row per restaurant, created
+ * lazily with defaults on first read/write (see SettingsService), mirroring the
+ * RestaurantBankAccount/RestaurantTaxProfile 1:1 upsert pattern rather than requiring a separate
+ * "initialize settings" step.
+ */
+model RestaurantSettings {
+  id String @id @default(uuid())
+
+  restaurantId String @unique
+
+  serviceChargeType ServiceChargeType @default(NONE)
+
+  serviceChargeValue Decimal @default(0) @db.Decimal(10, 2)
+
+  packingChargeType ServiceChargeType @default(NONE)
+
+  packingChargeValue Decimal @default(0) @db.Decimal(10, 2)
+
+  minimumOrderAmount Decimal @default(0) @db.Decimal(10, 2)
+
+  currency String @default("INR")
+
+  autoAcceptOrders Boolean @default(false)
+
+  /**
+   * Minutes an order may sit PENDING before the acceptance-timeout job auto-rejects it (or
+   * auto-accepts it, if autoAcceptOrders is true). See OrderAcceptanceTimeoutProcessor.
+   */
+  acceptanceTimeoutMinutes Int @default(10)
+
+  isTemporarilyClosed Boolean @default(false)
+
+  temporaryClosureReason String?
+
+  temporaryClosureUntil DateTime?
+
+  restaurantNotes String?
+
+  specialInstructions String?
+
+  /**
+   * Restaurant-wide override that takes precedence over any individual branch's
+   * RestaurantBranch.deliveryRadiusKm when set.
+   */
+  deliveryRadiusOverrideKm Decimal? @db.Decimal(6, 2)
+
+  /**
+   * Fallback preparation time (minutes) applied when a MenuItem has no preparationTime of its
+   * own set.
+   */
+  orderPreparationDefaultMinutes Int?
+
+  notifyOnNewOrder Boolean @default(true)
+
+  notifyOnOrderCancelled Boolean @default(true)
+
+  notifyOnRefund Boolean @default(true)
+
+  notifyOnCustomerMessage Boolean @default(true)
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@map("restaurant_settings")
+}
+
+/**
+ * ERPH-2B.1 — the mandatory onboarding wizard's own progress record, one per restaurant.
+ * Created lazily (findOrCreate, same pattern as RestaurantSettings) the moment a restaurant is
+ * created (see OnboardingRestaurantCreatedListener), and is the single source of truth
+ * OnboardingGuard reads to decide whether the owner may reach the operational app at all.
+ */
+model RestaurantOnboarding {
+  id String @id @default(uuid())
+
+  restaurantId String @unique
+
+  status OnboardingStatus @default(DRAFT)
+
+  /**
+   * 1-12, matching the wizard step order (Business Details .. Review). Not itself the
+   * completion signal — see completedSteps — just where the wizard should resume.
+   */
+  currentStep Int @default(1)
+
+  /**
+   * Which of steps 1-12 have been marked complete. A Postgres int array rather than a join
+   * table — this is a small, append-only set with no per-step metadata beyond "done or not".
+   */
+  completedSteps Int[] @default([])
+
+  termsAcceptedAt DateTime?
+
+  submittedAt DateTime?
+
+  decidedAt DateTime?
+
+  /**
+   * Set by the admin "Request Changes" action — an array of { section, reason } objects
+   * identifying exactly which wizard sections need correction. No equivalent concept exists on
+   * RestaurantVerification today.
+   */
+  changesRequested Json?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@map("restaurant_onboarding")
+}
+
+model Review {
+  id String @id @default(uuid())
+
+  restaurantId String
+
+  customerId String
+
+  rating Int
+
+  comment String?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  /// The restaurant owner/manager's reply text. Null means no reply yet — one reply per review
+  /// (edited in place, not appended), enforced in ReviewsService rather than a separate table
+  /// since a review can only ever have a single, current reply.
+  replyText String?
+
+  replyCreatedAt DateTime?
+
+  replyUpdatedAt DateTime?
+
+  /// Which restaurant-side user authored/last-edited the reply — for audit purposes only, never
+  /// customer-visible.
+  repliedByUserId String?
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  customer User @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([restaurantId, customerId])
+  @@index([restaurantId])
+  @@map("reviews")
+}
+
+model RestaurantFavorite {
+  id String @id @default(uuid())
+
+  customerId String
+
+  restaurantId String
+
+  createdAt DateTime @default(now())
+
+  customer User @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, restaurantId])
+  @@index([restaurantId])
+  @@map("restaurant_favorites")
+}
+
+model MenuItemFavorite {
+  id String @id @default(uuid())
+
+  customerId String
+
+  menuItemId String
+
+  createdAt DateTime @default(now())
+
+  customer User @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  menuItem MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, menuItemId])
+  @@index([menuItemId])
+  @@map("menu_item_favorites")
+}
+
+model Offer {
+  id String @id @default(uuid())
+
+  restaurantId String?
+
+  title String
+
+  description String?
+
+  imageUrl String?
+
+  linkUrl String?
+
+  type OfferType?
+
+  isActive Boolean @default(true)
+
+  startsAt DateTime?
+
+  endsAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant? @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@index([restaurantId])
+  @@index([isActive])
+  @@index([type])
+  @@map("offers")
+}
+
+model Coupon {
+  id String @id @default(uuid())
+
+  code String @unique
+
+  name String
+
+  description String?
+
+  type CouponType
+
+  /**
+   * Percentage points (e.g. 10 = 10%) for PERCENTAGE, a flat rupee amount for FLAT, ignored for FREE_DELIVERY.
+   */
+  value Decimal @db.Decimal(10, 2)
+
+  /**
+   * Caps the computed discount for PERCENTAGE coupons. Ignored for FLAT and FREE_DELIVERY.
+   */
+  maxDiscountAmount Decimal? @db.Decimal(10, 2)
+
+  minOrderAmount Decimal @default(0) @db.Decimal(10, 2)
+
+  scope CouponScope @default(PLATFORM)
+
+  /**
+   * Required when scope is RESTAURANT, ignored when scope is PLATFORM.
+   */
+  restaurantId String?
+
+  /**
+   * Total redemptions allowed across all customers. Null means unlimited.
+   */
+  usageLimit Int?
+
+  /**
+   * Redemptions allowed per individual customer.
+   */
+  usagePerUser Int @default(1)
+
+  totalUsed Int @default(0)
+
+  startsAt DateTime
+
+  endsAt DateTime
+
+  active Boolean @default(true)
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant? @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  redemptions CouponRedemption[]
+
+  orders Order[]
+
+  @@index([code])
+  @@index([restaurantId])
+  @@index([active])
+  @@index([scope])
+  @@map("coupons")
+}
+
+/**
+ * One row per order a coupon was actually applied to — the ledger `CouponsService` reads to
+ * enforce usageLimit/usagePerUser and that OrdersService writes exactly once per order at
+ * placement time. `orderId` is unique: a single order can redeem at most one coupon.
+ */
+model CouponRedemption {
+  id String @id @default(uuid())
+
+  couponId String
+
+  userId String
+
+  /**
+   * Nullable (Sprint 1.3): CouponsRepository.reserveRedemption inserts this row immediately,
+   * atomically alongside claiming the usage slot — BEFORE the order it belongs to exists — so
+   * that a concurrent reservation attempt by the same user genuinely has something to count
+   * against (closes a per-user race that a later-created row couldn't; see that method's doc
+   * comment). `orderId` is filled in once the order is actually created
+   * (OrdersService.placeOrderInternal -> CouponsService.finalizeRedemption). A row that never
+   * gets linked (the order attempt it was reserved for failed or lost an idempotency race) is
+   * deleted by releaseRedemption rather than left with a null orderId. Still unique when set —
+   * Postgres treats multiple NULLs as distinct, so any number of not-yet-linked rows can coexist
+   * without colliding on this constraint.
+   */
+  orderId String? @unique
+
+  discountAmount Decimal @db.Decimal(10, 2)
+
+  redeemedAt DateTime @default(now())
+
+  coupon Coupon @relation(fields: [couponId], references: [id], onDelete: Cascade)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  order Order? @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([couponId])
+  @@index([userId])
+  @@index([couponId, userId])
+  @@map("coupon_redemptions")
 }
 
 model MenuCategory {
   id String @id @default(uuid())
 
   restaurantId String
+
+  /**
+   * Nullable = "applies to all branches," preserving today's restaurant-wide menu behavior
+   * exactly. Schema-only for ERPH-1 — no service/query logic filters on this yet; menu stays
+   * restaurant-wide until a later phase makes per-branch menus load-bearing.
+   */
+  branchId String?
 
   name String
 
@@ -407,9 +1804,12 @@ model MenuCategory {
 
   restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
 
+  branch RestaurantBranch? @relation(fields: [branchId], references: [id], onDelete: SetNull)
+
   menuItems MenuItem[]
 
   @@index([restaurantId])
+  @@index([branchId])
   @@map("menu_categories")
 }
 
@@ -446,6 +1846,10 @@ model MenuItem {
 
   orderItems OrderItem[]
 
+  cartItems CartItem[]
+
+  favoritedBy MenuItemFavorite[]
+
   @@index([categoryId])
   @@map("menu_items")
 }
@@ -462,6 +1866,10 @@ model MenuItemVariant {
   isDefault Boolean @default(false)
 
   menuItem MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+
+  orderItems OrderItem[]
+
+  cartItems CartItem[]
 
   @@index([menuItemId])
   @@map("menu_item_variants")
@@ -499,6 +1907,10 @@ model MenuItemAddonOption {
 
   addon MenuItemAddon @relation(fields: [addonId], references: [id], onDelete: Cascade)
 
+  orderItemAddonOptions OrderItemAddonOption[]
+
+  cartItemAddonOptions CartItemAddonOption[]
+
   @@index([addonId])
   @@map("menu_item_addon_options")
 }
@@ -518,9 +1930,23 @@ model Order {
 
   orderNumber String @unique
 
+  /**
+   * Client-generated UUID, one per checkout attempt (retried on failure, regenerated after
+   * success) — see OrdersService.placeOrder. Scoped per-customer rather than globally unique so
+   * two different customers can never collide even in the astronomically unlikely case of a
+   * non-random client. This unique index is the actual concurrency-safety mechanism for
+   * duplicate-order prevention: Postgres guarantees at most one row can ever exist for a given
+   * (customerId, idempotencyKey) pair, independent of any application-level locking.
+   */
+  idempotencyKey String?
+
   status OrderStatus @default(PENDING)
 
   paymentStatus PaymentStatus @default(PENDING)
+
+  paymentMode PaymentMode @default(ONLINE)
+
+  addressId String?
 
   subtotalAmount Decimal @db.Decimal(10, 2)
 
@@ -528,7 +1954,16 @@ model Order {
 
   taxAmount Decimal @db.Decimal(10, 2)
 
+  couponId String?
+
+  discountAmount Decimal @default(0) @db.Decimal(10, 2)
+
   totalAmount Decimal @db.Decimal(10, 2)
+
+  /**
+   * Portion of totalAmount paid via wallet balance; the remainder is charged via the provider Payment(s) above.
+   */
+  walletAmountUsed Decimal @default(0) @db.Decimal(10, 2)
 
   notes String?
 
@@ -554,16 +1989,31 @@ model Order {
 
   deliveryPartner User? @relation("DeliveryOrders", fields: [deliveryPartnerId], references: [id])
 
+  address Address? @relation(fields: [addressId], references: [id])
+
+  coupon Coupon? @relation(fields: [couponId], references: [id])
+
+  couponRedemption CouponRedemption?
+
   items OrderItem[]
 
   statusHistory OrderStatusHistory[]
 
   deliveryAssignments DeliveryAssignment[]
 
-  @@index([customerId])
+  proofOtps DeliveryProofOtp[]
+
+  walletTransactions WalletTransaction[]
+
+  supportTickets SupportTicket[]
+
+  @@unique([customerId, idempotencyKey])
   @@index([restaurantId])
+  @@index([deliveryPartnerId])
   @@index([status])
   @@index([paymentStatus])
+  @@index([createdAt])
+  @@index([couponId])
   @@map("orders")
 }
 
@@ -573,6 +2023,8 @@ model OrderItem {
   orderId String
 
   menuItemId String
+
+  variantId String?
 
   quantity Int
 
@@ -588,9 +2040,32 @@ model OrderItem {
 
   menuItem MenuItem @relation(fields: [menuItemId], references: [id])
 
+  variant MenuItemVariant? @relation(fields: [variantId], references: [id])
+
+  addonOptions OrderItemAddonOption[]
+
   @@index([orderId])
   @@index([menuItemId])
   @@map("order_items")
+}
+
+model OrderItemAddonOption {
+  id String @id @default(uuid())
+
+  orderItemId String
+
+  addonOptionId String
+
+  name String
+
+  price Decimal @db.Decimal(10, 2)
+
+  orderItem OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+
+  addonOption MenuItemAddonOption @relation(fields: [addonOptionId], references: [id])
+
+  @@index([orderItemId])
+  @@map("order_item_addon_options")
 }
 
 model OrderStatusHistory {
@@ -601,6 +2076,13 @@ model OrderStatusHistory {
   status OrderStatus
 
   note String?
+
+  /**
+   * Plain attribution field (not a Prisma relation), like RestaurantStaff.invitedById — the
+   * staff/admin/customer/delivery-partner user who caused this transition. Null means the
+   * transition was system-initiated (e.g. the order-acceptance-timeout auto-reject/auto-accept).
+   */
+  changedById String?
 
   createdAt DateTime @default(now())
 
@@ -628,7 +2110,57 @@ model DeliveryPartner {
 
   currentLongitude Float?
 
+  /**
+   * Fast operational gate — this is the single boolean Dispatch/Presence/goAvailable already
+   * read (and, as of EDPH-1, the only thing they read) to decide whether a partner may go
+   * online/receive assignments. Kept in sync exclusively by DeliveryVerificationService whenever
+   * DeliveryVerification.stage enters/leaves APPROVED — never set directly by any onboarding
+   * step. The legacy admin approve/reject endpoints (DeliveryService.approvePartner/rejectPartner)
+   * still flip it directly for backward compatibility.
+   */
   isVerified Boolean @default(false)
+
+  dateOfBirth DateTime?
+
+  gender Gender?
+
+  permanentAddressLine1 String?
+
+  permanentAddressLine2 String?
+
+  permanentCity String?
+
+  permanentState String?
+
+  permanentPostalCode String?
+
+  permanentLatitude Float?
+
+  permanentLongitude Float?
+
+  currentAddressLine1 String?
+
+  currentAddressLine2 String?
+
+  currentCity String?
+
+  currentState String?
+
+  currentPostalCode String?
+
+  currentAddressLatitude Float?
+
+  currentAddressLongitude Float?
+
+  sameAsPermanentAddress Boolean @default(false)
+
+  emergencyContactName String?
+
+  emergencyContactPhone String?
+
+  emergencyContactRelation String?
+
+  languagesSpoken String[] @default([])
 
   createdAt DateTime @default(now())
 
@@ -638,8 +2170,337 @@ model DeliveryPartner {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  vehicles DeliveryVehicle[]
+
+  documents DeliveryDocument[]
+
+  bankAccount DeliveryBankAccount?
+
+  verification DeliveryVerification?
+
+  onboarding DeliveryOnboarding?
+
+  complianceSnapshot DeliveryComplianceSnapshot?
+
   @@index([status])
+  @@index([status, isVerified])
   @@map("delivery_partners")
+}
+
+/**
+ * EDPH-1 — supports multiple vehicles per partner (one marked primary) with a replacement
+ * workflow: a replaced vehicle is deactivated (isActive=false), never deleted, so its document
+ * history remains intact. Expiry dates are denormalized here (mirroring
+ * RestaurantTaxProfile.fssaiExpiryAt) for cheap expiry queries; the actual uploaded certificates
+ * live in DeliveryDocument keyed by vehicleId + documentType.
+ */
+model DeliveryVehicle {
+  id String @id @default(uuid())
+
+  deliveryPartnerId String
+
+  vehicleType VehicleType
+
+  registrationNumber String
+
+  brand String?
+
+  model String?
+
+  year Int?
+
+  fuelType FuelType?
+
+  color String?
+
+  isPrimary Boolean @default(false)
+
+  isActive Boolean @default(true)
+
+  insuranceExpiryAt DateTime?
+
+  rcExpiryAt DateTime?
+
+  fitnessExpiryAt DateTime?
+
+  pollutionExpiryAt DateTime?
+
+  verificationStatus VerificationStatus @default(PENDING)
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  deliveryPartner DeliveryPartner @relation(fields: [deliveryPartnerId], references: [id], onDelete: Cascade)
+
+  documents DeliveryDocument[]
+
+  @@index([deliveryPartnerId])
+  @@index([isActive])
+  @@map("delivery_vehicles")
+}
+
+/**
+ * EDPH-1 — exact mirror of RestaurantDocument's shape/versioning convention, scoped to delivery
+ * partners. vehicleId is set for vehicle-scoped types (RC/insurance/fitness/pollution/photo) and
+ * null for partner-scoped types (license/Aadhaar/PAN/profile photo/selfie/background check).
+ */
+model DeliveryDocument {
+  id String @id @default(uuid())
+
+  deliveryPartnerId String
+
+  vehicleId String?
+
+  documentType DeliveryDocumentType
+
+  documentNumber String?
+
+  issueDate DateTime?
+
+  expiryDate DateTime?
+
+  status VerificationStatus @default(PENDING)
+
+  storageUrl String
+
+  fileName String
+
+  mimeType String
+
+  sizeBytes Int
+
+  uploadedById String
+
+  verifiedById String?
+
+  verifiedAt DateTime?
+
+  rejectedReason String?
+
+  metadata Json?
+
+  version Int @default(1)
+
+  isLatest Boolean @default(true)
+
+  previousVersionId String?
+
+  deletedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  deliveryPartner DeliveryPartner @relation(fields: [deliveryPartnerId], references: [id], onDelete: Cascade)
+
+  vehicle DeliveryVehicle? @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+
+  @@index([deliveryPartnerId])
+  @@index([vehicleId])
+  @@index([documentType])
+  @@index([status])
+  @@index([expiryDate])
+  @@map("delivery_documents")
+}
+
+/**
+ * EDPH-1 — append-only history log, NOT the source of truth (that stays DeliveryDocument, same
+ * as the Restaurant convention). Written once per upload/replace so "document history" is a
+ * direct query instead of walking previousVersionId in application code.
+ */
+model DocumentVersion {
+  id String @id @default(uuid())
+
+  documentId String
+
+  deliveryPartnerId String
+
+  documentType DeliveryDocumentType
+
+  version Int
+
+  storageUrl String
+
+  fileName String
+
+  supersededAt DateTime @default(now())
+
+  @@index([documentId])
+  @@index([deliveryPartnerId])
+  @@map("delivery_document_versions")
+}
+
+/**
+ * EDPH-1 — exact mirror of RestaurantBankAccount.
+ */
+model DeliveryBankAccount {
+  id String @id @default(uuid())
+
+  deliveryPartnerId String @unique
+
+  accountHolderName String
+
+  bankName String
+
+  branchName String?
+
+  /**
+   * AES-256-GCM ciphertext — see shared/crypto/crypto.util.ts. Full number never returned.
+   */
+  accountNumberEncrypted String
+
+  accountNumberLast4 String
+
+  ifsc String
+
+  upiId String?
+
+  cancelledChequeDocumentId String?
+
+  verificationStatus VerificationStatus @default(PENDING)
+
+  verifiedById String?
+
+  verifiedAt DateTime?
+
+  payoutProviderRef String?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  deliveryPartner DeliveryPartner @relation(fields: [deliveryPartnerId], references: [id], onDelete: Cascade)
+
+  @@map("delivery_bank_accounts")
+}
+
+/**
+ * EDPH-1 — the delivery-partner analog of RestaurantVerification. Deliberately simpler stage
+ * machine than the restaurant one (see DeliveryVerificationStage doc comment). Reaching APPROVED
+ * (or leaving it via reject/suspend) is what drives DeliveryPartner.isVerified, which is the
+ * boolean Dispatch/Presence/goAvailable actually gate on.
+ */
+model DeliveryVerification {
+  id String @id @default(uuid())
+
+  deliveryPartnerId String @unique
+
+  stage DeliveryVerificationStage @default(DRAFT)
+
+  submittedAt DateTime?
+
+  decidedAt DateTime?
+
+  decidedById String?
+
+  rejectedReason String?
+
+  notes String?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  deliveryPartner DeliveryPartner @relation(fields: [deliveryPartnerId], references: [id], onDelete: Cascade)
+
+  @@index([stage])
+  @@map("delivery_verifications")
+}
+
+/**
+ * EDPH-1 — append-only transition log for DeliveryVerification.stage, distinct from the generic
+ * cross-entity AuditLog. Powers the "Verification Timeline"/reviewer-comments requirement with a
+ * dedicated, purpose-built query.
+ */
+model VerificationHistory {
+  id String @id @default(uuid())
+
+  deliveryPartnerId String
+
+  fromStage DeliveryVerificationStage?
+
+  toStage DeliveryVerificationStage
+
+  reason String?
+
+  decidedById String?
+
+  createdAt DateTime @default(now())
+
+  @@index([deliveryPartnerId])
+  @@map("delivery_verification_history")
+}
+
+/**
+ * EDPH-1 — the delivery-partner analog of RestaurantOnboarding. One row per partner, created
+ * lazily (findOrCreate) the moment a DeliveryPartner is created. Steps 1-11 are mandatory before
+ * submit; step 12 (Review) is the submit act itself. See DeliveryOnboardingService for the
+ * 12-step order (Personal, Address, Vehicle, Driving License, Aadhaar, PAN, RC, Insurance, Bank,
+ * Selfie, Background Verification, Review).
+ */
+model DeliveryOnboarding {
+  id String @id @default(uuid())
+
+  deliveryPartnerId String @unique
+
+  status DeliveryOnboardingStatus @default(DRAFT)
+
+  currentStep Int @default(1)
+
+  completedSteps Int[] @default([])
+
+  termsAcceptedAt DateTime?
+
+  submittedAt DateTime?
+
+  decidedAt DateTime?
+
+  changesRequested Json?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  deliveryPartner DeliveryPartner @relation(fields: [deliveryPartnerId], references: [id], onDelete: Cascade)
+
+  @@map("delivery_onboardings")
+}
+
+/**
+ * EDPH-1 — persisted write-through cache of DeliveryComplianceService.getSnapshot()'s computed
+ * result (one row per partner, upserted every time the endpoint runs — the endpoint itself
+ * always returns the freshly computed value, never a stale read of this row). Gives the
+ * admin/dashboard a queryable "last computed readiness" without recomputation, and a genuine
+ * missingDocumentTypes list beyond what RestaurantCompliance (which has no persisted model)
+ * exposes.
+ */
+model DeliveryComplianceSnapshot {
+  id String @id @default(uuid())
+
+  deliveryPartnerId String @unique
+
+  overallStatus ComplianceOverallStatus
+
+  verificationStage DeliveryVerificationStage
+
+  documentsTotal Int @default(0)
+
+  documentsVerified Int @default(0)
+
+  documentsPending Int @default(0)
+
+  documentsRejected Int @default(0)
+
+  bankVerificationStatus VerificationStatus?
+
+  missingDocumentTypes String[] @default([])
+
+  updatedAt DateTime @updatedAt
+
+  deliveryPartner DeliveryPartner @relation(fields: [deliveryPartnerId], references: [id], onDelete: Cascade)
+
+  @@map("delivery_compliance_snapshots")
 }
 
 model AuditLog {
@@ -677,6 +2538,8 @@ model Notification {
 
   userId String
 
+  type NotificationType @default(GENERAL)
+
   title String
 
   message String
@@ -687,17 +2550,23 @@ model Notification {
 
   metadata Json?
 
+  attempts Int @default(0)
+
+  errorMessage String?
+
   sentAt DateTime?
 
   readAt DateTime?
 
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([status])
   @@index([channel])
+  @@index([type])
   @@map("notifications")
 }
 
@@ -715,6 +2584,30 @@ model NotificationPreference {
   whatsappEnabled Boolean @default(true)
 
   inAppEnabled Boolean @default(true)
+
+  orderUpdatesEmail Boolean @default(true)
+
+  orderUpdatesSms Boolean @default(true)
+
+  orderUpdatesPush Boolean @default(true)
+
+  promotionsEmail Boolean @default(false)
+
+  promotionsSms Boolean @default(false)
+
+  promotionsPush Boolean @default(false)
+
+  reviewsEmail Boolean @default(true)
+
+  reviewsSms Boolean @default(false)
+
+  reviewsPush Boolean @default(true)
+
+  systemEmail Boolean @default(true)
+
+  systemSms Boolean @default(false)
+
+  systemPush Boolean @default(true)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -766,6 +2659,8 @@ model Payment {
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
   refunds Refund[]
+
+  supportTickets SupportTicket[]
 
   @@index([orderId])
   @@index([status])
@@ -839,4 +2734,276 @@ model DeliveryAssignment {
   @@index([deliveryPartnerId])
   @@index([status])
   @@map("delivery_assignments")
+}
+
+enum DeliveryProofType {
+  PICKUP
+  DELIVERY
+}
+
+enum DeliveryProofOtpStatus {
+  PENDING
+  VERIFIED
+  EXPIRED
+  EXCEEDED
+}
+
+/**
+ * One row per (orderId, type) — Sprint 4.1. Generating (or regenerating) an OTP overwrites the
+ * existing row in place rather than appending a new one, mirroring the singleton-per-owner
+ * pattern already used by DeliveryBankAccount/DeliveryComplianceSnapshot; history of the action
+ * itself is captured via AuditService.log, not by keeping old OTP rows around. `otpHash` is
+ * bcrypt-hashed, never the raw 6-digit code, so a DB read alone can't recover it.
+ */
+model DeliveryProofOtp {
+  id String @id @default(uuid())
+
+  orderId String
+
+  type DeliveryProofType
+
+  otpHash String
+
+  status DeliveryProofOtpStatus @default(PENDING)
+
+  attempts Int @default(0)
+
+  maxAttempts Int @default(5)
+
+  expiresAt DateTime
+
+  verifiedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  updatedAt DateTime @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([orderId, type])
+  @@map("delivery_proof_otps")
+}
+
+// ---------------------------------------------------------------------------
+// C7 — Search, Filters & Discovery
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-customer recent search terms, most-recent-first. Upserted on (customerId, query) so a repeated search bumps to the top instead of duplicating.
+ */
+model RecentSearch {
+  id String @id @default(uuid())
+
+  customerId String
+  query      String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customer User @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, query])
+  @@index([customerId, updatedAt])
+  @@map("recent_searches")
+}
+
+/**
+ * Append-only log of every search query (including anonymous/guest ones) — the raw input the trending-search aggregation job reads from.
+ */
+model SearchLog {
+  id String @id @default(uuid())
+
+  query      String
+  customerId String?
+
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([query])
+  @@map("search_logs")
+}
+
+/**
+ * Precomputed by the trending-search BullMQ job — read directly by the public trending-searches endpoint so it never aggregates on the request path.
+ */
+model TrendingSearch {
+  id String @id @default(uuid())
+
+  query String @unique
+  score Int    @default(0)
+
+  updatedAt DateTime @updatedAt
+
+  @@index([score])
+  @@map("trending_searches")
+}
+
+// ---------------------------------------------------------------------------
+// C9 — Wallet, Loyalty & Referral
+// ---------------------------------------------------------------------------
+
+/**
+ * Immutable, append-only ledger — a user's wallet balance is always the SUM of their COMPLETED transactions, never a mutable counter.
+ */
+model WalletTransaction {
+  id String @id @default(uuid())
+
+  userId String
+  type   WalletTransactionType
+  status WalletTransactionStatus @default(COMPLETED)
+
+  /**
+   * Positive = credit, negative = debit.
+   */
+  amount Decimal @db.Decimal(10, 2)
+
+  /**
+   * Snapshot of the running balance immediately after this entry — written once at insert time for fast history display, never updated afterwards.
+   */
+  balanceAfter Decimal @db.Decimal(10, 2)
+
+  orderId    String?
+  referralId String?
+
+  description String
+
+  createdAt DateTime @default(now())
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order    Order?    @relation(fields: [orderId], references: [id])
+  referral Referral? @relation(fields: [referralId], references: [id])
+
+  @@index([userId])
+  @@index([userId, createdAt])
+  @@index([orderId])
+  @@index([type])
+  @@map("wallet_transactions")
+}
+
+/**
+ * One row per referred user (refereeId is unique — a user can only ever be referred once). Rewarded when the referee's first order reaches DELIVERED.
+ */
+model Referral {
+  id String @id @default(uuid())
+
+  referrerId String
+  refereeId  String @unique
+
+  status       ReferralStatus @default(PENDING)
+  rewardAmount Decimal?       @db.Decimal(10, 2)
+  rewardedAt   DateTime?
+
+  createdAt DateTime @default(now())
+
+  referrer           User                @relation("ReferralsMade", fields: [referrerId], references: [id], onDelete: Cascade)
+  referee            User                @relation("ReferralsReceived", fields: [refereeId], references: [id], onDelete: Cascade)
+  walletTransactions WalletTransaction[]
+
+  @@index([referrerId])
+  @@index([status])
+  @@map("referrals")
+}
+
+// ---------------------------------------------------------------------------
+// C14 — Customer Help & Support
+// ---------------------------------------------------------------------------
+
+model SupportTicket {
+  id           String @id @default(uuid())
+  ticketNumber String @unique
+
+  customerId      String
+  assignedAgentId String?
+
+  orderId   String?
+  paymentId String?
+
+  category TicketCategory
+  priority TicketPriority @default(MEDIUM)
+  status   TicketStatus   @default(OPEN)
+
+  subject     String
+  description String
+
+  firstResponseAt DateTime?
+  resolvedAt      DateTime?
+  escalatedAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customer      User     @relation("CustomerTickets", fields: [customerId], references: [id], onDelete: Cascade)
+  assignedAgent User?    @relation("AssignedTickets", fields: [assignedAgentId], references: [id])
+  order         Order?   @relation(fields: [orderId], references: [id])
+  payment       Payment? @relation(fields: [paymentId], references: [id])
+
+  messages    TicketMessage[]
+  attachments TicketAttachment[]
+
+  @@index([customerId])
+  @@index([assignedAgentId])
+  @@index([status])
+  @@index([priority])
+  @@index([orderId])
+  @@map("support_tickets")
+}
+
+model TicketMessage {
+  id String @id @default(uuid())
+
+  ticketId   String
+  senderId   String?
+  senderType TicketMessageSenderType
+
+  message String
+
+  createdAt DateTime @default(now())
+
+  ticket      SupportTicket      @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  sender      User?              @relation(fields: [senderId], references: [id])
+  attachments TicketAttachment[]
+
+  @@index([ticketId])
+  @@index([ticketId, createdAt])
+  @@map("ticket_messages")
+}
+
+model TicketAttachment {
+  id String @id @default(uuid())
+
+  ticketId     String
+  messageId    String?
+  uploadedById String
+
+  fileUrl   String
+  fileName  String
+  mimeType  String
+  sizeBytes Int
+
+  createdAt DateTime @default(now())
+
+  ticket     SupportTicket  @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  message    TicketMessage? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  uploadedBy User           @relation(fields: [uploadedById], references: [id])
+
+  @@index([ticketId])
+  @@map("ticket_attachments")
+}
+
+model FAQ {
+  id String @id @default(uuid())
+
+  category String
+  question String
+  answer   String
+
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([category])
+  @@index([isActive])
+  @@map("faqs")
 }

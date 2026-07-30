@@ -1,0 +1,125 @@
+name: backend-ci
+
+# Section 2 (Backend Pipeline): checkout, Node setup, pnpm install, lint, typecheck, unit tests,
+# Prisma validation, OpenAPI generation, Swagger validation. Runs on every PR and every push to
+# main — this workflow never pushes an image or touches ECR/AWS; that's backend-release.yml's job,
+# gated on this one passing (Section 10: "CI MUST NEVER deploy directly").
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "apps/api-gateway/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "package.json"
+      - ".github/workflows/backend-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "apps/api-gateway/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "package.json"
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Lint, typecheck, test
+    uses: Patheya-express/patheya-express-platform/.github/workflows/reusable-node-quality.yml@main
+    with:
+      pnpm-version: "11.4.0"
+      node-version: "24"
+      lint-command: "pnpm --filter api-gateway run lint:ci"
+      typecheck-command: "pnpm --filter api-gateway run typecheck"
+      test-command: "pnpm --filter api-gateway run test:cov"
+
+  prisma-validate:
+    name: Prisma validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Patheya-express/patheya-express-platform/.github/actions/setup-pnpm-node@main
+        with:
+          pnpm-version: "11.4.0"
+      - run: pnpm --filter api-gateway run db:generate
+      - run: pnpm --filter api-gateway run db:validate
+
+  openapi:
+    name: OpenAPI generation + Swagger validation
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: patheya_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/patheya_ci"
+      REDIS_HOST: localhost
+      REDIS_PORT: "6379"
+      # env.validation.ts's Joi schema only accepts development|staging|production (no "test")
+      # and requires PORT/KAFKA_BROKER with no default — all four set here purely so the app can
+      # boot far enough to build the Swagger document; none of these are load-bearing for what's
+      # actually being validated in this job (the OpenAPI document's shape).
+      NODE_ENV: development
+      PORT: "3000"
+      KAFKA_BROKER: unused-kafka-broker.example:9092
+      JWT_ACCESS_SECRET: ci-only-placeholder-access-secret
+      JWT_REFRESH_SECRET: ci-only-placeholder-refresh-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Patheya-express/patheya-express-platform/.github/actions/setup-pnpm-node@main
+        with:
+          pnpm-version: "11.4.0"
+      - run: pnpm --filter api-gateway run db:generate
+      - run: pnpm --filter api-gateway run db:migrate:deploy
+      - name: Export OpenAPI document
+        working-directory: apps/api-gateway
+        run: pnpm run docs:export
+      - name: Validate OpenAPI document
+        working-directory: apps/api-gateway
+        run: npx --yes @redocly/cli@latest lint openapi.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openapi-spec
+          path: apps/api-gateway/openapi.json
+          retention-days: 90
+
+  docker-build-check:
+    name: Docker build (no push)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          tags: patheya-express-api-gateway:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

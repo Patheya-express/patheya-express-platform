@@ -1,0 +1,30 @@
+# Independent scaling policy from api-gateway (Step 11) — scales on CPU only, since queue
+# throughput correlates with CPU usage here and there's no custom BullMQ-queue-depth metric
+# wired into the cluster's metrics pipeline yet (would need a metrics adapter, e.g.
+# prometheus-adapter reading a BullMQ exporter — a Phase 2 addition).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker
+  labels:
+    app.kubernetes.io/name: worker
+    app.kubernetes.io/component: worker
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worker
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+    scaleUp:
+      stabilizationWindowSeconds: 30

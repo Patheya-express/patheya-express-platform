@@ -1,13 +1,13 @@
 export class OrderStatusChangedEvent {
+  constructor(
+    public readonly orderId: string,
 
-    constructor(
-  
-      public readonly orderId: string,
-  
-      public readonly customerId: string,
-  
-      public readonly status: string,
-  
-    ) {}
-  
-  }
+    public readonly customerId: string,
+
+    public readonly status: string,
+
+    public readonly restaurantId: string,
+
+    public readonly totalAmount?: number,
+  ) {}
+}

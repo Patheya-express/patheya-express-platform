@@ -1,13 +1,9 @@
 export class DeliveryPartnerAssignedEvent {
+  constructor(
+    public readonly orderId: string,
 
-    constructor(
-  
-      public readonly orderId: string,
-  
-      public readonly customerId: string,
-  
-      public readonly partnerUserId: string,
-  
-    ) {}
-  
-  }
+    public readonly customerId: string,
+
+    public readonly partnerUserId: string,
+  ) {}
+}

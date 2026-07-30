@@ -1,0 +1,23 @@
+# Cluster-scoped — not namespaced, so these apply platform-wide. Two tiers: api-gateway serves
+# live customer/restaurant/delivery traffic and should win scheduling contention over workers,
+# whose BullMQ jobs (notifications, dispatch timeouts, payment reconciliation) tolerate a short
+# scheduling delay.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: patheya-express-critical
+value: 2000
+globalDefault: false
+description: >-
+  Patheya Express workloads that serve live external traffic (api-gateway). Preferred over
+  patheya-express-standard when the cluster is under scheduling pressure.
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: patheya-express-standard
+value: 1000
+globalDefault: false
+description: >-
+  Patheya Express background workloads (BullMQ workers) that don't receive external traffic and
+  can tolerate a brief scheduling delay under cluster pressure.

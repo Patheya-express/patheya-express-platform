@@ -1,0 +1,133 @@
+name: Reusable / Docker build, scan, sign, publish
+
+# Section 6 (Supply Chain): CycloneDX SBOM, SLSA provenance, Cosign signatures, OCI attestations —
+# all four produced here, against the one digest-pinned image this job builds once
+# (platform-standards.md Section 10: "an image built once is promoted unchanged... never rebuilt
+# per environment"). This workflow never touches Kubernetes, ArgoCD, or the gitops repo — it stops
+# at "image exists in ECR, signed and attested." The gitops-image-update step is a separate,
+# explicit job in the calling workflow, not folded in here, so a caller that only wants to
+# build-and-verify (e.g. a PR-time dry run) can invoke this without also proposing a deploy.
+
+on:
+  workflow_call:
+    inputs:
+      ecr-repository:
+        type: string
+        required: true
+      image-tag:
+        type: string
+        required: true
+      aws-region:
+        type: string
+        required: true
+      role-to-assume:
+        type: string
+        required: true
+      context:
+        type: string
+        default: "."
+      dockerfile:
+        type: string
+        default: "Dockerfile"
+      target:
+        description: Optional Dockerfile build stage — see docker-build-push-ecr's own input.
+        type: string
+        default: ""
+      build-args:
+        type: string
+        default: ""
+      trivy-severity:
+        type: string
+        default: "HIGH,CRITICAL"
+      trivyignore-path:
+        type: string
+        default: ""
+      sarif-category:
+        description: >
+          Defaults to ecr-repository — override when calling this workflow twice for the same
+          repository (e.g. api-gateway's app image and its -migrate variant) so the two SARIF
+          uploads don't collide under Code Scanning's per-category-unique requirement.
+        type: string
+        default: ""
+    outputs:
+      image-uri:
+        value: ${{ jobs.publish.outputs.image-uri }}
+      image-name:
+        description: registry/patheya-express/repo — no tag. Use this (with a tag appended by the caller) for `kustomize edit set image`, never image-uri (which is already tag-qualified).
+        value: ${{ jobs.publish.outputs.image-name }}
+      image-ref-digest:
+        value: ${{ jobs.publish.outputs.image-ref-digest }}
+      image-digest:
+        value: ${{ jobs.publish.outputs.image-digest }}
+
+permissions:
+  contents: read
+  id-token: write # cosign keyless signing + AWS OIDC
+  attestations: write # actions/attest-build-provenance
+  security-events: write # SARIF upload to Code Scanning
+
+jobs:
+  publish:
+    name: Build, scan, sign, publish (${{ inputs.ecr-repository }})
+    runs-on: ubuntu-latest
+    outputs:
+      image-uri: ${{ steps.build.outputs.image-uri }}
+      image-name: ${{ steps.build.outputs.registry }}/patheya-express/${{ inputs.ecr-repository }}
+      image-ref-digest: ${{ steps.build.outputs.image-ref-digest }}
+      image-digest: ${{ steps.build.outputs.image-digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and push to ECR
+        id: build
+        uses: Patheya-express/patheya-express-platform/.github/actions/docker-build-push-ecr@main
+        with:
+          aws-region: ${{ inputs.aws-region }}
+          role-to-assume: ${{ inputs.role-to-assume }}
+          ecr-repository: ${{ inputs.ecr-repository }}
+          image-tag: ${{ inputs.image-tag }}
+          context: ${{ inputs.context }}
+          dockerfile: ${{ inputs.dockerfile }}
+          target: ${{ inputs.target }}
+          build-args: ${{ inputs.build-args }}
+
+      # Fails the job on HIGH/CRITICAL (platform-standards.md Section 10) — deliberately runs
+      # *before* signing: an image this platform is about to cryptographically vouch for should
+      # never be one Trivy already flagged. A finding here means no signature, no SBOM attestation,
+      # no publish is ever considered to have happened for this digest.
+      - name: Trivy scan (quality gate)
+        uses: Patheya-express/patheya-express-platform/.github/actions/trivy-scan@main
+        with:
+          image-ref: ${{ steps.build.outputs.image-ref-digest }}
+          severity: ${{ inputs.trivy-severity }}
+          trivyignore-path: ${{ inputs.trivyignore-path }}
+          sarif-category: ${{ inputs.sarif-category != '' && inputs.sarif-category || inputs.ecr-repository }}
+
+      - name: Generate SBOM
+        id: sbom
+        uses: Patheya-express/patheya-express-platform/.github/actions/generate-sbom@main
+        with:
+          image-ref: ${{ steps.build.outputs.image-ref-digest }}
+
+      - name: Cosign sign + attest SBOM
+        uses: Patheya-express/patheya-express-platform/.github/actions/cosign-sign@main
+        with:
+          image-ref: ${{ steps.build.outputs.image-ref-digest }}
+          sbom-path: ${{ steps.sbom.outputs.sbom-path }}
+
+      # SLSA provenance (Section 6) — GitHub's own attestation store, a separate, independently
+      # verifiable claim from the Sigstore signature above (docs/signing-guide.md explains why both
+      # exist: this is provenance *about* the build, Sigstore is the admission-time trust anchor).
+      - name: Generate SLSA provenance attestation
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ${{ steps.build.outputs.image-uri }}
+          subject-digest: ${{ steps.build.outputs.image-digest }}
+          push-to-registry: true
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ inputs.ecr-repository }}-${{ inputs.image-tag }}
+          path: ${{ steps.sbom.outputs.sbom-path }}
+          retention-days: 90

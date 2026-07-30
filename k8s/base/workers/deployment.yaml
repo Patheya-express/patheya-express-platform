@@ -1,0 +1,125 @@
+# Same image as api-gateway (single build/publish pipeline, one ECR repository — Phase 8) but a
+# distinct process: `args` below runs `worker-main.js`, not the image's default `main.js` CMD,
+# booting the slim `WorkerModule` (src/worker.module.ts) instead of the full HTTP `AppModule`.
+# Closes the gap docs/infrastructure/workers.md documented ("there is only one main.ts entrypoint")
+# and the blueprint's own Phase 4 roadmap item, in Phase 9 (Enterprise Workload Deployment). This
+# Deployment gets its own scaling policy, PDB, and ServiceAccount as a genuinely independent
+# workload — it isn't attached to the api-gateway Service or Ingress, so it never receives
+# external HTTP traffic; its own small HTTP surface (worker-main.ts) only ever serves
+# /api/v1/health/* to the kubelet's probes and /metrics to Prometheus.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  labels:
+    app.kubernetes.io/name: worker
+    app.kubernetes.io/component: worker
+    # See api-gateway/deployment.yaml's matching comment — same placeholder-overwritten-per-PR
+    # contract.
+    app.kubernetes.io/version: "unset"
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: worker
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/version: "unset"
+      annotations:
+        patheya-express.io/git-commit: "unset"
+        patheya-express.io/build-id: "unset"
+    spec:
+      serviceAccountName: worker
+      priorityClassName: patheya-express-standard
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: worker
+      containers:
+        - name: worker
+          image: patheya-express-api-gateway:latest
+          imagePullPolicy: IfNotPresent
+          # Overrides the image's default CMD (["node", "dist/src/main.js"]) — ENTRYPOINT (tini,
+          # PID 1) is untouched, so signal forwarding/zombie-reaping still works identically to
+          # api-gateway. `args` fully replaces CMD in Kubernetes (it does not append to it), hence
+          # "node" must be repeated here, not just the new file path.
+          args: ["node", "dist/src/worker-main.js"]
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: APP_NAME
+              value: workers
+          envFrom:
+            - configMapRef:
+                name: api-gateway-config
+            - secretRef:
+                name: backend-database-url
+            - secretRef:
+                name: backend-redis-credentials
+            - secretRef:
+                name: backend-app-secrets
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          startupProbe:
+            httpGet:
+              path: /api/v1/health/live
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health/ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health/live
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: logs
+              mountPath: /app/logs
+            - name: uploads
+              mountPath: /app/uploads
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: logs
+          emptyDir: {}
+        - name: uploads
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

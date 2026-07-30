@@ -1,0 +1,39 @@
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+
+import { DeliveryDocumentType, VerificationStatus } from '@prisma/client';
+
+export class DeliveryDocumentResponseDto {
+  @ApiProperty() id: string;
+  @ApiProperty() deliveryPartnerId: string;
+  @ApiPropertyOptional() vehicleId?: string;
+  @ApiProperty({ enum: DeliveryDocumentType })
+  documentType: DeliveryDocumentType;
+  @ApiPropertyOptional() documentNumber?: string;
+  @ApiPropertyOptional() issueDate?: Date;
+  @ApiPropertyOptional() expiryDate?: Date;
+  @ApiProperty({ enum: VerificationStatus }) status: VerificationStatus;
+  @ApiProperty() storageUrl: string;
+  @ApiProperty() fileName: string;
+  @ApiProperty() mimeType: string;
+  @ApiProperty() sizeBytes: number;
+  @ApiProperty() uploadedById: string;
+  @ApiPropertyOptional() verifiedById?: string;
+  @ApiPropertyOptional() verifiedAt?: Date;
+  @ApiPropertyOptional() rejectedReason?: string;
+  @ApiProperty() version: number;
+  @ApiProperty() isLatest: boolean;
+  @ApiPropertyOptional() previousVersionId?: string;
+  @ApiProperty() createdAt: Date;
+  @ApiProperty() updatedAt: Date;
+}
+
+export class DocumentVersionResponseDto {
+  @ApiProperty() id: string;
+  @ApiProperty() documentId: string;
+  @ApiProperty({ enum: DeliveryDocumentType })
+  documentType: DeliveryDocumentType;
+  @ApiProperty() version: number;
+  @ApiProperty() storageUrl: string;
+  @ApiProperty() fileName: string;
+  @ApiProperty() supersededAt: Date;
+}

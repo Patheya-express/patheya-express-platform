@@ -1,0 +1,45 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# No environment suffix — base's own comment explains why (each environment is its own cluster,
+# not a shared cluster with per-environment namespace suffixes). This overlay's namespace
+# override exists only so `kubectl kustomize`/`kubectl apply -k` work standalone against a
+# cluster that already has the patheya-backend namespace (patheya-express-terraform Phase 3);
+# it no longer needs to differ from base's own namespace value.
+namespace: patheya-backend
+
+resources:
+  - ../../base
+
+patches:
+  - path: replicas-patch.yaml
+  - path: hpa-patch.yaml
+  - path: pdb-patch.yaml
+  - path: ingress-patch.yaml
+
+configMapGenerator:
+  - name: api-gateway-config
+    behavior: merge
+    literals:
+      - NODE_ENV=development
+      - LOG_TO_FILE=true
+      - STORAGE_DRIVER=local
+      # REDIS_HOST=redis removed in Phase 9 — that value never pointed at a real Service (no
+      # standalone in-cluster Redis exists anywhere in this platform, only ElastiCache); the real
+      # REDIS_HOST/PORT/AUTH_TOKEN/TLS now come from the backend-redis-credentials Secret
+      # (base/kustomization.yaml's envFrom), which exists in every environment, development
+      # included (patheya-express-terraform's ElastiCache module provisions a single-node cluster
+      # for development too).
+      #
+      # Domains below match the frontend repo's actual Ingress hosts (env-prefix-first ordering,
+      # "customer"/"restaurant" naming) — see base/kustomization.yaml's matching comment for the
+      # documented inconsistency with cloud-architecture-blueprint.md Section 4/6's own naming
+      # example, not fixed in this phase.
+      - CUSTOMER_APP_URL=https://dev.customer.patheyaexpress.com
+      - RESTAURANT_APP_URL=https://dev.restaurant.patheyaexpress.com
+      - ADMIN_APP_URL=https://dev.admin.patheyaexpress.com
+      - DELIVERY_APP_URL=https://dev.delivery.patheyaexpress.com
+
+images:
+  - name: patheya-express-api-gateway
+    newTag: dev

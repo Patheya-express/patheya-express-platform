@@ -1,50 +1,39 @@
-import * as winston
-from 'winston';
+import * as winston from 'winston';
 
-export const winstonConfig =
-  winston.createLogger({
+// File transports write to the container's local (ephemeral, pod-local) disk with no rotation —
+// fine for local development, wrong in Kubernetes where logs should go to stdout only and be
+// collected by the cluster's logging agent. Defaults to 'true' so today's local-dev behavior is
+// unchanged; K8s manifests set LOG_TO_FILE=false.
+const logToFile = process.env.LOG_TO_FILE !== 'false';
 
-    level:
-      process.env.LOG_LEVEL ||
-      'info',
+export const winstonConfig = winston.createLogger({
+  level: process.env.LOG_LEVEL || 'info',
 
-    format:
-      winston.format.combine(
+  format: winston.format.combine(
+    winston.format.timestamp(),
 
-        winston.format.timestamp(),
+    winston.format.errors({
+      stack: true,
+    }),
 
-        winston.format.errors({
-          stack: true,
-        }),
+    winston.format.json(),
+  ),
 
-        winston.format.json(),
+  transports: [
+    new winston.transports.Console(),
 
-      ),
+    ...(logToFile
+      ? [
+          new winston.transports.File({
+            filename: 'logs/error.log',
 
-    transports: [
+            level: 'error',
+          }),
 
-      new winston
-        .transports.Console(),
-
-      new winston
-        .transports.File({
-
-          filename:
-            'logs/error.log',
-
-          level:
-            'error',
-
-        }),
-
-      new winston
-        .transports.File({
-
-          filename:
-            'logs/combined.log',
-
-        }),
-
-    ],
-
-  });
+          new winston.transports.File({
+            filename: 'logs/combined.log',
+          }),
+        ]
+      : []),
+  ],
+});

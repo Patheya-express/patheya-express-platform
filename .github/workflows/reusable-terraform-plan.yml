@@ -1,0 +1,120 @@
+name: Reusable / Terraform validate + plan
+
+# platform-standards.md Section 9/10: fmt -check and validate are required CI checks on every PR;
+# this workflow adds tflint/tfsec/Checkov on top (this task's Section 4) and, for a real
+# environment directory (not a bare module), a saved plan artifact — never an apply. No job in this
+# workflow ever runs `terraform apply`.
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        required: true
+      needs-plan:
+        description: >
+          true for an environments/<tier>/<stage> directory with a real S3/DynamoDB backend and AWS
+          credentials to plan against; false for a bare modules/<name> directory, which is
+          validated with `init -backend=false` and no plan.
+        type: boolean
+        default: false
+      aws-region:
+        type: string
+        default: ""
+      role-to-assume:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  terraform:
+    name: Validate (${{ inputs.working-directory }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read pinned Terraform version
+        id: tf-version
+        run: |
+          repo_root=$(git rev-parse --show-toplevel)
+          if [ ! -f "$repo_root/.terraform-version" ]; then
+            echo "No .terraform-version found at repo root ($repo_root)" >&2
+            exit 1
+          fi
+          echo "version=$(cat "$repo_root/.terraform-version")" >> "$GITHUB_OUTPUT"
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ steps.tf-version.outputs.version }}
+          terraform_wrapper: false
+
+      - name: terraform fmt -check
+        working-directory: ${{ inputs.working-directory }}
+        run: terraform fmt -check -recursive
+
+      - name: Configure AWS credentials (OIDC)
+        if: inputs.needs-plan
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ inputs.aws-region }}
+          role-to-assume: ${{ inputs.role-to-assume }}
+
+      - name: terraform init (backend)
+        if: inputs.needs-plan
+        working-directory: ${{ inputs.working-directory }}
+        run: terraform init -input=false
+
+      - name: terraform init (no backend, module validation only)
+        if: ${{ !inputs.needs-plan }}
+        working-directory: ${{ inputs.working-directory }}
+        run: terraform init -backend=false -input=false
+
+      - name: terraform validate
+        working-directory: ${{ inputs.working-directory }}
+        run: terraform validate
+
+      - name: Setup tflint
+        uses: terraform-linters/setup-tflint@v4
+
+      - name: tflint
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          tflint --init
+          tflint --recursive
+
+      - name: tfsec
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: ${{ inputs.working-directory }}
+          soft_fail: false
+
+      - name: Checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: ${{ inputs.working-directory }}
+          framework: terraform
+          quiet: true
+          soft_fail: false
+
+      - name: terraform plan
+        if: inputs.needs-plan
+        working-directory: ${{ inputs.working-directory }}
+        run: terraform plan -input=false -out=tfplan
+
+      - name: Compute safe artifact name
+        if: inputs.needs-plan
+        id: artifact-name
+        run: |
+          safe=$(echo "${{ inputs.working-directory }}" | tr '/' '-')
+          echo "name=tfplan-${safe}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload plan artifact
+        if: inputs.needs-plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact-name.outputs.name }}
+          path: ${{ inputs.working-directory }}/tfplan
+          retention-days: 14

@@ -1,0 +1,101 @@
+name: Build and push a Docker image to ECR
+description: >
+  OIDC-authenticates to AWS (no long-lived AWS credential ever stored as a GitHub secret —
+  cloud-architecture-blueprint.md ADR-006), builds a Docker image with Buildx, and pushes it to the
+  named patheya-express/<ecr-repository> ECR repository, tagged per platform-standards.md Section 4
+  (<semver>-<git-sha-short>). Returns the digest-pinned image reference so every downstream step
+  (SBOM, scan, sign) verifies the exact bytes that were built, never a mutable tag.
+
+inputs:
+  aws-region:
+    required: true
+  role-to-assume:
+    description: ARN of the backend or frontend ECR-push OIDC role (modules/iam/github-actions-ci-roles.tf).
+    required: true
+  ecr-repository:
+    description: Repository name under patheya-express/ (e.g. "api-gateway", "customer-app").
+    required: true
+  image-tag:
+    description: "<semver>-<git-sha-short>, per platform-standards.md Section 4."
+    required: true
+  context:
+    required: false
+    default: "."
+  dockerfile:
+    required: false
+    default: "Dockerfile"
+  target:
+    description: >
+      Optional Dockerfile build stage (e.g. "migrate" — patheya-express-platform's Dockerfile,
+      Phase 9). Empty uses the Dockerfile's default (last) stage.
+    required: false
+    default: ""
+  build-args:
+    description: Newline-separated KEY=value build args.
+    required: false
+    default: ""
+  push:
+    required: false
+    default: "true"
+
+outputs:
+  image-uri:
+    description: Tag-qualified image reference (registry/patheya-express/repo:tag).
+    value: ${{ steps.vars.outputs.image-uri }}
+  image-digest:
+    description: sha256 digest of the pushed manifest.
+    value: ${{ steps.build.outputs.digest }}
+  image-ref-digest:
+    description: >
+      Digest-pinned image reference (registry/patheya-express/repo@sha256:...) — use this, not
+      image-uri, for SBOM/scan/sign so a tag mutation after push can never retarget them.
+    value: ${{ steps.digest-ref.outputs.image-ref-digest }}
+  registry:
+    description: The ECR registry host.
+    value: ${{ steps.ecr-login.outputs.registry }}
+
+runs:
+  using: composite
+  steps:
+    - name: Configure AWS credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-region: ${{ inputs.aws-region }}
+        role-to-assume: ${{ inputs.role-to-assume }}
+
+    - name: Login to ECR
+      id: ecr-login
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Set up Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Compute image URI
+      id: vars
+      shell: bash
+      run: |
+        echo "image-uri=${{ steps.ecr-login.outputs.registry }}/patheya-express/${{ inputs.ecr-repository }}:${{ inputs.image-tag }}" >> "$GITHUB_OUTPUT"
+
+    - name: Build and push
+      id: build
+      uses: docker/build-push-action@v6
+      with:
+        context: ${{ inputs.context }}
+        file: ${{ inputs.dockerfile }}
+        target: ${{ inputs.target }}
+        push: ${{ inputs.push }}
+        tags: ${{ steps.vars.outputs.image-uri }}
+        build-args: ${{ inputs.build-args }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        # SLSA provenance is generated explicitly downstream (actions/attest-build-provenance)
+        # against the resolved digest — buildx's own built-in attestation is redundant with that
+        # and less specific, so it's turned off here rather than producing two provenance
+        # statements per image.
+        provenance: false
+
+    - name: Compute digest-pinned reference
+      id: digest-ref
+      shell: bash
+      run: |
+        echo "image-ref-digest=${{ steps.ecr-login.outputs.registry }}/patheya-express/${{ inputs.ecr-repository }}@${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"

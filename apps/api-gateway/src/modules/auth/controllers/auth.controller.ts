@@ -1,10 +1,6 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Post,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+
+import type { Request } from 'express';
 
 import {
   ApiBearerAuth,
@@ -25,6 +21,12 @@ import { LoginDto } from '../dto/login.dto';
 
 import { RefreshTokenDto } from '../dto/refresh-token.dto';
 
+import { ForgotPasswordDto } from '../dto/forgot-password.dto';
+
+import { ResetPasswordDto } from '../dto/reset-password.dto';
+
+import { PasswordResetMessageDto } from '../dto/password-reset-message.dto';
+
 import { RegisterResponseDto } from '../dto/register-response.dto';
 
 import { RefreshResponseDto } from '../dto/refresh-response.dto';
@@ -38,18 +40,13 @@ import { RolesGuard } from '../guards/roles.guard';
 import { CurrentUser } from '../decorators/current-user.decorator';
 
 import { Roles } from '../decorators/roles.decorator';
-import {ProfileResponseDto} from '../dto/profile-response.dto';
-import {
-  Throttle,
-} from '@nestjs/throttler';
+import { AuthUserDto } from '../dto/auth-user.dto';
+import { Throttle } from '@nestjs/throttler';
 
 @ApiTags('Auth')
 @Controller('auth')
 export class AuthController {
-
-  constructor(
-    private readonly authService: AuthService,
-  ) {}
+  constructor(private readonly authService: AuthService) {}
 
   @Post('register')
   @Throttle({
@@ -78,6 +75,64 @@ export class AuthController {
     dto: RegisterDto,
   ) {
     return this.authService.register(dto);
+  }
+
+  @Post('register/delivery-partner')
+  @Throttle({
+    default: {
+      limit: 3,
+      ttl: 60000,
+    },
+  })
+  @ApiOperation({
+    summary: 'Register a new delivery partner',
+  })
+  @ApiCreatedResponse({
+    description: 'Delivery partner account registered successfully',
+    type: RegisterResponseDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Validation failed',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'User already exists',
+  })
+  registerDeliveryPartner(
+    @Body()
+    dto: RegisterDto,
+  ) {
+    return this.authService.registerDeliveryPartner(dto);
+  }
+
+  @Post('register/restaurant-owner')
+  @Throttle({
+    default: {
+      limit: 3,
+      ttl: 60000,
+    },
+  })
+  @ApiOperation({
+    summary: 'Register a new restaurant owner',
+  })
+  @ApiCreatedResponse({
+    description: 'Restaurant owner account registered successfully',
+    type: RegisterResponseDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Validation failed',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'User already exists',
+  })
+  registerRestaurantOwner(
+    @Body()
+    dto: RegisterDto,
+  ) {
+    return this.authService.registerRestaurantOwner(dto);
   }
 
   @Post('login')
@@ -113,17 +168,18 @@ export class AuthController {
   })
   @ApiOkResponse({
     description: 'Authenticated user profile',
-    type:ProfileResponseDto,
+    type: AuthUserDto,
   })
   @ApiResponse({
     status: 401,
     description: 'Unauthorized',
   })
+  @Get('profile')
   getProfile(
     @CurrentUser()
     user: any,
   ) {
-    return user;
+    return this.authService.getProfile(user.userId);
   }
 
   @Post('refresh')
@@ -172,20 +228,73 @@ export class AuthController {
   logout(
     @Body()
     dto: RefreshTokenDto,
+
+    @Req()
+    request: Request,
   ) {
-    return this.authService.logout(
-      dto.refreshToken,
-    );
+    // Deliberately not @UseGuards(JwtAuthGuard) — logout must still revoke the refresh token
+    // (the guarantee that matters) even if the caller's access token has already expired.
+    // The access token, if present and still valid, is used only as a best-effort extra signal
+    // (see AuthService.logout) — never required.
+    const authHeader = request.headers.authorization;
+    const accessToken = authHeader?.startsWith('Bearer ')
+      ? authHeader.slice(7)
+      : undefined;
+
+    return this.authService.logout(dto.refreshToken, accessToken);
+  }
+
+  @Post('forgot-password')
+  @Throttle({
+    default: {
+      limit: 3,
+      ttl: 60000,
+    },
+  })
+  @ApiOperation({
+    summary: 'Request a password reset link',
+    description:
+      'Always returns the same message whether or not the email matches an account, to avoid revealing account existence.',
+  })
+  @ApiOkResponse({
+    description: 'Request accepted',
+    type: PasswordResetMessageDto,
+  })
+  forgotPassword(
+    @Body()
+    dto: ForgotPasswordDto,
+  ) {
+    return this.authService.forgotPassword(dto);
+  }
+
+  @Post('reset-password')
+  @Throttle({
+    default: {
+      limit: 5,
+      ttl: 60000,
+    },
+  })
+  @ApiOperation({
+    summary: 'Reset password using a token from the emailed reset link',
+  })
+  @ApiOkResponse({
+    description: 'Password reset successfully',
+    type: PasswordResetMessageDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Invalid, already-used, or expired reset link',
+  })
+  resetPassword(
+    @Body()
+    dto: ResetPasswordDto,
+  ) {
+    return this.authService.resetPassword(dto);
   }
 
   @Get('admin-only')
-  @UseGuards(
-    JwtAuthGuard,
-    RolesGuard,
-  )
-  @Roles(
-    UserRole.ADMIN,
-  )
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({
     summary: 'Admin protected endpoint',
@@ -199,9 +308,7 @@ export class AuthController {
   })
   adminOnly() {
     return {
-      message:
-        'Admin access granted',
+      message: 'Admin access granted',
     };
   }
-
 }

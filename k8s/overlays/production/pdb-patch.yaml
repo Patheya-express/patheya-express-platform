@@ -1,0 +1,16 @@
+# At 3+ replicas, tolerate 1 voluntary disruption at a time rather than the base's minAvailable:1
+# (which would tolerate 2) — keeps rolling upgrades/node drains from taking down more than a
+# third of capacity at once.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-gateway
+spec:
+  minAvailable: 2
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: worker
+spec:
+  minAvailable: 2

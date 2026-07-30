@@ -1,0 +1,47 @@
+name: Setup pnpm + Node
+description: >
+  Installs the pinned pnpm version, sets up Node with pnpm store caching, and runs a frozen-lockfile
+  install. Shared by every workflow in every repo (backend, frontend) that needs the JS toolchain —
+  one place to change the install strategy instead of four copy-pasted step sequences.
+
+inputs:
+  node-version:
+    description: Node major version.
+    required: false
+    default: "24"
+  pnpm-version:
+    description: >
+      Exact pnpm version — must match the calling repo's package.json packageManager/devEngines
+      field. Backend pins 11.4.0, frontend pins 11.5.3; there is no single correct default, so
+      every caller sets this explicitly rather than relying on the action's own default drifting
+      out of sync with either repo.
+    required: true
+  working-directory:
+    description: Directory containing the pnpm workspace root (pnpm-lock.yaml).
+    required: false
+    default: "."
+  install:
+    description: Whether to run `pnpm install --frozen-lockfile` after setup.
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        version: ${{ inputs.pnpm-version }}
+
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: pnpm
+        cache-dependency-path: ${{ inputs.working-directory }}/pnpm-lock.yaml
+
+    - name: Install dependencies
+      if: inputs.install == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: pnpm install --frozen-lockfile

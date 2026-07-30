@@ -1,13 +1,8 @@
-import {
-  IsString,
-} from 'class-validator';
+import { IsString } from 'class-validator';
 
-import {
-  ApiProperty,
-} from '@nestjs/swagger';
+import { ApiProperty } from '@nestjs/swagger';
 
 export class CreateNotificationDto {
-
   @ApiProperty({
     example: 'clx123abc456',
     description: 'User ID receiving the notification',
@@ -28,5 +23,4 @@ export class CreateNotificationDto {
   })
   @IsString()
   message: string;
-
 }

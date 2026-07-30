@@ -3,6 +3,7 @@ import {
   Get,
   Param,
   Patch,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 
@@ -11,173 +12,122 @@ import {
   ApiBearerAuth,
   ApiOperation,
   ApiParam,
+  ApiQuery,
   ApiOkResponse,
   ApiUnauthorizedResponse,
   ApiNotFoundResponse,
 } from '@nestjs/swagger';
 
-import { JwtAuthGuard }
-from '../../auth/guards/jwt-auth.guard';
+import { AssignmentStatus } from '@prisma/client';
 
-import { CurrentUser }
-from '../../auth/decorators/current-user.decorator';
+import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 
-import { DispatchService }
-from '../services/dispatch.service';
+import { CurrentUser } from '../../auth/decorators/current-user.decorator';
+
+import { DispatchService } from '../services/dispatch.service';
+
+import { DeliveryAssignmentResponseDto } from '../dto/delivery-assignment-response.dto';
+
+import { DispatchActionResponseDto } from '../dto/dispatch-action-response.dto';
+import { GetDispatchAssignmentsQueryDto } from '../dto/get-dispatch-assignments-query.dto';
 
 @ApiTags('Dispatch')
-@ApiBearerAuth()
+@ApiBearerAuth('JWT-auth')
 @Controller('dispatch')
 export class DispatchController {
-
-  constructor(
-
-    private readonly dispatchService:
-      DispatchService,
-
-  ) {}
+  constructor(private readonly dispatchService: DispatchService) {}
 
   @UseGuards(JwtAuthGuard)
-
   @Get('assignments')
-
   @ApiOperation({
-    summary:
-      'Get delivery partner assignments',
+    summary: 'Get delivery partner assignments',
     description:
-      'Returns all delivery assignments assigned to the authenticated delivery partner.',
+      'Returns all delivery assignments assigned to the authenticated delivery partner, optionally narrowed to one status.',
   })
-
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    enum: AssignmentStatus,
+    description:
+      'Optional — omit to get every assignment (unchanged default behavior); pass to narrow to one status (Pending/Accepted/Rejected/Expired).',
+  })
   @ApiOkResponse({
-    description:
-      'Assignments fetched successfully',
+    description: 'Assignments fetched successfully',
+    type: DeliveryAssignmentResponseDto,
+    isArray: true,
   })
-
   @ApiUnauthorizedResponse({
-    description:
-      'Unauthorized',
+    description: 'Unauthorized',
   })
-
   getAssignments(
-
     @CurrentUser()
     user: any,
 
+    @Query()
+    query: GetDispatchAssignmentsQueryDto,
   ) {
-
-    return this.dispatchService
-      .getAssignments(
-        user.userId,
-      );
-
+    return this.dispatchService.getAssignments(user.userId, query.status);
   }
 
   @UseGuards(JwtAuthGuard)
-
-  @Patch(
-    'assignments/:id/accept',
-  )
-
+  @Patch('assignments/:id/accept')
   @ApiOperation({
-    summary:
-      'Accept delivery assignment',
-    description:
-      'Accept a pending delivery assignment.',
+    summary: 'Accept delivery assignment',
+    description: 'Accept a pending delivery assignment.',
   })
-
   @ApiParam({
     name: 'id',
-    description:
-      'Delivery assignment ID',
-    example:
-      'clx123abc456',
+    description: 'Delivery assignment ID',
+    example: 'clx123abc456',
   })
-
   @ApiOkResponse({
-    description:
-      'Assignment accepted successfully',
+    description: 'Assignment accepted successfully',
+    type: DispatchActionResponseDto,
   })
-
   @ApiNotFoundResponse({
-    description:
-      'Assignment not found',
+    description: 'Assignment not found',
   })
-
   @ApiUnauthorizedResponse({
-    description:
-      'Unauthorized',
+    description: 'Unauthorized',
   })
-
   acceptAssignment(
-
     @Param('id')
     id: string,
-  
+
     @CurrentUser()
     user: any,
-  
   ) {
-  
-    return this.dispatchService
-      .acceptAssignment(
-        id,
-        user.userId,
-      );
-  
+    return this.dispatchService.acceptAssignment(id, user.userId);
   }
 
   @UseGuards(JwtAuthGuard)
-
-  @Patch(
-    'assignments/:id/reject',
-  )
-
+  @Patch('assignments/:id/reject')
   @ApiOperation({
-    summary:
-      'Reject delivery assignment',
-    description:
-      'Reject a pending delivery assignment.',
+    summary: 'Reject delivery assignment',
+    description: 'Reject a pending delivery assignment.',
   })
-
   @ApiParam({
     name: 'id',
-    description:
-      'Delivery assignment ID',
-    example:
-      'clx123abc456',
+    description: 'Delivery assignment ID',
+    example: 'clx123abc456',
   })
-
   @ApiOkResponse({
-    description:
-      'Assignment rejected successfully',
+    description: 'Assignment rejected successfully',
+    type: DispatchActionResponseDto,
   })
-
   @ApiNotFoundResponse({
-    description:
-      'Assignment not found',
+    description: 'Assignment not found',
   })
-
   @ApiUnauthorizedResponse({
-    description:
-      'Unauthorized',
+    description: 'Unauthorized',
   })
-
   rejectAssignment(
-
     @Param('id')
     id: string,
-  
+
     @CurrentUser()
     user: any,
-  
   ) {
-  
-    return this.dispatchService
-      .rejectAssignment(
-        id,
-        user.userId,
-      );
-  
+    return this.dispatchService.rejectAssignment(id, user.userId);
   }
-
 }
