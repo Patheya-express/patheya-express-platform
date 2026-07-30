@@ -2,26 +2,20 @@ import { Module } from '@nestjs/common';
 
 import { NotificationsController } from './controllers/notifications.controller';
 
-import { NotificationsService } from './services/notifications.service';
+import { NotificationsCoreModule } from './notifications-core.module';
 
-import { NotificationsRepository } from './repositories/notifications.repository';
-
-import { OrderNotificationListener } from './listeners/order-notification.listener';
-import { RestaurantOrderNotificationListener } from './listeners/restaurant-order-notification.listener';
-
+/**
+ * HTTP-facing half of the notifications feature — controller only. Business logic
+ * (`NotificationsService`/`NotificationsRepository`) and the EventBus listeners live in
+ * `NotificationsCoreModule`. Re-exports it so existing consumers of `NotificationsModule` keep
+ * working unchanged; anything reachable from the Worker process now imports
+ * `NotificationsCoreModule` directly.
+ */
 @Module({
+  imports: [NotificationsCoreModule],
+
   controllers: [NotificationsController],
 
-  providers: [
-    NotificationsService,
-
-    NotificationsRepository,
-
-    OrderNotificationListener,
-
-    RestaurantOrderNotificationListener,
-  ],
-
-  exports: [NotificationsService],
+  exports: [NotificationsCoreModule],
 })
 export class NotificationsModule {}

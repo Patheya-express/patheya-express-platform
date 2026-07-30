@@ -8,6 +8,8 @@ import {
 
 import { QueueEvents } from 'bullmq';
 
+import type { Redis } from 'ioredis';
+
 import {
   Counter,
   Gauge,
@@ -16,9 +18,11 @@ import {
   collectDefaultMetrics,
 } from 'prom-client';
 
-import { getRedisConnectionOptions } from '../../infrastructure/redis/redis-connection.config';
-
 import { QueueService } from '../../infrastructure/queues/queue.service';
+
+import { RedisConnectionFactory } from '../../infrastructure/redis-infrastructure/redis-connection-factory.service';
+import { RedisConfigurationService } from '../../infrastructure/redis-infrastructure/redis-configuration.service';
+import { RedisConnectionType } from '../../infrastructure/redis-infrastructure/enums/redis-connection-type.enum';
 
 const QUEUE_DEPTH_POLL_INTERVAL_MS = 15_000;
 
@@ -82,8 +86,12 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
   private readonly queueEventListeners: QueueEvents[] = [];
 
   constructor(
-    // Optional: worker-main.ts's WorkerModule does import QueuesModule (it needs the processors),
-    // so QueueService is actually always available today — kept optional defensively, since a
+    // RedisInfrastructureModule is @Global() and imported by both AppModule and WorkerModule, so
+    // these are always available — not marked @Optional().
+    private readonly redisConnectionFactory: RedisConnectionFactory,
+    private readonly redisConfiguration: RedisConfigurationService,
+    // Optional: worker-main.ts's WorkerModule does import QueueProducerModule (it needs the
+    // processors), so QueueService is actually always available today — kept optional defensively, since a
     // future, further-slimmed process shape (e.g. a per-queue worker) shouldn't need this file to
     // change to stay safe without it.
     @Optional()
@@ -113,8 +121,17 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     // Warning-Worker-JobFailed-<queue> alert, prometheus-rules.tf, needs this counter to have any
     // data at all).
     for (const queueName of QUEUE_NAMES) {
+      // Connection options sourced through RedisConfigurationService (Redis Infrastructure
+      // migration) rather than importing `getRedisConnectionOptions()` directly — identical
+      // values either way, since that service's `getDefaultOptions()` is that same function.
+      // Deliberately still a plain options object, not a factory-constructed client: QueueEvents's
+      // own constructor unconditionally `.duplicate()`s any already-constructed ioredis instance
+      // handed to it as `connection` (see RedisConnectionFactory's migration-note doc comment),
+      // so passing a live client here would create a second, unregistered connection and leak the
+      // first. Letting QueueEvents build its own connection (exactly as before this migration)
+      // and then registering the resulting client below is what avoids that.
       const events = new QueueEvents(queueName, {
-        connection: getRedisConnectionOptions(),
+        connection: this.redisConfiguration.getDefaultOptions(),
       });
 
       events.on('failed', ({ jobId, failedReason }) => {
@@ -125,10 +142,46 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
         );
       });
 
+      // `events.client` is BullMQ's own accessor for the connection it just created — resolves
+      // asynchronously once actually connected. Registered here (not awaited) so this stays
+      // non-blocking: `onModuleInit` must keep returning immediately regardless of Redis
+      // reachability, exactly as it did before this migration.
+      events.client
+        .then((client) => {
+          // `events.client` resolves to BullMQ's `IRedisClient` adapter type — a `Proxy` that
+          // forwards everything (including `.options` and `EventEmitter` methods, both of which
+          // `registerExternalConnection` uses) straight through to the real underlying `ioredis`
+          // instance (`this === target` for all forwarded calls; see `createIORedisClient` in
+          // `bullmq`'s `classes/ioredis-client.js`). Structurally compatible with `Redis` for
+          // every operation this factory performs on it, even though TS doesn't know that.
+          this.redisConnectionFactory.registerExternalConnection(client as unknown as Redis, {
+            name: `bullmq:queue-events:${queueName}`,
+            type: RedisConnectionType.BULLMQ_QUEUE_EVENTS,
+            owner: 'MetricsService',
+            purpose: 'BullMQ QueueEvents monitoring',
+          });
+        })
+        .catch((error: unknown) => {
+          this.logger.warn(
+            `Failed to register QueueEvents Redis connection for "${queueName}": ${String(error)}`,
+          );
+        });
+
       this.queueEventListeners.push(events);
     }
   }
 
+  /**
+   * Ownership: `MetricsService` still owns each `QueueEvents` instance and its shutdown, exactly
+   * as before this migration — `events.close()` already quits that instance's underlying `ioredis`
+   * client (confirmed in `bullmq`'s `RedisConnection.close()`: since we never pass a live client
+   * as `connection` — see `onModuleInit`'s comment — `extraOptions.shared` is `false`, so `close()`
+   * calls `this._client.quit()` on the exact connection `events.client` resolved to and that
+   * `registerExternalConnection()` registered above). Registering a connection with
+   * `RedisConnectionRegistry` does not transfer ownership or add a second thing to close — the
+   * registry only observes; `QueueEvents.close()` remains the single place that actually closes
+   * the socket, unchanged. No new cleanup code was needed here.
+   */
   async onModuleDestroy(): Promise<void> {
     if (this.pollHandle) {
       clearInterval(this.pollHandle);

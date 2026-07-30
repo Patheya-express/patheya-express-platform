@@ -29,8 +29,10 @@ import { StorageModule } from './modules/storage/storage.module';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
 import { RedisModule } from './infrastructure/redis/redis.module';
+import { RedisInfrastructureModule } from './infrastructure/redis-infrastructure/redis-infrastructure.module';
 import { SystemModule } from './modules/system/system.module';
-import { QueuesModule } from './infrastructure/queues/queues.module';
+import { QueueInfrastructureModule } from './infrastructure/queues/queue-infrastructure.module';
+import { QueueProducerModule } from './infrastructure/queues/queue-producer.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { MiddlewareConsumer, NestModule } from '@nestjs/common';
 
@@ -103,9 +105,13 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 
     RedisModule,
 
+    RedisInfrastructureModule,
+
     SystemModule,
 
-    QueuesModule,
+    QueueInfrastructureModule,
+
+    QueueProducerModule,
 
     PaymentsModule,
 

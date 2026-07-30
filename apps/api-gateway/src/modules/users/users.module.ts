@@ -2,20 +2,18 @@ import { Module } from '@nestjs/common';
 
 import { UsersController } from './controllers/users.controller';
 
-import { UsersService } from './services/users.service';
+import { UsersCoreModule } from './users-core.module';
 
-import { UsersRepository } from './repositories/users.repository';
-
-import { AuthModule } from '../auth/auth.module';
-import { AuditModule } from '../audit/audit.module';
-
+/**
+ * HTTP-facing half of the users feature — controller only. `UsersService`/`UsersRepository`
+ * live in `UsersCoreModule`, re-exported here so existing consumers of `UsersModule` keep
+ * working unchanged.
+ */
 @Module({
-  imports: [AuthModule, AuditModule],
+  imports: [UsersCoreModule],
 
   controllers: [UsersController],
 
-  providers: [UsersService, UsersRepository],
-
-  exports: [UsersService],
+  exports: [UsersCoreModule],
 })
 export class UsersModule {}

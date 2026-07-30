@@ -1,7 +1,7 @@
 import { RedisOptions } from 'ioredis';
 
 /**
- * Shared by `RedisService`, `QueuesModule`'s `BullModule.forRoot`, and `RealtimeGateway`'s pub/sub
+ * Shared by `RedisService`, `QueueInfrastructureModule`'s `BullModule.forRoot`, and `RealtimeGateway`'s pub/sub
  * adapter clients — one place defining how every Redis connection in this process authenticates
  * and encrypts, matching `modules/eks-addons/external-secrets.tf`'s `backend-redis-credentials`
  * Secret exactly (`REDIS_HOST`/`REDIS_PORT`/`REDIS_AUTH_TOKEN`/`REDIS_TLS`) — ElastiCache has

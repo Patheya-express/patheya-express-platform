@@ -1,36 +1,23 @@
-import { Module, forwardRef } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 
 import { OrdersController } from './controllers/orders.controller';
 
-import { OrdersService } from './services/orders.service';
+import { OrdersCoreModule } from './orders-core.module';
 
-import { OrdersRepository } from './repositories/orders.repository';
-
-import { OrderPaymentListener } from './listeners/order-payment.listener';
-
-import { DeliveryModule } from '../delivery/delivery.module';
-import { PaymentsModule } from '../payments/payments.module';
-import { RestaurantsModule } from '../restaurants/restaurants.module';
-import { AddressesModule } from '../addresses/addresses.module';
-import { AuditModule } from '../audit/audit.module';
-import { PricingModule } from '../pricing/pricing.module';
-import { CouponsModule } from '../coupons/coupons.module';
-
+/**
+ * HTTP-facing half of the orders feature — controller only. Business logic (`OrdersService`/
+ * `OrdersRepository`/`OrderPaymentListener`) lives in `OrdersCoreModule`, re-exported here so
+ * existing consumers of `OrdersModule` keep working unchanged. This module (and its transitive
+ * imports, `DeliveryModule` among them) is now only ever reachable from `AppModule` —
+ * `QueueWorkerModule`/`DeliveryCoreModule`/etc. all depend on `OrdersCoreModule` directly, never
+ * this module, which is what keeps `OrdersController` (and everything `DeliveryModule` pulls in)
+ * out of the Worker process.
+ */
 @Module({
-  imports: [
-    forwardRef(() => DeliveryModule),
-    PaymentsModule,
-    RestaurantsModule,
-    AddressesModule,
-    AuditModule,
-    PricingModule,
-    CouponsModule,
-  ],
+  imports: [OrdersCoreModule],
 
   controllers: [OrdersController],
 
-  providers: [OrdersService, OrdersRepository, OrderPaymentListener],
-
-  exports: [OrdersService],
+  exports: [OrdersCoreModule],
 })
 export class OrdersModule {}
