@@ -4,6 +4,9 @@ On-call playbook for the deployed `api-gateway`/`worker`/frontend workloads. Com
 `patheya-express-terraform`'s `docs/incident-response.md` (supply-chain/runtime-security layer —
 Kyverno/Trivy/Falco alerts) and [`../ci-cd/pipeline-troubleshooting-guide.md`](../ci-cd/pipeline-troubleshooting-guide.md)
 (CI/CD pipeline failures) — this one is "the application itself is unhealthy in a running cluster."
+Organized by which alert fired; [`incident-runbooks.md`](incident-runbooks.md) is the
+scenario-driven companion (Redis/database/queue/worker/dispatch/payment/storage/deployment), useful
+when you know *what's* broken but not yet which alert (if any) caught it.
 
 ## `Critical-ApiGateway-SLOBurnRateFast/Slow` fired
 
@@ -26,9 +29,11 @@ Kyverno/Trivy/Falco alerts) and [`../ci-cd/pipeline-troubleshooting-guide.md`](.
 2. Check `patheya_bullmq_jobs_failed_total{queue}` for the same queue — a backlog caused by jobs
    silently failing and retrying looks identical to one caused by genuine under-capacity until you
    check this.
-3. Confirm which queue: `dispatch`/`notifications`/`orders` have real processors and should always
-   drain; `payments`/`search`/`tickets` currently have none (`known-issues.md`) — a backlog on one
-   of those three may be expected, not incident-worthy, until that gap is resolved.
+3. All six queues (`dispatch`/`notifications`/`orders`/`payments`/`search`/`tickets`) have real
+   processors and should always drain — a sustained backlog on any of them is a genuine signal, not
+   an expected gap (`known-issues.md`'s prior note that `payments`/`search`/`tickets` had no
+   processor is now fixed and stale). See `incident-runbooks.md`'s "Queue backlog" runbook for the
+   full triage steps.
 
 ## `api-gateway-migrate` Job failed (blocks all deploys to that environment)
 

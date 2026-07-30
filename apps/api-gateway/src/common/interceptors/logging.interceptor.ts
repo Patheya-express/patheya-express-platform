@@ -5,7 +5,7 @@ import {
   CallHandler,
 } from '@nestjs/common';
 
-import { Observable, tap } from 'rxjs';
+import { Observable, finalize, tap } from 'rxjs';
 
 import { AppLoggerService } from '../../infrastructure/logger/logger.service';
 
@@ -36,7 +36,12 @@ export class LoggingInterceptor implements NestInterceptor {
 
     const start = Date.now();
 
+    this.metrics?.incrementInFlightRequests();
+
     return next.handle().pipe(
+      finalize(() => {
+        this.metrics?.decrementInFlightRequests();
+      }),
       tap(() => {
         const duration = Date.now() - start;
 

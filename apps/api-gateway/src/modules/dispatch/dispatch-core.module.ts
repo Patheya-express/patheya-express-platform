@@ -38,6 +38,6 @@ import { AuditCoreModule } from '../audit/audit-core.module';
     DispatchReconciliationBootstrap,
   ],
 
-  exports: [DispatchService, DispatchRepository],
+  exports: [DispatchService, DispatchRepository, DispatchReconciliationService],
 })
 export class DispatchCoreModule {}

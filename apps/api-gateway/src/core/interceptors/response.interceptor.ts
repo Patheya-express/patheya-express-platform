@@ -17,6 +17,8 @@ export class ResponseInterceptor implements NestInterceptor {
 
     next: CallHandler,
   ): Observable<any> {
+    const request = context.switchToHttp().getRequest();
+
     return next.handle().pipe(
       map((data) => {
         // StreamableFile responses (file downloads) must reach Nest's built-in stream
@@ -24,6 +26,14 @@ export class ResponseInterceptor implements NestInterceptor {
         // which Nest can no longer recognize as a stream, and the file body gets
         // JSON-serialized instead of streamed.
         if (data instanceof StreamableFile) {
+          return data;
+        }
+
+        // Prometheus scrapes /metrics expecting raw exposition-format text. Wrapping it in
+        // the {success,timestamp,data} envelope turns every metric line into one escaped JSON
+        // string field — not valid exposition format, so a real Prometheus server can't parse
+        // it at all (confirmed via a live scrape during Stage B verification).
+        if (request.path === '/metrics') {
           return data;
         }
 

@@ -50,10 +50,11 @@ comments across two repos.
 - **`worker`'s HPA scales on CPU/memory, not queue depth** — the metric
   (`patheya_bullmq_queue_depth`) exists as of this phase, but wiring a custom-metrics HPA needs the
   Prometheus Adapter, a new platform component this phase's scope explicitly excludes.
-- **3 of 6 BullMQ queues (`payments`, `search`, `tickets`) have no `@Processor`** — jobs are
-  scheduled via `upsertJobScheduler` but nothing in `src` consumes them. Pre-existing, not
-  introduced or fixed by this phase; confirm whether this is an intentional future-work stub or a
-  genuine gap before relying on any of those three queues actually processing anything.
+- ~~3 of 6 BullMQ queues (`payments`, `search`, `tickets`) have no `@Processor`~~ — **fixed**, no
+  longer accurate: `PaymentReconciliationProcessor`, `TrendingSearchProcessor`, and
+  `TicketEscalationProcessor` now consume all three (Production Readiness — BullMQ producer/
+  consumer separation). A sustained backlog on any of the six queues is a genuine signal now, not
+  an expected gap — see `docs/infrastructure/incident-runbooks.md`'s "Queue backlog" runbook.
 - **`BANK_ACCOUNT_ENCRYPTION_KEY` has no Secrets Manager entry** — optional/enforced-at-point-of-use
   today, so nothing fails yet, but no code path decrypting a restaurant bank account can work until
   one is added (`patheya-express-terraform`'s `docs/secrets-guide.md` documents the gap).

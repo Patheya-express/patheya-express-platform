@@ -4,6 +4,8 @@ import { DispatchRepository } from '../repositories/dispatch.repository';
 
 import { QueueService } from '../../../infrastructure/queues/queue.service';
 
+import { MetricsService } from '../../metrics/metrics.service';
+
 /** Orders older than this with no assignment are considered stranded — long enough that a normal
  *  in-flight `dispatch-assignment` job (including its BullMQ retries) has certainly finished one
  *  way or another, short enough that a genuinely stuck order gets re-attempted well within the
@@ -27,12 +29,17 @@ export class DispatchReconciliationService {
   constructor(
     private readonly dispatchRepository: DispatchRepository,
     private readonly queueService: QueueService,
+    private readonly metrics: MetricsService,
   ) {}
 
   async reconcileStrandedAssignments(): Promise<void> {
     const orders = await this.dispatchRepository.findStrandedReadyForPickupOrders(
       STRANDED_THRESHOLD_MS,
     );
+
+    // Recorded even when zero — a gauge left unset after the last non-zero run would keep
+    // reporting stale data forever instead of reflecting "nothing stranded right now".
+    this.metrics.recordDispatchReconciliationRun(orders.length);
 
     if (orders.length === 0) {
       return;

@@ -194,6 +194,82 @@ export class QueueService {
   }
 
   /**
+   * Production Readiness Stage B (Observability): per-state breakdown `getQueueDepths()`
+   * deliberately collapses into one "depth" figure (see its own doc comment — that combined
+   * number is what an existing Grafana dashboard/recording rule already expects, so it's kept
+   * exactly as-is). `MetricsService` needs the individual waiting/active/delayed counts, plus the
+   * age of the oldest waiting job, to expose them as separate labels — this is a new, additive
+   * method rather than a change to the existing one.
+   */
+  async getQueueJobCounts(): Promise<
+    Record<
+      string,
+      { waiting: number; active: number; delayed: number; oldestWaitingAgeSeconds: number }
+    >
+  > {
+    const queues: Record<string, Queue> = {
+      dispatch: this.dispatchQueue,
+      notifications: this.notificationQueue,
+      payments: this.paymentsQueue,
+      search: this.searchQueue,
+      tickets: this.ticketsQueue,
+      orders: this.ordersQueue,
+    };
+
+    const entries = await Promise.all(
+      Object.entries(queues).map(async ([name, queue]) => {
+        const [counts, oldestWaiting] = await Promise.all([
+          queue.getJobCounts('waiting', 'delayed', 'active'),
+          queue.getWaiting(0, 0),
+        ]);
+
+        const oldestWaitingAgeSeconds =
+          oldestWaiting.length > 0
+            ? (Date.now() - oldestWaiting[0].timestamp) / 1000
+            : 0;
+
+        return [
+          name,
+          {
+            waiting: counts.waiting ?? 0,
+            active: counts.active ?? 0,
+            delayed: counts.delayed ?? 0,
+            oldestWaitingAgeSeconds,
+          },
+        ] as const;
+      }),
+    );
+
+    return Object.fromEntries(entries);
+  }
+
+  /**
+   * Production Readiness Stage B (Observability): looks up a single job by queue name + id —
+   * `MetricsService` uses this to read `processedOn`/`finishedOn`/`attemptsMade` off a job that
+   * just completed or failed (none of which are in the terse QueueEvents `completed`/`failed`
+   * payload itself). Queue instances are private constructor fields, so this is the one place
+   * outside this class that can resolve a queue name to its `Queue` object.
+   */
+  async getJob(queueName: string, jobId: string) {
+    const queues: Record<string, Queue> = {
+      dispatch: this.dispatchQueue,
+      notifications: this.notificationQueue,
+      payments: this.paymentsQueue,
+      search: this.searchQueue,
+      tickets: this.ticketsQueue,
+      orders: this.ordersQueue,
+    };
+
+    const queue = queues[queueName];
+
+    if (!queue) {
+      return undefined;
+    }
+
+    return queue.getJob(jobId);
+  }
+
+  /**
    * Used by the readiness probe (LH1-10). Every queue shares the same Redis connection
    * (registered once via `BullModule.forRoot`), so checking one queue's client is representative
    * of all of them — this deliberately checks one, not all five, to keep the probe fast.

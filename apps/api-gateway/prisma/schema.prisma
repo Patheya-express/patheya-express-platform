@@ -1011,6 +1011,10 @@ model Restaurant {
   @@index([featured])
   @@index([hasVegOptions])
   @@index([hasVeganOptions])
+  // Production Readiness Stage C: the public storefront listing/featured/similar-restaurants
+  // queries (RestaurantsService.findAll/findFeatured) all filter `status: APPROVED, isActive:
+  // true` together — status alone doesn't narrow the scan for the isActive predicate.
+  @@index([status, isActive])
   @@map("restaurants")
 }
 
@@ -2014,6 +2018,18 @@ model Order {
   @@index([paymentStatus])
   @@index([createdAt])
   @@index([couponId])
+  // Production Readiness Stage C: OrdersRepository.getDashboardWindowOrders/getTopSellingItems
+  // filter restaurantId + a placedAt range together on every restaurant-dashboard load.
+  @@index([restaurantId, placedAt])
+  // OrdersRepository.findCustomerOrders filters customerId (+ optional status/placedAt range)
+  // and always sorts by createdAt desc — the customer-facing "my orders" list.
+  @@index([customerId, createdAt])
+  // OrdersRepository.getDashboardWindowOrders/getRecentOrders and ReportsRepository.findOrders
+  // filter branchId directly with no supporting index today.
+  @@index([branchId])
+  // OrdersRepository.countPlacedToday filters placedAt alone (no restaurantId) — the composite
+  // index above can't help a query whose leading column isn't filtered.
+  @@index([placedAt])
   @@map("orders")
 }
 
@@ -2667,6 +2683,9 @@ model Payment {
   @@index([provider])
   @@index([isActive])
   @@index([attemptNumber])
+  // Production Readiness Stage C: PaymentsRepository.findAllForAdmin sorts createdAt desc;
+  // sumSuccessfulAmountToday/ReportsRepository.findPayments filter createdAt ranges directly.
+  @@index([createdAt])
   @@map("payments")
 }
 
@@ -2945,6 +2964,9 @@ model SupportTicket {
   @@index([status])
   @@index([priority])
   @@index([orderId])
+  // Production Readiness Stage C: TicketsRepository.findOverdueTickets (the escalation job's
+  // every-run scan) filters status IN (OPEN, IN_PROGRESS) + escalatedAt IS NULL together.
+  @@index([status, escalatedAt])
   @@map("support_tickets")
 }
 

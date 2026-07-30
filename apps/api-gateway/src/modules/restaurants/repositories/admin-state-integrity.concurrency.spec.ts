@@ -12,6 +12,7 @@ import {
 
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
 import { AppLoggerService } from '../../../infrastructure/logger/logger.service';
+import { MetricsService } from '../../metrics/metrics.service';
 import { RestaurantsRepository } from './restaurants.repository';
 import { VerificationRepository as RestaurantVerificationRepository } from './verification.repository';
 import { DeliveryRepository } from '../../delivery/repositories/delivery.repository';
@@ -31,9 +32,10 @@ import { AuditRepository } from '../../audit/repositories/audit.repository';
  * updateMany/transaction, so the repositories are the real units under test.
  */
 describe('Admin state integrity — concurrency (real database)', () => {
-  const prisma = new PrismaService({
-    warn: () => undefined,
-  } as unknown as AppLoggerService);
+  const prisma = new PrismaService(
+    { warn: () => undefined } as unknown as AppLoggerService,
+    {} as unknown as MetricsService,
+  );
   const restaurantsRepository = new RestaurantsRepository(prisma);
   const restaurantVerificationRepository = new RestaurantVerificationRepository(
     prisma,

@@ -11,6 +11,7 @@ import {
 
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
 import { AppLoggerService } from '../../../infrastructure/logger/logger.service';
+import { MetricsService } from '../../metrics/metrics.service';
 import { PaymentsRepository } from './payments.repository';
 import { OrdersRepository } from '../../orders/repositories/orders.repository';
 import { CouponsRepository } from '../../coupons/repositories/coupons.repository';
@@ -28,9 +29,10 @@ import { CouponsRepository } from '../../coupons/repositories/coupons.repository
  * real units under test.
  */
 describe('Refund integrity — concurrency (real database)', () => {
-  const prisma = new PrismaService({
-    warn: () => undefined,
-  } as unknown as AppLoggerService);
+  const prisma = new PrismaService(
+    { warn: () => undefined } as unknown as AppLoggerService,
+    {} as unknown as MetricsService,
+  );
   const paymentsRepository = new PaymentsRepository(prisma);
   const ordersRepository = new OrdersRepository(prisma);
   const couponsRepository = new CouponsRepository(prisma);

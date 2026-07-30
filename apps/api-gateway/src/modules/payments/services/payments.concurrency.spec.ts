@@ -4,6 +4,7 @@ import { PaymentProvider, TransactionStatus, UserRole } from '@prisma/client';
 
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
 import { AppLoggerService } from '../../../infrastructure/logger/logger.service';
+import { MetricsService } from '../../metrics/metrics.service';
 import { PaymentsRepository } from '../repositories/payments.repository';
 import { PaymentsService } from './payments.service';
 
@@ -23,9 +24,10 @@ import { PaymentsService } from './payments.service';
  * number of downstream side-effect invocations can be counted precisely across concurrent calls.
  */
 describe('PaymentsService.verifyPayment — concurrency (real database)', () => {
-  const prisma = new PrismaService({
-    warn: () => undefined,
-  } as unknown as AppLoggerService);
+  const prisma = new PrismaService(
+    { warn: () => undefined } as unknown as AppLoggerService,
+    {} as unknown as MetricsService,
+  );
   const paymentsRepository = new PaymentsRepository(prisma);
   const createdUserIds: string[] = [];
   const createdOrderIds: string[] = [];

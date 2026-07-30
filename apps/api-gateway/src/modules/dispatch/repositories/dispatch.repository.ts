@@ -237,16 +237,15 @@ export class DispatchRepository {
     }
   }
 
+  // Production Readiness Stage C: dropped `include: { user: true }` — DispatchService.assignOrder
+  // (the only caller) never reads `partner.user`, only `partner.id`/`partner.userId`; the join
+  // was pure overhead on every automatic-dispatch attempt.
   async findAvailablePartners() {
     return this.prisma.deliveryPartner.findMany({
       where: {
         status: DeliveryPartnerStatus.AVAILABLE,
 
         isVerified: true,
-      },
-
-      include: {
-        user: true,
       },
     });
   }

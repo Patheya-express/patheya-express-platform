@@ -325,21 +325,25 @@ export class WalletService {
       REFERRAL_REWARD_AMOUNT,
     );
 
-    await this.writeLedgerEntry(
-      referral.refereeId,
-      WalletTransactionType.REFERRAL_REWARD,
-      REFERRAL_REWARD_AMOUNT,
-      'Referral reward — welcome bonus',
-      { referralId: referral.id },
-    );
+    // Production Readiness Stage C: these credit two different users' wallets — no data
+    // dependency on each other (each has its own internal serialization-retry loop already).
+    await Promise.all([
+      this.writeLedgerEntry(
+        referral.refereeId,
+        WalletTransactionType.REFERRAL_REWARD,
+        REFERRAL_REWARD_AMOUNT,
+        'Referral reward — welcome bonus',
+        { referralId: referral.id },
+      ),
 
-    await this.writeLedgerEntry(
-      referral.referrerId,
-      WalletTransactionType.REFERRAL_REWARD,
-      REFERRAL_REWARD_AMOUNT,
-      'Referral reward — your friend placed their first order',
-      { referralId: referral.id },
-    );
+      this.writeLedgerEntry(
+        referral.referrerId,
+        WalletTransactionType.REFERRAL_REWARD,
+        REFERRAL_REWARD_AMOUNT,
+        'Referral reward — your friend placed their first order',
+        { referralId: referral.id },
+      ),
+    ]);
 
     await this.notificationsService.createNotification(
       referral.referrerId,

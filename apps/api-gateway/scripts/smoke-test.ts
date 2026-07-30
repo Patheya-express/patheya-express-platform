@@ -2,6 +2,10 @@ import jwt from 'jsonwebtoken';
 
 import { io } from 'socket.io-client';
 
+import { Queue } from 'bullmq';
+
+import { getRedisConnectionOptions } from '../src/infrastructure/redis/redis-connection.config';
+
 /**
  * Post-deployment smoke test (Production Readiness Stage A — Deployment Safety). Run against an
  * *already-deployed, running* instance (not booted in-process like `docs:export`) right after a
@@ -21,6 +25,11 @@ import { io } from 'socket.io-client';
  *    provided — deliberately opt-in, since running it writes a real order into the database.
  *    Provisioning and (if desired) auto-cancelling that order afterward is an infrastructure
  *    decision for whoever operates this pipeline, not something this script assumes.
+ *  - REDIS_HOST / REDIS_PORT / REDIS_AUTH_TOKEN / REDIS_TLS — same Redis the deployed instance
+ *    itself connects to (this script must run somewhere with network access to it — e.g. inside
+ *    the cluster, not from an operator's laptop against a production instance). Required only for
+ *    the queue/worker check; skipped if REDIS_HOST is absent, since not every place this script
+ *    runs from necessarily has Redis reachability (Render's shell, for instance).
  */
 
 const BASE_URL = process.env.SMOKE_TEST_BASE_URL || 'http://localhost:3000';
@@ -168,6 +177,107 @@ async function checkWebsocketConnection(): Promise<CheckOutcome> {
   });
 }
 
+/** Verifies `/metrics` returns real Prometheus exposition text, not the standard
+ *  `{success,timestamp,data}` envelope `ResponseInterceptor` applies to every other JSON route —
+ *  a regression guard for exactly the bug this Stage B pass found live: the interceptor originally
+ *  had no exclusion for `/metrics`, so a real Prometheus server could never actually scrape this
+ *  endpoint (its exposition-format parser has no notion of a JSON wrapper). */
+async function checkMetricsEndpoint(): Promise<CheckOutcome> {
+  const res = await fetch(`${BASE_URL}/metrics`);
+
+  if (!res.ok) {
+    return { status: 'fail', detail: `HTTP ${res.status}` };
+  }
+
+  const contentType = res.headers.get('content-type') || '';
+
+  if (!contentType.includes('text/plain')) {
+    return {
+      status: 'fail',
+      detail: `expected text/plain content-type, got "${contentType}"`,
+    };
+  }
+
+  const body = await res.text();
+
+  if (body.trimStart().startsWith('{')) {
+    return {
+      status: 'fail',
+      detail: 'body looks JSON-wrapped, not raw Prometheus exposition text',
+    };
+  }
+
+  const requiredMetrics = [
+    'patheya_http_requests_total',
+    'patheya_bullmq_queue_depth',
+    'patheya_redis_active_connections',
+  ];
+
+  const missing = requiredMetrics.filter(
+    (name) => !body.includes(`# TYPE ${name} `),
+  );
+
+  if (missing.length > 0) {
+    return { status: 'fail', detail: `missing metrics: ${missing.join(', ')}` };
+  }
+
+  return { status: 'pass' };
+}
+
+/** Proves the BullMQ queue/worker pipeline is actually alive end-to-end — not just that Redis is
+ *  reachable (which `/health/ready` already checks), but that a real Worker process is consuming
+ *  jobs and a real processor is executing them. Reuses `dispatch-reconciliation`, an
+ *  already-existing, already-idempotent, read-only job (`DispatchReconciliationService` re-scans
+ *  for stranded orders and no-ops if none are found) — deliberately not a new job type, so this
+ *  check adds zero new business logic or queue surface. Skipped if `REDIS_HOST` isn't set, since
+ *  this script may run somewhere without direct Redis network access. */
+async function checkQueueWorkerProcessing(): Promise<CheckOutcome> {
+  if (!process.env.REDIS_HOST) {
+    return { status: 'skipped', detail: 'REDIS_HOST not provided' };
+  }
+
+  const queue = new Queue('dispatch', {
+    connection: getRedisConnectionOptions(),
+  });
+
+  try {
+    const jobId = `smoke-test-dispatch-reconciliation-${Date.now()}`;
+
+    const job = await queue.add(
+      'dispatch-reconciliation',
+      {},
+      { jobId },
+    );
+
+    const pollIntervalMs = 200;
+    const deadline = Date.now() + TIMEOUT_MS;
+
+    while (Date.now() < deadline) {
+      const state = await job.getState();
+
+      if (state === 'completed') {
+        return { status: 'pass', detail: `job ${jobId} completed` };
+      }
+
+      if (state === 'failed') {
+        return {
+          status: 'fail',
+          detail: `job ${jobId} failed: ${job.failedReason}`,
+        };
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    }
+
+    return {
+      status: 'fail',
+      detail: `job ${jobId} did not complete within ${TIMEOUT_MS}ms — no Worker consuming the "dispatch" queue?`,
+    };
+  } finally {
+    await queue.close();
+  }
+}
+
 /** Deliberately opt-in — see the module doc comment above. Skipped (not failed) unless a
  *  dedicated smoke-test restaurant/menu-item/customer/address is configured, since running it
  *  writes a real order. */
@@ -217,6 +327,8 @@ async function main(): Promise<void> {
     runCheck('health:ready (database, redis, queues, storage)', checkReadiness),
     runCheck('auth:enforced', checkAuthenticationEnforced),
     runCheck('websocket:connect', checkWebsocketConnection),
+    runCheck('metrics:endpoint', checkMetricsEndpoint),
+    runCheck('queue:dispatch-reconciliation-processed', checkQueueWorkerProcessing),
     runCheck('checkout:flow', checkCheckoutFlow),
   ]);
 

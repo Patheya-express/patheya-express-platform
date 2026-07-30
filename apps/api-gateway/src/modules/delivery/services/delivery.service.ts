@@ -347,17 +347,13 @@ export class DeliveryService {
     };
   }
 
+  // Production Readiness Stage C: previously N sequential Redis GETs (one per partner, via
+  // Promise.all(...isOnline...)) — now a single MGET via the same isOnlineBatch helper
+  // DispatchService.assignOrder already uses for this exact reason.
   private async buildOnlineMap(
     userIds: string[],
   ): Promise<Map<string, boolean>> {
-    const entries = await Promise.all(
-      userIds.map(
-        async (userId) =>
-          [userId, await this.presenceService.isOnline(userId)] as const,
-      ),
-    );
-
-    return new Map(entries);
+    return this.presenceService.isOnlineBatch(userIds);
   }
 
   private async findAdminTarget(deliveryPartnerId: string) {

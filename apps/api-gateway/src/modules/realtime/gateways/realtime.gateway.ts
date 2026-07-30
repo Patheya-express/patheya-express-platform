@@ -27,6 +27,8 @@ import { RedisConnectionType } from '../../../infrastructure/redis-infrastructur
 
 import { RedisConnectionName } from '../../../infrastructure/redis-infrastructure/enums/redis-connection-name.enum';
 
+import { MetricsService } from '../../metrics/metrics.service';
+
 import {
   AuthenticatedUser,
   canAccessOrder,
@@ -109,6 +111,8 @@ export class RealtimeGateway
     private readonly prisma: PrismaService,
 
     private readonly redisConnectionFactory: RedisConnectionFactory,
+
+    private readonly metrics: MetricsService,
   ) {}
 
   /**
@@ -179,6 +183,12 @@ export class RealtimeGateway
         role: payload.role,
       } satisfies AuthenticatedUser;
 
+      // Only successfully authenticated connections count — a rejected connection is disconnected
+      // immediately below in the catch/unauthenticated branches too, and `handleDisconnect` fires
+      // for those as well, so counting/decrementing must both key off the same condition
+      // (`client.data.user` being set) to avoid the gauge ever drifting negative.
+      this.metrics.recordSocketConnection();
+
       this.logger.log(`Connected: ${client.id} (user ${payload.sub})`);
     } catch {
       this.logger.warn(`Rejected connection with invalid token: ${client.id}`);
@@ -187,6 +197,10 @@ export class RealtimeGateway
   }
 
   handleDisconnect(client: Socket) {
+    if (client.data.user) {
+      this.metrics.recordSocketDisconnection();
+    }
+
     this.logger.log(`Disconnected: ${client.id}`);
   }
 

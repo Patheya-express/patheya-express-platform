@@ -18,6 +18,8 @@ import { AuditService } from '../../../modules/audit/services/audit.service';
 
 import { AppLoggerService } from '../../logger/logger.service';
 
+import { MetricsService } from '../../../modules/metrics/metrics.service';
+
 interface AssignmentExpiryJobData {
   assignmentId: string;
 }
@@ -40,7 +42,19 @@ interface DispatchAssignmentJobData {
  * (Production Readiness Stage A — Crash Recovery) is the periodic re-scan for orders a
  * `dispatch-assignment` job never successfully assigned (see `DispatchReconciliationService`).
  */
-@Processor('dispatch')
+/**
+ * Production Readiness Stage C: concurrency raised from BullMQ's default of 1. Every job on this
+ * queue (`dispatch-assignment`, `assignment-expiry`, `dispatch-reconciliation`) is scoped to a
+ * distinct `orderId`/`assignmentId`, and correctness against a racing job for the *same* order
+ * is already carried by an atomic conditional DB update, not by BullMQ serialization —
+ * `claimAssignmentTransition` above (line ~122) is exactly that: "the loser silently no-ops
+ * rather than expiring an assignment that was, in fact, just accepted a moment before." Since
+ * cross-job races are already resolved at the DB layer, there is no ordering property left for
+ * concurrency=1 to protect, only throughput it was costing. 8 chosen conservatively for the same
+ * reason as the notifications queue (I/O-bound job bodies, no production load data to justify
+ * going higher yet).
+ */
+@Processor('dispatch', { concurrency: 8 })
 export class AssignmentExpiryProcessor extends WorkerHost {
   constructor(
     private readonly dispatchRepository: DispatchRepository,
@@ -56,6 +70,8 @@ export class AssignmentExpiryProcessor extends WorkerHost {
     private readonly auditService: AuditService,
 
     private readonly logger: AppLoggerService,
+
+    private readonly metrics: MetricsService,
   ) {
     super();
   }
@@ -80,7 +96,19 @@ export class AssignmentExpiryProcessor extends WorkerHost {
         'AssignmentExpiryProcessor',
       );
 
+      this.metrics.recordDispatchAssignmentAttempt(data.sourceEvent);
+
+      if (data.sourceEvent !== 'order.ready') {
+        this.metrics.recordDispatchRedispatch(data.sourceEvent);
+      }
+
+      const assignmentStart = Date.now();
+
       await this.dispatchService.assignOrder(data.orderId);
+
+      this.metrics.observeDispatchAssignmentDuration(
+        (Date.now() - assignmentStart) / 1000,
+      );
 
       return;
     }
