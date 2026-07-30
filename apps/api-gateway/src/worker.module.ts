@@ -22,6 +22,8 @@ import { MetricsModule } from './modules/metrics/metrics.module';
 
 import { QueuesModule } from './infrastructure/queues/queues.module';
 
+import { EventsModule } from './modules/events/events.module';
+
 /**
  * The standalone worker process's module graph — `docs/infrastructure/workers.md`'s own
  * documented gap ("there is only one main.ts entrypoint, and it always starts both the HTTP
@@ -42,6 +44,13 @@ import { QueuesModule } from './infrastructure/queues/queues.module';
  * gateway simply never receives real client connections (no Ingress routes to this process's
  * port), which is harmless; it still participates in the same Redis-adapter pub/sub as api-gateway
  * so an event it emits reaches whichever api-gateway pod holds the actual client connection.
+ *
+ * `EventsModule` is imported directly here too: it's `@Global()`, but that only broadcasts
+ * `EventBusService` within the module graph it's actually part of. This process boots a wholly
+ * separate Nest application context from `WorkerModule` (not `AppModule`), so without this import
+ * `QueuesModule` -> `NotificationsModule`'s `OrderNotificationListener`/
+ * `RestaurantOrderNotificationListener` (both inject `EventBusService`) fail DI resolution here
+ * even though the same providers resolve fine in the api-gateway process.
  */
 @Module({
   imports: [
@@ -58,6 +67,7 @@ import { QueuesModule } from './infrastructure/queues/queues.module';
     MetricsModule,
     RealtimeModule,
     HealthModule,
+    EventsModule,
     QueuesModule,
   ],
 })
