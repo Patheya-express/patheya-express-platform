@@ -175,6 +175,12 @@ export class CouponsRepository extends BaseRepository {
    * race, or order creation failed outright) — deletes the placeholder ledger row and releases
    * the usage slot together, atomically, so a half-undone release can never leave totalUsed
    * decremented without removing the row (or vice versa).
+   *
+   * Reused as-is by Sprint 1.8's refund path (OrdersService.refundOrder ->
+   * CouponsService.releaseForOrder) for a *completed* order's redemption too — deleting the
+   * ledger row on refund is consistent with this method's existing meaning ("this usage no
+   * longer counts"), not a new behavior. Deleting a row that's already gone throws Prisma's
+   * P2025, which callers treat as an idempotent no-op — see releaseForOrder.
    */
   async releaseRedemption(couponId: string, redemptionId: string) {
     await this.prisma.$transaction([
@@ -184,6 +190,11 @@ export class CouponsRepository extends BaseRepository {
         data: { totalUsed: { decrement: 1 } },
       }),
     ]);
+  }
+
+  /** orderId is @unique on CouponRedemption — at most one row can ever match. */
+  async findRedemptionByOrderId(orderId: string) {
+    return this.prisma.couponRedemption.findUnique({ where: { orderId } });
   }
 
   /** Links the already-reserved ledger row to the real order and sets its final,

@@ -637,12 +637,15 @@ export class OrdersController {
   @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
   @Patch(':id/refund')
   refundOrder(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     id: string,
 
     @Body()
     dto: RefundOrderDto,
   ) {
-    return this.ordersService.refundOrder(id, dto);
+    return this.ordersService.refundOrder(id, dto, user.userId);
   }
 }

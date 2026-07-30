@@ -85,6 +85,7 @@ const PUSH_PREFERENCE_BY_TYPE: Record<NotificationType, PushPreferenceKey> = {
   ORDER_PLACED: 'orderUpdatesPush',
   ORDER_STATUS_CHANGED: 'orderUpdatesPush',
   DELIVERY_PARTNER_ASSIGNED: 'orderUpdatesPush',
+  REFUND_ISSUED: 'orderUpdatesPush',
   OFFER: 'promotionsPush',
   WALLET_CREDIT: 'systemPush',
   REFERRAL_REWARD: 'systemPush',

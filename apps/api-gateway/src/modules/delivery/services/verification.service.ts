@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -29,6 +30,12 @@ const STAGE_ORDER: DeliveryVerificationStage[] = [
   DeliveryVerificationStage.UNDER_REVIEW,
   DeliveryVerificationStage.APPROVED,
 ];
+
+/** Every stage reject() may legally act on — matches the pre-existing JS check this replaces
+ *  exactly: `stage === REJECTED || stage === APPROVED` were the only two excluded. */
+const REJECTABLE_STAGES = STAGE_ORDER.filter(
+  (stage) => stage !== DeliveryVerificationStage.APPROVED,
+);
 
 /**
  * The delivery-partner analog of RestaurantVerification's VerificationService. Reaching APPROVED
@@ -67,35 +74,6 @@ export class VerificationService {
     return partner;
   }
 
-  private async transition(
-    deliveryPartnerId: string,
-    toStage: DeliveryVerificationStage,
-    extra: {
-      submittedAt?: Date;
-      decidedAt?: Date;
-      rejectedReason?: string | null;
-    } = {},
-    fromStage?: DeliveryVerificationStage,
-    reason?: string,
-    decidedById?: string,
-  ) {
-    const updated = await this.verificationRepository.setStage(
-      deliveryPartnerId,
-      toStage,
-      extra,
-    );
-
-    await this.verificationRepository.recordHistory({
-      deliveryPartnerId,
-      fromStage: fromStage ?? null,
-      toStage,
-      reason,
-      decidedById,
-    });
-
-    return updated;
-  }
-
   async getStatus(userId: string) {
     const partner = await this.requirePartner(userId);
 
@@ -119,14 +97,23 @@ export class VerificationService {
       );
     }
 
-    const updated = await this.transition(
-      partner.id,
-      DeliveryVerificationStage.SUBMITTED,
-      { submittedAt: new Date() },
-      current.stage,
-      undefined,
-      userId,
-    );
+    const claim = await this.verificationRepository.claimStageTransition({
+      deliveryPartnerId: partner.id,
+
+      allowedFromStages: [DeliveryVerificationStage.DRAFT],
+
+      toStage: DeliveryVerificationStage.SUBMITTED,
+
+      extra: { submittedAt: new Date() },
+
+      history: { fromStage: current.stage, decidedById: userId },
+    });
+
+    if (claim.count === 0) {
+      throw new ConflictException(
+        'This verification is no longer DRAFT — it was already submitted',
+      );
+    }
 
     await this.auditService.log(
       userId,
@@ -148,7 +135,7 @@ export class VerificationService {
       'Your delivery partner application has been submitted for review.',
     );
 
-    return updated;
+    return this.verificationRepository.findOrCreate(partner.id);
   }
 
   /** Admin-only — moves to the next stage in STAGE_ORDER. */
@@ -171,14 +158,30 @@ export class VerificationService {
         ? { decidedAt: new Date() }
         : {};
 
-    const updated = await this.transition(
+    // The authoritative check: `current.stage` above is a snapshot, not proof the row is still
+    // there right now. The claim below — which also atomically flips isVerified when advancing to
+    // APPROVED, in the SAME transaction — is what actually enforces "exactly one winner" and what
+    // makes verification completion and activation atomic (Phase 4/5).
+    const claim = await this.verificationRepository.claimStageTransition({
       deliveryPartnerId,
-      nextStage,
+
+      allowedFromStages: [current.stage],
+
+      toStage: nextStage,
+
       extra,
-      current.stage,
-      undefined,
-      adminUserId,
-    );
+
+      isVerifiedUpdate:
+        nextStage === DeliveryVerificationStage.APPROVED ? true : undefined,
+
+      history: { fromStage: current.stage, decidedById: adminUserId },
+    });
+
+    if (claim.count === 0) {
+      throw new ConflictException(
+        `This verification is no longer at stage ${current.stage} — a concurrent admin action already changed it`,
+      );
+    }
 
     await this.auditService.log(
       adminUserId,
@@ -190,8 +193,6 @@ export class VerificationService {
     );
 
     if (nextStage === DeliveryVerificationStage.APPROVED) {
-      await this.deliveryRepository.updateVerification(deliveryPartnerId, true);
-
       await this.eventBus.publish('delivery.approved', { deliveryPartnerId });
 
       const partner = await this.requirePartnerById(deliveryPartnerId);
@@ -204,7 +205,7 @@ export class VerificationService {
       );
     }
 
-    return updated;
+    return this.verificationRepository.findOrCreate(deliveryPartnerId);
   }
 
   /** Admin-only — rejects from any non-terminal stage. */
@@ -221,16 +222,25 @@ export class VerificationService {
       );
     }
 
-    const updated = await this.transition(
+    const claim = await this.verificationRepository.claimStageTransition({
       deliveryPartnerId,
-      DeliveryVerificationStage.REJECTED,
-      { decidedAt: new Date(), rejectedReason: reason },
-      current.stage,
-      reason,
-      adminUserId,
-    );
 
-    await this.deliveryRepository.updateVerification(deliveryPartnerId, false);
+      allowedFromStages: REJECTABLE_STAGES,
+
+      toStage: DeliveryVerificationStage.REJECTED,
+
+      extra: { decidedAt: new Date(), rejectedReason: reason },
+
+      isVerifiedUpdate: false,
+
+      history: { fromStage: current.stage, reason, decidedById: adminUserId },
+    });
+
+    if (claim.count === 0) {
+      throw new ConflictException(
+        'This verification can no longer be rejected — a concurrent admin action already approved or rejected it',
+      );
+    }
 
     await this.auditService.log(
       adminUserId,
@@ -255,7 +265,7 @@ export class VerificationService {
       reason,
     );
 
-    return updated;
+    return this.verificationRepository.findOrCreate(deliveryPartnerId);
   }
 
   /** Admin-only — APPROVED -> SUSPENDED. */
@@ -269,16 +279,23 @@ export class VerificationService {
       );
     }
 
-    const updated = await this.transition(
+    const claim = await this.verificationRepository.claimStageTransition({
       deliveryPartnerId,
-      DeliveryVerificationStage.SUSPENDED,
-      {},
-      current.stage,
-      undefined,
-      adminUserId,
-    );
 
-    await this.deliveryRepository.updateVerification(deliveryPartnerId, false);
+      allowedFromStages: [DeliveryVerificationStage.APPROVED],
+
+      toStage: DeliveryVerificationStage.SUSPENDED,
+
+      isVerifiedUpdate: false,
+
+      history: { fromStage: current.stage, decidedById: adminUserId },
+    });
+
+    if (claim.count === 0) {
+      throw new ConflictException(
+        'This verification is no longer APPROVED — a concurrent admin action already changed it',
+      );
+    }
 
     await this.auditService.log(
       adminUserId,
@@ -291,7 +308,7 @@ export class VerificationService {
 
     await this.eventBus.publish('delivery.suspended', { deliveryPartnerId });
 
-    return updated;
+    return this.verificationRepository.findOrCreate(deliveryPartnerId);
   }
 
   async reinstate(deliveryPartnerId: string, adminUserId: string) {
@@ -304,16 +321,23 @@ export class VerificationService {
       );
     }
 
-    const updated = await this.transition(
+    const claim = await this.verificationRepository.claimStageTransition({
       deliveryPartnerId,
-      DeliveryVerificationStage.APPROVED,
-      {},
-      current.stage,
-      undefined,
-      adminUserId,
-    );
 
-    await this.deliveryRepository.updateVerification(deliveryPartnerId, true);
+      allowedFromStages: [DeliveryVerificationStage.SUSPENDED],
+
+      toStage: DeliveryVerificationStage.APPROVED,
+
+      isVerifiedUpdate: true,
+
+      history: { fromStage: current.stage, decidedById: adminUserId },
+    });
+
+    if (claim.count === 0) {
+      throw new ConflictException(
+        'This verification is no longer SUSPENDED — a concurrent admin action already changed it',
+      );
+    }
 
     await this.auditService.log(
       adminUserId,
@@ -324,6 +348,6 @@ export class VerificationService {
       { stage: 'APPROVED' },
     );
 
-    return updated;
+    return this.verificationRepository.findOrCreate(deliveryPartnerId);
   }
 }

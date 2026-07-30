@@ -1,4 +1,4 @@
-import { IsNumber, IsOptional, IsString } from 'class-validator';
+import { IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
 
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
@@ -15,6 +15,7 @@ export class RefundPaymentDto {
     description: 'Refund amount in INR',
   })
   @IsNumber()
+  @IsPositive()
   amount: number;
 
   @ApiPropertyOptional({

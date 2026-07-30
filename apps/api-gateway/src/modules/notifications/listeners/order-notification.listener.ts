@@ -88,5 +88,27 @@ export class OrderNotificationListener implements OnModuleInit {
         );
       },
     );
+
+    // Sprint 1.8 — no customer-facing notification existed for a refund before this (only a
+    // WalletTransaction ledger row for the wallet leg, and a restaurant-side notification).
+    // Fires once per completed refund — OrdersService.refundOrder publishes this event only
+    // after winning its own order-level exactly-once claim.
+    this.eventBus.subscribe(
+      'order.refund.completed',
+
+      async (event) => {
+        await this.notificationsService.createNotification(
+          event.customerId,
+
+          NotificationType.REFUND_ISSUED,
+
+          'Refund issued',
+
+          `A refund of ${event.amount} was issued for your order.`,
+
+          { referenceType: 'ORDER', referenceId: event.orderId },
+        );
+      },
+    );
   }
 }

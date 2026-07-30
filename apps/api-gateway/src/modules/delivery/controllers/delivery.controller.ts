@@ -299,10 +299,13 @@ export class DeliveryController {
   @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
   @Patch(':id/approve')
   approvePartner(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     id: string,
   ) {
-    return this.deliveryService.approvePartner(id);
+    return this.deliveryService.approvePartner(id, user.userId);
   }
 
   @ApiOperation({
@@ -323,10 +326,13 @@ export class DeliveryController {
   @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
   @Patch(':id/reject')
   rejectPartner(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     id: string,
   ) {
-    return this.deliveryService.rejectPartner(id);
+    return this.deliveryService.rejectPartner(id, user.userId);
   }
 
   @ApiOperation({
@@ -351,10 +357,13 @@ export class DeliveryController {
   @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
   @Patch(':id/suspend')
   suspendPartner(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     id: string,
   ) {
-    return this.deliveryService.suspendPartner(id);
+    return this.deliveryService.suspendPartner(id, user.userId);
   }
 
   @ApiOperation({
@@ -378,10 +387,13 @@ export class DeliveryController {
   @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
   @Patch(':id/restore')
   restorePartner(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     id: string,
   ) {
-    return this.deliveryService.restorePartner(id);
+    return this.deliveryService.restorePartner(id, user.userId);
   }
 
   @ApiOperation({
@@ -405,10 +417,13 @@ export class DeliveryController {
   @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
   @Patch(':id/force-offline')
   forceOffline(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     id: string,
   ) {
-    return this.deliveryService.forceOffline(id);
+    return this.deliveryService.forceOffline(id, user.userId);
   }
 
   @ApiOperation({

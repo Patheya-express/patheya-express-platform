@@ -12,6 +12,7 @@ import {
   PaymentStatus,
   PaymentProvider as ProviderType,
   PaymentMethod,
+  AuditAction,
   type Payment,
 } from '@prisma/client';
 
@@ -25,6 +26,7 @@ import { EventBusService } from '../../../core/events/event-bus.service';
 
 import { QueueService } from '../../../infrastructure/queues/queue.service';
 import { AppLoggerService } from '../../../infrastructure/logger/logger.service';
+import { AuditService } from '../../audit/services/audit.service';
 import { PAYMENT_EVENTS } from '../events/payment-events.constants';
 import { PaymentStatusValidator } from '../Validators/payment-status.validator';
 import { getAllowedSourceStatuses } from '../constants/payment-state-machine';
@@ -109,6 +111,8 @@ export class PaymentsService {
     private readonly prisma: PrismaService,
 
     private readonly logger: AppLoggerService,
+
+    private readonly auditService: AuditService,
   ) {}
 
   async createPayment(orderId: string, amount: number, userId: string) {
@@ -621,35 +625,153 @@ export class PaymentsService {
     return { payment: updated, transitioned: true };
   }
 
-  async refundPayment(paymentId: string, amount: number, reason?: string) {
-    const payment = await this.paymentsRepository.findById(paymentId);
-
-    if (!payment) {
-      throw new NotFoundException('Payment not found');
-    }
-
-    if (payment.status !== TransactionStatus.SUCCESS) {
-      throw new ConflictException('Only successful payments can be refunded');
-    }
-
-    const refund = await this.razorpayProvider.refund(
-      payment.providerPaymentId!,
+  /**
+   * Sprint 1.8. Rewritten so the refund is *claimed* — atomically, via
+   * PaymentsRepository.claimRefund — before Razorpay is ever called, closing the two confirmed
+   * production-readiness findings: (1) the old code called Razorpay first and only transitioned
+   * Payment.status afterward, so two concurrent refund requests (duplicate browser retry, two
+   * admin clicks, a webhook racing this call) could both pass the old plain-read status check and
+   * both reach Razorpay — a real double-refund risk, not just a double DB write; (2) the amount
+   * was never validated against the payment at all (only `@IsNumber()` on the DTO). Every
+   * "can't refund" case below (already refunded, refund in progress, bad amount) is now resolved
+   * BEFORE any external call, not after one has already fired.
+   *
+   * `actorId` is optional — null for a system-triggered refund (there are none of those today,
+   * but this keeps the signature honest rather than assuming every caller is an authenticated
+   * admin), non-null for both admin-initiated paths (POST /payments/refund and
+   * OrdersService.refundOrder, which thread the acting admin's id through).
+   */
+  async refundPayment(
+    paymentId: string,
+    amount: number,
+    reason?: string,
+    actorId?: string | null,
+  ): Promise<Payment> {
+    const claim = await this.paymentsRepository.claimRefund({
+      paymentId,
       amount,
-    );
-    await this.transitionPaymentStatus(
-      payment.id,
+    });
 
-      TransactionStatus.REFUNDED,
-    );
+    if (!claim.claimed) {
+      if (claim.reason === 'not_found') {
+        throw new NotFoundException('Payment not found');
+      }
 
-    await this.paymentsRepository.createRefund({
+      if (claim.reason === 'not_success') {
+        throw new ConflictException('Only successful payments can be refunded');
+      }
+
+      if (claim.reason === 'already_refunded') {
+        throw new ConflictException('This payment has already been refunded');
+      }
+
+      if (claim.reason === 'invalid_amount') {
+        throw new BadRequestException(
+          'Refund amount must be positive and cannot exceed the payment amount',
+        );
+      }
+
+      throw new ConflictException(
+        'A refund for this payment is already in progress — please retry shortly',
+      );
+    }
+
+    const { payment, refund } = claim;
+
+    let providerPaymentId: string | undefined;
+
+    try {
+      const providerRefund = await this.razorpayProvider.refund(
+        payment.providerPaymentId!,
+        amount,
+      );
+
+      providerPaymentId = providerRefund.id;
+    } catch (error) {
+      // Razorpay's response is ambiguous on a timeout/network error — we genuinely don't know
+      // whether the refund landed on their side before the connection dropped. Ask Razorpay
+      // directly (reuses fetchPayment, the same method assertProviderPaymentMatches already
+      // relies on for an analogous ambiguity) rather than guessing; guessing "failed" when it
+      // actually succeeded would double-refund on the caller's retry, and guessing "succeeded"
+      // when it actually failed would silently lose the customer's money.
+      const actuallyRefunded = await this.confirmRefundOnProvider(
+        payment,
+        amount,
+      );
+
+      if (!actuallyRefunded) {
+        await this.paymentsRepository.finalizeRefundFailure(refund.id);
+
+        this.logger.error(
+          {
+            event: 'payment_refund_provider_call_failed',
+            paymentId,
+            orderId: payment.orderId,
+            amount,
+            reason: error instanceof Error ? error.message : 'Unknown error',
+          },
+          error instanceof Error ? error.stack : undefined,
+          'PaymentsService',
+        );
+
+        // Payment.status is untouched (still SUCCESS) and this Refund row is now FAILED — a
+        // retry's claimRefund will see no PENDING/REFUNDED row for this payment and can claim
+        // again cleanly.
+        throw new ConflictException(
+          'Refund could not be processed by the payment provider — it is safe to retry',
+        );
+      }
+
+      // Razorpay confirms the refund actually landed despite the client-side error — fall
+      // through to the same success path a clean call would have taken.
+    }
+
+    const finalize = await this.paymentsRepository.finalizeRefundSuccess(
       paymentId,
 
+      refund.id,
+
+      providerPaymentId,
+    );
+
+    if (finalize.paymentClaimCount !== 1 || finalize.refundClaimCount !== 1) {
+      // Should be unreachable — this call holds the one PENDING Refund row for this payment, and
+      // nothing else can have moved Payment out of SUCCESS in between. Logged loudly rather than
+      // silently ignored, since it would indicate a genuine invariant violation, not an expected
+      // race outcome.
+      this.logger.error(
+        {
+          event: 'payment_refund_finalize_count_mismatch',
+          paymentId,
+          refundId: refund.id,
+          paymentClaimCount: finalize.paymentClaimCount,
+          refundClaimCount: finalize.refundClaimCount,
+        },
+        undefined,
+        'PaymentsService',
+      );
+    }
+
+    await this.auditService.log(
+      actorId ?? null,
+      'Payment',
+      paymentId,
+      AuditAction.STATUS_CHANGE,
+      { status: TransactionStatus.SUCCESS },
+      {
+        event: 'PAYMENT_REFUNDED',
+        status: TransactionStatus.REFUNDED,
+        amount,
+        reason,
+      },
+    );
+
+    await this.eventBus.publish('payment.refunded', {
+      paymentId,
+
+      orderId: payment.orderId,
+
       amount,
-
-      reason,
-
-      status: TransactionStatus.REFUNDED,
     });
 
     this.logger.log(
@@ -662,7 +784,40 @@ export class PaymentsService {
       'PaymentsService',
     );
 
-    return refund;
+    return (await this.paymentsRepository.findById(paymentId))!;
+  }
+
+  /** Reconciles an ambiguous Razorpay refund-call failure against Razorpay's own record of the
+   *  payment — `refund_status`/`amount_refunded` are Razorpay's authoritative view, independent
+   *  of whether our own HTTP call actually received a response. Any error here (Razorpay itself
+   *  unreachable) is treated as "can't confirm" -> genuinely failed -> safe to retry later, never
+   *  as a false "yes it succeeded". */
+  private async confirmRefundOnProvider(
+    payment: { providerPaymentId: string | null },
+    expectedAmount: number,
+  ): Promise<boolean> {
+    if (!payment.providerPaymentId) {
+      return false;
+    }
+
+    try {
+      const providerPayment = (await this.razorpayProvider.fetchPayment(
+        payment.providerPaymentId,
+      )) as {
+        refund_status?: string;
+        amount_refunded?: number;
+      };
+
+      const expectedPaise = Math.round(expectedAmount * 100);
+
+      return (
+        providerPayment?.refund_status === 'full' ||
+        (providerPayment?.refund_status === 'partial' &&
+          (providerPayment?.amount_refunded ?? 0) >= expectedPaise)
+      );
+    } catch {
+      return false;
+    }
   }
 
   async processWebhook(payload: any, rawBody: string, signature: string) {

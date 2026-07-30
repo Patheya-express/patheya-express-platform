@@ -112,6 +112,7 @@ describe('PaymentsService.verifyPayment — concurrency (real database)', () => 
       addNotificationJob: jest.fn().mockResolvedValue(undefined),
     };
     const logger = { log: jest.fn(), error: jest.fn(), warn: jest.fn() };
+    const auditService = { log: jest.fn().mockResolvedValue(undefined) };
 
     const service = new PaymentsService(
       paymentsRepository,
@@ -120,6 +121,7 @@ describe('PaymentsService.verifyPayment — concurrency (real database)', () => 
       queueService as any,
       prisma,
       logger as any,
+      auditService as any,
     );
 
     return { service, razorpayProvider, eventBus, queueService };

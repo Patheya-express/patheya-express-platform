@@ -44,6 +44,15 @@ interface JoinRoomResult {
  *  (`docs/infrastructure/socketio.md`) — fixed here rather than left for a future phase. */
 const LOCALHOST_ORIGIN_PATTERN = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
 
+/** Sprint 1.6 — matches main.ts's normalizeOrigin exactly: strips a trailing slash so a
+ *  configured value like `https://app.example.com/` still matches the browser's `Origin` header
+ *  (which never has one). Without this, a frontend URL with a trailing slash passed the REST
+ *  API's CORS check but was silently rejected here, purely from the two independent
+ *  implementations drifting. */
+function normalizeOrigin(origin: string): string {
+  return origin.replace(/\/+$/, '');
+}
+
 function buildRealtimeCorsOrigin(
   origin: string | undefined,
   callback: (err: Error | null, allow?: boolean) => void,
@@ -58,9 +67,11 @@ function buildRealtimeCorsOrigin(
     process.env.RESTAURANT_APP_URL,
     process.env.ADMIN_APP_URL,
     process.env.DELIVERY_APP_URL,
-  ].filter((value): value is string => Boolean(value));
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map(normalizeOrigin);
 
-  if (allowedOrigins.includes(origin)) {
+  if (allowedOrigins.includes(normalizeOrigin(origin))) {
     callback(null, true);
     return;
   }

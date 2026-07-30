@@ -423,6 +423,14 @@ enum NotificationType {
   DELIVERY_OTP_GENERATED
   PICKUP_VERIFIED
   DELIVERY_VERIFIED
+
+  /**
+   * Sprint 1.8 — sent to the customer once a refund (full or partial, wallet and/or Razorpay
+   * leg) actually completes, via OrdersService.refundOrder's order-level refund-completed event.
+   * No customer-facing refund notification existed before this (only a WalletTransaction ledger
+   * row and a restaurant-side notification did).
+   */
+  REFUND_ISSUED
 }
 
 enum OfferType {

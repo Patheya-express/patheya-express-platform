@@ -188,6 +188,9 @@ export class PaymentsController {
   @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
   @Post('refund')
   refundPayment(
+    @CurrentUser()
+    user: any,
+
     @Body()
     dto: RefundPaymentDto,
   ) {
@@ -197,6 +200,8 @@ export class PaymentsController {
       dto.amount,
 
       dto.reason,
+
+      user.userId,
     );
   }
 

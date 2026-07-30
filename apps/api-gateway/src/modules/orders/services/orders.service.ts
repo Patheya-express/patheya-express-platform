@@ -83,6 +83,10 @@ const TERMINAL_ORDER_STATUSES: OrderStatus[] = [
  */
 const ORDER_PLACEMENT_LOCK_TTL_MS = 30_000;
 
+/** Amounts within a paisa of each other are treated as equal — same tolerance
+ *  PaymentsService/PaymentsRepository use for their own refund-amount comparisons. */
+const AMOUNT_TOLERANCE = 0.01;
+
 /**
  * Sprint 1.2A review finding: the previous `ORD-${Date.now()}` scheme has no collision
  * resistance under real concurrency — two unrelated orders placed in the same millisecond
@@ -1201,6 +1205,12 @@ export class OrdersService {
 
     if (dto.status === OrderStatus.DELIVERED) {
       await this.recordDeliveryTiming(order.placedAt, updatedOrder);
+
+      if (updatedOrder.deliveryPartnerId) {
+        await this.deliveryService.releasePartnerFromDelivery(
+          updatedOrder.deliveryPartnerId,
+        );
+      }
     }
 
     return updatedOrder;
@@ -1390,6 +1400,16 @@ export class OrdersService {
       note: dto.reason,
     });
 
+    // Admin cancel is the one path that can reach CANCELLED from READY_FOR_PICKUP/
+    // OUT_FOR_DELIVERY (ORDER_STATUS_TRANSITIONS doesn't allow it, but adminCancelOrder
+    // deliberately bypasses that table) — so a partner who already accepted/is out delivering
+    // this order must be released back to AVAILABLE, or they'd be stuck ON_DELIVERY forever.
+    if (order.deliveryPartnerId) {
+      await this.deliveryService.releasePartnerFromDelivery(
+        order.deliveryPartnerId,
+      );
+    }
+
     return updatedOrder;
   }
 
@@ -1417,6 +1437,12 @@ export class OrdersService {
       note: dto.reason,
     });
 
+    if (order.deliveryPartnerId) {
+      await this.deliveryService.releasePartnerFromDelivery(
+        order.deliveryPartnerId,
+      );
+    }
+
     return updatedOrder;
   }
 
@@ -1427,62 +1453,153 @@ export class OrdersService {
    * payment feature): the Razorpay leg is refunded via PaymentsService as before, and the
    * wallet leg is credited back by publishing `order.refunded` for WalletEventListener to
    * consume — OrdersService stays fully decoupled from WalletModule.
+   *
+   * Sprint 1.8. `actorId` is the acting admin's id, for audit attribution — previously not
+   * captured at all. The whole method is now gated behind one atomic order-level claim
+   * (Order.paymentStatus PAID→REFUNDED, OrdersRepository.claimPaymentStatusTransition, same
+   * conditional-updateMany philosophy as PaymentsRepository.claimStatusTransition), taken BEFORE
+   * anything else — two concurrent refund requests for the same order (duplicate browser retry,
+   * two admin clicks, a cancel racing a refund) can now only ever have one winner; every other
+   * caller's claim affects zero rows and returns a clean, cheap "already refunded" conflict
+   * instead of silently redoing the Razorpay call, the wallet credit, and the coupon release a
+   * second time. If the refund attempt then fails after the claim already committed (Razorpay
+   * error, an invalid amount), the claim is explicitly reverted (REFUNDED→PAID) in the catch
+   * block below — a single local compensating update, not a saga — so the order stays in a
+   * consistent, retryable state rather than being stuck showing "refunded" with no money moved.
    */
-  async refundOrder(orderId: string, dto: RefundOrderDto) {
+  async refundOrder(orderId: string, dto: RefundOrderDto, actorId: string) {
     const order = await this.ordersRepository.findOrderById(orderId);
 
     if (!order) {
       throw new NotFoundException('Order not found');
     }
 
-    const totalAmount = Number(order.totalAmount);
-    const walletAmountUsed = Number((order as any).walletAmountUsed ?? 0);
-    const requestedAmount = dto.amount ?? totalAmount;
-    const refundRatio =
-      totalAmount > 0
-        ? Math.min(requestedAmount, totalAmount) / totalAmount
-        : 0;
+    const claim = await this.ordersRepository.claimPaymentStatusTransition(
+      orderId,
 
-    const walletPortion =
-      Math.round(walletAmountUsed * refundRatio * 100) / 100;
-    const razorpayPortion =
-      Math.round((totalAmount - walletAmountUsed) * refundRatio * 100) / 100;
+      [PaymentStatus.PAID],
 
-    if (razorpayPortion > 0) {
-      const payment =
-        await this.paymentsService.findActivePaymentForOrder(orderId);
+      PaymentStatus.REFUNDED,
+    );
 
-      if (!payment || payment.status !== TransactionStatus.SUCCESS) {
-        throw new BadRequestException(
-          'This order has no successful payment to refund',
-        );
-      }
-
-      await this.paymentsService.refundPayment(
-        payment.id,
-        razorpayPortion,
-        dto.reason,
+    if (claim.count === 0) {
+      throw new ConflictException(
+        'This order has already been refunded, or has no paid balance to refund',
       );
     }
 
-    if (walletPortion > 0) {
-      await this.eventBus.publish('order.refunded', {
+    try {
+      const totalAmount = Number(order.totalAmount);
+      const walletAmountUsed = Number((order as any).walletAmountUsed ?? 0);
+      const requestedAmount = dto.amount ?? totalAmount;
+
+      // Fail safely on an over-large request rather than the old silent clamp-to-total — an
+      // admin asking to refund more than the order cost is almost certainly a mistake, not an
+      // intentional "just refund everything."
+      if (requestedAmount > totalAmount + AMOUNT_TOLERANCE) {
+        throw new BadRequestException(
+          `Refund amount cannot exceed the order total (${totalAmount.toFixed(2)})`,
+        );
+      }
+
+      const refundRatio = totalAmount > 0 ? requestedAmount / totalAmount : 0;
+
+      const walletPortion =
+        Math.round(walletAmountUsed * refundRatio * 100) / 100;
+      const razorpayPortion =
+        Math.round((totalAmount - walletAmountUsed) * refundRatio * 100) / 100;
+
+      if (razorpayPortion > 0) {
+        const payment =
+          await this.paymentsService.findActivePaymentForOrder(orderId);
+
+        if (!payment || payment.status !== TransactionStatus.SUCCESS) {
+          throw new BadRequestException(
+            'This order has no successful payment to refund',
+          );
+        }
+
+        await this.paymentsService.refundPayment(
+          payment.id,
+          razorpayPortion,
+          dto.reason,
+          actorId,
+        );
+      }
+
+      if (walletPortion > 0) {
+        await this.eventBus.publish('order.refunded', {
+          orderId,
+          customerId: order.customerId,
+          restaurantId: order.restaurantId,
+          walletAmount: walletPortion,
+        });
+      }
+
+      // "Coupon redemption is never released after refund/cancel" (confirmed finding) — best-
+      // effort, idempotent on its own terms too (see CouponsService.releaseForOrder).
+      await this.couponsService.releaseForOrder(orderId);
+
+      const totalRefunded =
+        Math.round((walletPortion + razorpayPortion) * 100) / 100;
+
+      await this.eventBus.publish('order.refund.completed', {
         orderId,
         customerId: order.customerId,
         restaurantId: order.restaurantId,
-        walletAmount: walletPortion,
+        amount: totalRefunded,
       });
+
+      await this.auditService.log(
+        actorId,
+        'Order',
+        orderId,
+        AuditAction.STATUS_CHANGE,
+        { paymentStatus: PaymentStatus.PAID },
+        {
+          event: 'ORDER_REFUNDED',
+          paymentStatus: PaymentStatus.REFUNDED,
+          amount: totalRefunded,
+          reason: dto.reason,
+        },
+      );
+
+      this.logger.log(
+        {
+          event: 'order_refunded',
+          orderId,
+          walletPortion,
+          razorpayPortion,
+          actorId,
+        },
+        'OrdersService',
+      );
+
+      return (await this.ordersRepository.findOrderById(orderId))!;
+    } catch (error) {
+      const revert = await this.ordersRepository.claimPaymentStatusTransition(
+        orderId,
+
+        [PaymentStatus.REFUNDED],
+
+        PaymentStatus.PAID,
+      );
+
+      if (revert.count !== 1) {
+        // Should be unreachable — this call held the exclusive REFUNDED claim on this order, so
+        // nothing else could have moved it in between. Logged loudly, not silently ignored.
+        this.logger.error(
+          {
+            event: 'order_refund_revert_count_mismatch',
+            orderId,
+            revertCount: revert.count,
+          },
+          undefined,
+          'OrdersService',
+        );
+      }
+
+      throw error;
     }
-
-    await this.eventBus.publish('order.refunded.restaurant', {
-      orderId,
-      restaurantId: order.restaurantId,
-      amount: Math.round((walletPortion + razorpayPortion) * 100) / 100,
-    });
-
-    return this.ordersRepository.updatePaymentStatus(
-      orderId,
-      PaymentStatus.REFUNDED,
-    );
   }
 }

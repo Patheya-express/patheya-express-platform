@@ -227,13 +227,35 @@ export class AdminDispatchService {
         );
       }
 
-      const assignment = await this.dispatchRepository.createAssignment({
+      // Everything above is a fast, friendly pre-check for a good error message — it can still
+      // race a concurrent automatic dispatch or another admin's manual assignment for the same
+      // order. createAssignmentForOrder is the authoritative, lock-guarded re-check (same method
+      // DispatchService.assignOrder uses), so both paths share one real guarantee instead of two
+      // separately-race-prone implementations of the same rule.
+      const result = await this.dispatchRepository.createAssignmentForOrder({
         orderId,
 
         deliveryPartnerId: partner.id,
 
         expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+
+        dispatchableStatuses: [OrderStatus.READY_FOR_PICKUP],
       });
+
+      if (!result.created) {
+        const reason =
+          result.reason === 'active_assignment_exists'
+            ? 'This order already has an active dispatch assignment'
+            : result.reason === 'already_has_partner'
+              ? 'This order already has a delivery partner assigned'
+              : result.reason === 'not_dispatchable'
+                ? `Orders with status ${order.status} cannot be assigned`
+                : 'Order not found';
+
+        throw new ConflictException(reason);
+      }
+
+      const assignment = result.assignment;
 
       this.logger.log(
         {

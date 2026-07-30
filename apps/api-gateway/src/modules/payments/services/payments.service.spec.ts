@@ -34,6 +34,7 @@ describe('PaymentsService', () => {
   let eventBus: { publish: jest.Mock };
   let queueService: { addNotificationJob: jest.Mock };
   let logger: { log: jest.Mock; error: jest.Mock; warn: jest.Mock };
+  let auditService: { log: jest.Mock };
   let service: PaymentsService;
 
   const CUSTOMER_ID = 'customer-1';
@@ -85,6 +86,7 @@ describe('PaymentsService', () => {
       addNotificationJob: jest.fn().mockResolvedValue(undefined),
     };
     logger = { log: jest.fn(), error: jest.fn(), warn: jest.fn() };
+    auditService = { log: jest.fn().mockResolvedValue(undefined) };
 
     service = new PaymentsService(
       paymentsRepository as any,
@@ -93,6 +95,7 @@ describe('PaymentsService', () => {
       queueService as any,
       {} as any, // prisma — unused directly by the methods under test
       logger as any,
+      auditService as any,
     );
   });
 

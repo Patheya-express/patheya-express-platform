@@ -151,14 +151,32 @@ export class RestaurantsRepository extends BaseRepository {
     });
   }
 
-  async updateStatus(restaurantId: string, status: RestaurantStatus) {
-    return this.prisma.restaurant.update({
+  /**
+   * Sprint 1.9 — the exactly-once claim behind every admin status transition
+   * (RestaurantsService.approveRestaurant/rejectRestaurant/suspendRestaurant/restoreRestaurant),
+   * same conditional-updateMany philosophy as PaymentsRepository.claimStatusTransition /
+   * OrdersRepository.claimPaymentStatusTransition. Replaces the old find-then-update
+   * (updateStatus), which let two concurrent admin actions (e.g. one approve, one reject, both
+   * reading PENDING) both pass their JS status check and both write — whichever committed last
+   * silently overwrote the other, with both writing "successful" audit entries regardless of
+   * which one actually won.
+   */
+  async claimStatusTransition(
+    restaurantId: string,
+
+    allowedFromStatuses: RestaurantStatus[],
+
+    nextStatus: RestaurantStatus,
+  ): Promise<{ count: number }> {
+    return this.prisma.restaurant.updateMany({
       where: {
         id: restaurantId,
+
+        status: { in: allowedFromStatuses },
       },
 
       data: {
-        status,
+        status: nextStatus,
       },
     });
   }

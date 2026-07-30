@@ -795,6 +795,15 @@ export class RestaurantsService {
     );
   }
 
+  /**
+   * Sprint 1.9. The pre-check (find + JS status comparison) stays as a fast, friendly
+   * pre-validation — it's what turns a doomed request into a clean 404/400 without ever reaching
+   * the DB write — but it is NOT what makes this method exactly-once: that guarantee comes solely
+   * from claimStatusTransition's conditional updateMany below. A stale read here (the restaurant
+   * concurrently changed status between this read and the claim) simply means the claim itself
+   * fails with count 0, correctly reported as a 409 Conflict rather than silently overwriting
+   * whatever the winning concurrent request just committed.
+   */
   private async transitionStatus(
     restaurantId: string,
 
@@ -819,11 +828,23 @@ export class RestaurantsService {
       );
     }
 
-    const updated = await this.restaurantsRepository.updateStatus(
+    const claim = await this.restaurantsRepository.claimStatusTransition(
       restaurantId,
+
+      [requiredStatus],
+
       nextStatus,
     );
 
+    if (claim.count === 0) {
+      throw new ConflictException(
+        `This restaurant is no longer in status ${requiredStatus} — a concurrent admin action already changed it`,
+      );
+    }
+
+    // Audit is written only now, after the claim actually succeeded — a losing concurrent
+    // request never reaches this line, so the audit trail can never disagree with the final
+    // database state (the confirmed "audit history can disagree with final DB state" finding).
     await this.auditService.log(
       adminUserId,
       'Restaurant',
@@ -837,6 +858,6 @@ export class RestaurantsService {
       await this.eventBus.publish('restaurant.activated', { restaurantId });
     }
 
-    return updated;
+    return this.restaurantsRepository.findRestaurantById(restaurantId);
   }
 }

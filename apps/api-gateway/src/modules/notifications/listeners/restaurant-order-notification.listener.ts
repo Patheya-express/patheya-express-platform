@@ -62,7 +62,10 @@ export class RestaurantOrderNotificationListener implements OnModuleInit {
       });
     });
 
-    this.eventBus.subscribe('order.refunded.restaurant', async (event) => {
+    // Sprint 1.8 — renamed from 'order.refunded.restaurant': the same event now also drives a
+    // customer-facing notification (OrderNotificationListener), so a restaurant-scoped name was
+    // no longer accurate. Payload additionally carries customerId for that second listener.
+    this.eventBus.subscribe('order.refund.completed', async (event) => {
       await this.notifyRestaurant({
         restaurantId: event.restaurantId,
         orderId: event.orderId,

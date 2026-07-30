@@ -94,6 +94,25 @@ export class DeliveryRepository extends BaseRepository {
     });
   }
 
+  /** The ON_DELIVERY→AVAILABLE counterpart to acceptAssignmentAtomic's AVAILABLE→ON_DELIVERY
+   *  claim — conditional, not a plain update: a partner who's OFFLINE/SUSPENDED (e.g. suspended
+   *  mid-delivery, or who force-went-offline) must not be silently pulled back to AVAILABLE just
+   *  because their order finally reached DELIVERED/CANCELLED. `count` tells the caller whether a
+   *  release actually happened. */
+  async releaseFromDelivery(userId: string): Promise<{ count: number }> {
+    return this.prisma.deliveryPartner.updateMany({
+      where: {
+        userId,
+
+        status: DeliveryPartnerStatus.ON_DELIVERY,
+      },
+
+      data: {
+        status: DeliveryPartnerStatus.AVAILABLE,
+      },
+    });
+  }
+
   async getAssignedOrders(userId: string) {
     return this.prisma.order.findMany({
       where: {
@@ -134,26 +153,58 @@ export class DeliveryRepository extends BaseRepository {
     });
   }
 
-  async updatePartnerStatusById(id: string, status: DeliveryPartnerStatus) {
-    return this.prisma.deliveryPartner.update({
+  /**
+   * Sprint 1.9 — the exactly-once claim behind admin operational-status transitions
+   * (suspendPartner/restorePartner/forceOffline), same conditional-updateMany philosophy as
+   * RestaurantsRepository.claimStatusTransition. Replaces the old find-then-update
+   * (updatePartnerStatusById), which let two concurrent admin actions on the same partner (e.g.
+   * suspend racing restore) both pass their JS status check and both write.
+   */
+  async claimPartnerStatus(
+    id: string,
+
+    allowedFromStatuses: DeliveryPartnerStatus[],
+
+    nextStatus: DeliveryPartnerStatus,
+  ): Promise<{ count: number }> {
+    return this.prisma.deliveryPartner.updateMany({
       where: {
         id,
+
+        status: { in: allowedFromStatuses },
       },
 
       data: {
-        status,
+        status: nextStatus,
       },
     });
   }
 
-  async updateVerification(id: string, isVerified: boolean) {
-    return this.prisma.deliveryPartner.update({
+  /**
+   * The legacy-approve/reject counterpart of claimPartnerStatus, for the `isVerified` boolean
+   * gate directly (DeliveryService.approvePartner/rejectPartner — "kept for backward
+   * compatibility" per this field's own schema doc comment). Approve requires isVerified still
+   * false (so a partner can't become APPROVED twice); reject requires isVerified still true
+   * (revoking an approval that's actually in effect) — see DeliveryService for the full reasoning.
+   */
+  async claimVerification(
+    id: string,
+
+    requiredIsVerified: boolean,
+
+    nextIsVerified: boolean,
+  ): Promise<{ count: number }> {
+    return this.prisma.deliveryPartner.updateMany({
       where: {
         id,
+
+        // Prisma's BoolFilter has no `in` — a boolean only ever has the one required value to
+        // condition on here (unlike the enum-status claims elsewhere in this file).
+        isVerified: requiredIsVerified,
       },
 
       data: {
-        isVerified,
+        isVerified: nextIsVerified,
       },
     });
   }

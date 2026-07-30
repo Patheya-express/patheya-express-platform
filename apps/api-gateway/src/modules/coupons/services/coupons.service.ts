@@ -166,6 +166,43 @@ export class CouponsService {
   }
 
   /**
+   * Sprint 1.8 — releases a completed order's coupon usage back to the pool on refund
+   * ("Coupon redemption is never released after refund/cancel", a confirmed production-readiness
+   * finding). A no-op, not an error, when the order never used a coupon, or when this order's
+   * redemption was already released by a concurrent/duplicate refund attempt — the caller
+   * (OrdersService.refundOrder) is already gated by its own order-level exactly-once claim before
+   * this ever runs, but this stays defensively idempotent on its own terms too rather than
+   * depending solely on that caller-side guarantee.
+   */
+  async releaseForOrder(orderId: string): Promise<void> {
+    const redemption =
+      await this.couponsRepository.findRedemptionByOrderId(orderId);
+
+    if (!redemption) {
+      return;
+    }
+
+    try {
+      await this.couponsRepository.releaseRedemption(
+        redemption.couponId,
+        redemption.id,
+      );
+    } catch (error) {
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        (error as { code?: string }).code === 'P2025'
+      ) {
+        // Already released by a concurrent/duplicate call — idempotent no-op.
+        return;
+      }
+
+      throw error;
+    }
+  }
+
+  /**
    * Links the already-reserved ledger row to the real order and sets its final discount amount
    * once the order actually exists — the usage slot itself was already atomically claimed by
    * reserveRedemption(), so this is just bookkeeping (no further eligibility check, no counter

@@ -478,6 +478,36 @@ export class OrdersRepository extends BaseRepository {
   }
 
   /**
+   * Sprint 1.8 — the order-level exactly-once gate for refundOrder, same conditional-updateMany
+   * philosophy as PaymentsRepository.claimStatusTransition. Closes "two admin clicks/duplicate
+   * browser retry both refund the same order": only one concurrent caller's claim can ever match
+   * `status IN allowedFromStatuses`, so only one proceeds to actually move any money (Razorpay
+   * call, wallet credit, coupon release) — every other concurrent caller's claim affects zero
+   * rows and is a clean, cheap no-op. Also used, with the args reversed, as the compensating
+   * revert (REFUNDED→PAID) if the refund attempt fails after this claim already committed — a
+   * single local conditional update, not a saga.
+   */
+  async claimPaymentStatusTransition(
+    orderId: string,
+
+    allowedFromStatuses: PaymentStatus[],
+
+    nextStatus: PaymentStatus,
+  ): Promise<{ count: number }> {
+    return this.prisma.order.updateMany({
+      where: {
+        id: orderId,
+
+        paymentStatus: { in: allowedFromStatuses },
+      },
+
+      data: {
+        paymentStatus: nextStatus,
+      },
+    });
+  }
+
+  /**
    * Everything the restaurant dashboard needs, fetched with server-side aggregation only —
    * bounded to this restaurant (indexed) and a 30-day window, never the restaurant's entire
    * order history. `orderId`-scoped in-memory grouping for "today" counts and peak-hours is done

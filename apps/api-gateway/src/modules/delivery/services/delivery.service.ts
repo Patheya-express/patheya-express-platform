@@ -8,7 +8,12 @@ import {
   forwardRef,
 } from '@nestjs/common';
 
-import { DeliveryPartnerStatus, OrderStatus, UserStatus } from '@prisma/client';
+import {
+  AuditAction,
+  DeliveryPartnerStatus,
+  OrderStatus,
+  UserStatus,
+} from '@prisma/client';
 
 import { DeliveryRepository } from '../repositories/delivery.repository';
 
@@ -25,6 +30,15 @@ import { OrdersService } from '../../orders/services/orders.service';
 import { EventBusService } from '../../../core/events/event-bus.service';
 import { AuthenticatedUser } from '../../../shared/authorization/order-access.util';
 import { AppLoggerService } from '../../../infrastructure/logger/logger.service';
+import { AuditService } from '../../audit/services/audit.service';
+
+/** Every DeliveryPartnerStatus suspendPartner() may legally act on — anything not already
+ *  SUSPENDED, matching the pre-existing JS check this claim replaces exactly. */
+const NON_SUSPENDED_PARTNER_STATUSES: DeliveryPartnerStatus[] = [
+  DeliveryPartnerStatus.OFFLINE,
+  DeliveryPartnerStatus.AVAILABLE,
+  DeliveryPartnerStatus.ON_DELIVERY,
+];
 
 /**
  * Flattens the raw Prisma include shape (user as a full User row) into the documented
@@ -84,6 +98,7 @@ export class DeliveryService {
     private readonly ordersService: OrdersService,
     private readonly eventBus: EventBusService,
     private readonly logger: AppLoggerService,
+    private readonly auditService: AuditService,
   ) {}
 
   async onboardPartner(
@@ -208,6 +223,22 @@ export class DeliveryService {
 
   async getAssignedOrders(userId: string) {
     return this.deliveryRepository.getAssignedOrders(userId);
+  }
+
+  /** Called by OrdersService whenever an order carrying an assigned delivery partner reaches a
+   *  terminal state (DELIVERED, or an admin cancel/force-complete of an order already out for
+   *  delivery) — the other end of the ON_DELIVERY transition acceptAssignmentAtomic makes on
+   *  accept. Without this, a partner who accepted an order would remain ON_DELIVERY (and
+   *  therefore invisible to findAvailablePartners) forever after finishing it. */
+  async releasePartnerFromDelivery(userId: string): Promise<void> {
+    const result = await this.deliveryRepository.releaseFromDelivery(userId);
+
+    if (result.count > 0) {
+      this.logger.log(
+        { event: 'delivery_partner_released_from_delivery', userId },
+        'DeliveryService',
+      );
+    }
   }
 
   /**
@@ -339,47 +370,138 @@ export class DeliveryService {
     return partner;
   }
 
-  /** Approve/Reject operate solely on the isVerified boolean — there is no separate pending/rejected state to validate against. */
-  async approvePartner(deliveryPartnerId: string) {
+  /**
+   * Approve/Reject operate solely on the isVerified boolean — there is no separate
+   * pending/rejected state to validate against (see this field's own schema doc comment — this
+   * legacy pair is kept for backward compatibility; DeliveryVerificationService's stage-based
+   * flow is the primary workflow). Sprint 1.9: made exactly-once by claiming the *current* value
+   * as the precondition — approve requires isVerified still false (closes "partner cannot become
+   * APPROVED twice"), reject requires isVerified still true (revoking an approval that's actually
+   * in effect) — rather than the old unconditional flip, which let two concurrent admin actions
+   * silently overwrite each other with no record of who actually won.
+   */
+  async approvePartner(deliveryPartnerId: string, adminUserId: string) {
     await this.findAdminTarget(deliveryPartnerId);
 
-    return this.deliveryRepository.updateVerification(deliveryPartnerId, true);
+    const claim = await this.deliveryRepository.claimVerification(
+      deliveryPartnerId,
+
+      false,
+
+      true,
+    );
+
+    if (claim.count === 0) {
+      throw new ConflictException('Delivery partner is already approved');
+    }
+
+    await this.auditService.log(
+      adminUserId,
+      'DeliveryPartner',
+      deliveryPartnerId,
+      AuditAction.APPROVE,
+      { isVerified: false },
+      { isVerified: true },
+    );
+
+    return this.findAdminTarget(deliveryPartnerId);
   }
 
-  async rejectPartner(deliveryPartnerId: string) {
+  async rejectPartner(deliveryPartnerId: string, adminUserId: string) {
     await this.findAdminTarget(deliveryPartnerId);
 
-    return this.deliveryRepository.updateVerification(deliveryPartnerId, false);
+    const claim = await this.deliveryRepository.claimVerification(
+      deliveryPartnerId,
+
+      true,
+
+      false,
+    );
+
+    if (claim.count === 0) {
+      throw new ConflictException('Delivery partner is not currently approved');
+    }
+
+    await this.auditService.log(
+      adminUserId,
+      'DeliveryPartner',
+      deliveryPartnerId,
+      AuditAction.REJECT,
+      { isVerified: true },
+      { isVerified: false },
+    );
+
+    return this.findAdminTarget(deliveryPartnerId);
   }
 
-  async suspendPartner(deliveryPartnerId: string) {
+  async suspendPartner(deliveryPartnerId: string, adminUserId: string) {
     const partner = await this.findAdminTarget(deliveryPartnerId);
 
     if (partner.status === DeliveryPartnerStatus.SUSPENDED) {
       throw new BadRequestException('Delivery partner is already suspended');
     }
 
-    return this.deliveryRepository.updatePartnerStatusById(
+    const claim = await this.deliveryRepository.claimPartnerStatus(
       deliveryPartnerId,
+
+      NON_SUSPENDED_PARTNER_STATUSES,
+
       DeliveryPartnerStatus.SUSPENDED,
     );
+
+    if (claim.count === 0) {
+      throw new ConflictException(
+        'Delivery partner is no longer eligible for suspension — a concurrent admin action already changed its status',
+      );
+    }
+
+    await this.auditService.log(
+      adminUserId,
+      'DeliveryPartner',
+      deliveryPartnerId,
+      AuditAction.STATUS_CHANGE,
+      { status: partner.status },
+      { status: DeliveryPartnerStatus.SUSPENDED },
+    );
+
+    return this.findAdminTarget(deliveryPartnerId);
   }
 
-  async restorePartner(deliveryPartnerId: string) {
+  async restorePartner(deliveryPartnerId: string, adminUserId: string) {
     const partner = await this.findAdminTarget(deliveryPartnerId);
 
     if (partner.status !== DeliveryPartnerStatus.SUSPENDED) {
       throw new BadRequestException('Only suspended partners can be restored');
     }
 
-    return this.deliveryRepository.updatePartnerStatusById(
+    const claim = await this.deliveryRepository.claimPartnerStatus(
       deliveryPartnerId,
+
+      [DeliveryPartnerStatus.SUSPENDED],
+
       DeliveryPartnerStatus.OFFLINE,
     );
+
+    if (claim.count === 0) {
+      throw new ConflictException(
+        'Delivery partner is no longer suspended — a concurrent admin action already changed its status',
+      );
+    }
+
+    await this.auditService.log(
+      adminUserId,
+      'DeliveryPartner',
+      deliveryPartnerId,
+      AuditAction.STATUS_CHANGE,
+      { status: DeliveryPartnerStatus.SUSPENDED },
+      { status: DeliveryPartnerStatus.OFFLINE },
+    );
+
+    return this.findAdminTarget(deliveryPartnerId);
   }
 
   /** Admin-scoped variant of goOffline() — targets an arbitrary partner instead of the caller. */
-  async forceOffline(deliveryPartnerId: string) {
+  async forceOffline(deliveryPartnerId: string, adminUserId: string) {
     const partner = await this.findAdminTarget(deliveryPartnerId);
 
     if (
@@ -389,10 +511,30 @@ export class DeliveryService {
       throw new BadRequestException('Delivery partner is not currently online');
     }
 
-    return this.deliveryRepository.updatePartnerStatusById(
+    const claim = await this.deliveryRepository.claimPartnerStatus(
       deliveryPartnerId,
+
+      [DeliveryPartnerStatus.AVAILABLE, DeliveryPartnerStatus.ON_DELIVERY],
+
       DeliveryPartnerStatus.OFFLINE,
     );
+
+    if (claim.count === 0) {
+      throw new ConflictException(
+        'Delivery partner is no longer online — a concurrent action already changed its status',
+      );
+    }
+
+    await this.auditService.log(
+      adminUserId,
+      'DeliveryPartner',
+      deliveryPartnerId,
+      AuditAction.STATUS_CHANGE,
+      { status: partner.status },
+      { status: DeliveryPartnerStatus.OFFLINE },
+    );
+
+    return this.findAdminTarget(deliveryPartnerId);
   }
 
   /** Account-level block, distinct from suspendPartner()'s operational-level suspension — delegates to UsersService, no duplicated status-transition logic. */

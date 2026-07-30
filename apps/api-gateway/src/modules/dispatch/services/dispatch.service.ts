@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
 
 import {
@@ -139,10 +140,16 @@ export class DispatchService {
       partners.map((partner) => partner.userId),
     );
 
+    const activePartnerAssignments =
+      await this.dispatchRepository.findPartnerIdsWithActiveAssignment(
+        partners.map((partner) => partner.id),
+      );
+
     const onlinePartners = partners.filter(
       (partner) =>
         onlineMap.get(partner.userId) === true &&
-        !attemptedPartnerIds.includes(partner.id),
+        !attemptedPartnerIds.includes(partner.id) &&
+        !activePartnerAssignments.has(partner.id),
     );
 
     this.logger.log(
@@ -172,13 +179,33 @@ export class DispatchService {
 
     const partner = onlinePartners[0];
 
-    const assignment = await this.dispatchRepository.createAssignment({
+    const result = await this.dispatchRepository.createAssignmentForOrder({
       orderId,
 
       deliveryPartnerId: partner.id,
 
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+
+      dispatchableStatuses: DISPATCHABLE_ORDER_STATUSES,
     });
+
+    if (!result.created) {
+      // Lost the race — another concurrent assignOrder() call (duplicate order.ready delivery,
+      // a simultaneous redispatch trigger, or a manual admin assignment) already claimed this
+      // order first. Same idempotent-no-op contract as the pre-existing early-exit checks above.
+      this.logger.log(
+        {
+          event: 'dispatch_assignment_skipped',
+          reason: result.reason,
+          orderId,
+        },
+        'DispatchService',
+      );
+
+      return null;
+    }
+
+    const assignment = result.assignment;
 
     this.logger.log(
       {
@@ -275,10 +302,6 @@ export class DispatchService {
       throw new ForbiddenException('Assignment does not belong to you');
     }
 
-    if (assignment.status !== AssignmentStatus.PENDING) {
-      throw new BadRequestException('Only pending assignments can be accepted');
-    }
-
     // EDPH-1 online-protection, defense-in-depth: assignments are only ever created for
     // partners findAvailablePartners() already filtered to isVerified+AVAILABLE, but re-check
     // here too so a partner who loses verification/gets suspended mid-assignment can't accept.
@@ -291,17 +314,38 @@ export class DispatchService {
       );
     }
 
-    await this.dispatchRepository.updateAssignmentStatus(
+    // The authoritative check: assignment.status above is a pre-fetched snapshot, not proof the
+    // row is still PENDING right now — a concurrent accept, reject, or the expiry processor may
+    // have already claimed it. acceptAssignmentAtomic re-verifies and claims the assignment,
+    // the partner, and the order together, atomically; nothing about "am I allowed to accept"
+    // is trusted from the read above.
+    const result = await this.dispatchRepository.acceptAssignmentAtomic({
       assignmentId,
 
-      AssignmentStatus.ACCEPTED,
-    );
+      deliveryPartnerId: partner.id,
 
-    await this.dispatchRepository.assignOrderToPartner(
-      assignment.orderId,
+      deliveryPartnerUserId: partner.userId,
 
-      partner.userId,
-    );
+      orderId: assignment.orderId,
+    });
+
+    if (!result.accepted) {
+      if (result.reason === 'assignment_not_pending') {
+        throw new BadRequestException(
+          'Only pending assignments can be accepted',
+        );
+      }
+
+      if (result.reason === 'partner_not_available') {
+        throw new ConflictException(
+          'You are no longer available to accept this assignment',
+        );
+      }
+
+      throw new ConflictException(
+        'This order already has a delivery partner assigned',
+      );
+    }
 
     this.logger.log(
       {
@@ -358,15 +402,20 @@ export class DispatchService {
       throw new ForbiddenException('Assignment does not belong to you');
     }
 
-    if (assignment.status !== AssignmentStatus.PENDING) {
-      throw new BadRequestException('Only pending assignments can be rejected');
-    }
-
-    await this.dispatchRepository.updateAssignmentStatus(
+    // Same TOCTOU close as acceptAssignment: the row's real status is claimed atomically here,
+    // not trusted from the read above (a concurrent accept or the expiry processor may have
+    // already claimed it).
+    const claim = await this.dispatchRepository.claimAssignmentTransition(
       assignmentId,
+
+      [AssignmentStatus.PENDING],
 
       AssignmentStatus.REJECTED,
     );
+
+    if (claim.count === 0) {
+      throw new BadRequestException('Only pending assignments can be rejected');
+    }
 
     this.logger.log(
       {

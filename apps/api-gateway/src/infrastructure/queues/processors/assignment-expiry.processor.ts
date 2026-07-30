@@ -47,13 +47,19 @@ export class AssignmentExpiryProcessor extends WorkerHost {
       return;
     }
 
-    if (assignment.status === AssignmentStatus.PENDING) {
-      await this.dispatchRepository.updateAssignmentStatus(
-        assignment.id,
+    // Claim, don't trust the read above — a partner's acceptAssignment (or a reject) may be
+    // committing concurrently right now. Only the caller whose claim actually flips the row
+    // (count === 1) is allowed to fire the expiry side effects; the loser silently no-ops rather
+    // than expiring an assignment that was, in fact, just accepted a moment before.
+    const claim = await this.dispatchRepository.claimAssignmentTransition(
+      assignment.id,
 
-        AssignmentStatus.EXPIRED,
-      );
+      [AssignmentStatus.PENDING],
 
+      AssignmentStatus.EXPIRED,
+    );
+
+    if (claim.count === 1) {
       this.logger.log(
         {
           event: 'dispatch_assignment_expired',
