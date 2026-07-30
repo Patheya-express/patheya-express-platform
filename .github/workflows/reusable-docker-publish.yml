@@ -119,7 +119,7 @@ jobs:
       # verifiable claim from the Sigstore signature above (docs/signing-guide.md explains why both
       # exist: this is provenance *about* the build, Sigstore is the admission-time trust anchor).
       - name: Generate SLSA provenance attestation
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ${{ steps.build.outputs.image-uri }}
           subject-digest: ${{ steps.build.outputs.image-digest }}
