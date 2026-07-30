@@ -6,6 +6,10 @@ import { AssignmentStatus, AuditAction } from '@prisma/client';
 
 import { DispatchRepository } from '../../../modules/dispatch/repositories/dispatch.repository';
 
+import { DispatchService } from '../../../modules/dispatch/services/dispatch.service';
+
+import { DispatchReconciliationService } from '../../../modules/dispatch/services/dispatch-reconciliation.service';
+
 import { EventBusService } from '../../../core/events/event-bus.service';
 
 import { RealtimeService } from '../../../modules/realtime/services/realtime.service';
@@ -18,10 +22,32 @@ interface AssignmentExpiryJobData {
   assignmentId: string;
 }
 
+interface DispatchAssignmentJobData {
+  orderId: string;
+  sourceEvent: string;
+}
+
+/**
+ * The single Worker for the `dispatch` queue — every job name on this queue must be handled here
+ * (not in a second `@Processor('dispatch')` class), since `@nestjs/bullmq` creates one independent
+ * BullMQ `Worker` per decorated class: two classes on the same queue name would mean two workers
+ * both consuming from it, silently doubling `dispatch`'s concurrency and Redis connections rather
+ * than sharing one. `dispatch-assignment` (Production Readiness Stage A — Event Reliability) was
+ * added here for that reason: `DispatchListener` used to call `DispatchService.assignOrder()`
+ * directly and synchronously from its `EventBusService` handler, with no retry if that call
+ * failed transiently; it now enqueues this job instead (`QueueService.addDispatchAssignmentJob`),
+ * giving the same call BullMQ's durability and retry/backoff. `dispatch-reconciliation`
+ * (Production Readiness Stage A — Crash Recovery) is the periodic re-scan for orders a
+ * `dispatch-assignment` job never successfully assigned (see `DispatchReconciliationService`).
+ */
 @Processor('dispatch')
 export class AssignmentExpiryProcessor extends WorkerHost {
   constructor(
     private readonly dispatchRepository: DispatchRepository,
+
+    private readonly dispatchService: DispatchService,
+
+    private readonly dispatchReconciliationService: DispatchReconciliationService,
 
     private readonly eventBus: EventBusService,
 
@@ -34,13 +60,39 @@ export class AssignmentExpiryProcessor extends WorkerHost {
     super();
   }
 
-  async process(job: Job<AssignmentExpiryJobData>) {
+  async process(job: Job<AssignmentExpiryJobData | DispatchAssignmentJobData>) {
+    if (job.name === 'dispatch-reconciliation') {
+      await this.dispatchReconciliationService.reconcileStrandedAssignments();
+
+      return;
+    }
+
+    if (job.name === 'dispatch-assignment') {
+      const data = job.data as DispatchAssignmentJobData;
+
+      this.logger.log(
+        {
+          event: 'dispatch_assignment_job_started',
+          orderId: data.orderId,
+          sourceEvent: data.sourceEvent,
+          attempt: job.attemptsMade + 1,
+        },
+        'AssignmentExpiryProcessor',
+      );
+
+      await this.dispatchService.assignOrder(data.orderId);
+
+      return;
+    }
+
     if (job.name !== 'assignment-expiry') {
       return;
     }
 
+    const expiryData = job.data as AssignmentExpiryJobData;
+
     const assignment = await this.dispatchRepository.findAssignmentById(
-      job.data.assignmentId,
+      expiryData.assignmentId,
     );
 
     if (!assignment) {

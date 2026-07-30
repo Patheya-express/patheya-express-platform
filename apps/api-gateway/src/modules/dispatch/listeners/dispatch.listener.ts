@@ -2,16 +2,28 @@ import { Injectable, OnModuleInit } from '@nestjs/common';
 
 import { EventBusService } from '../../../core/events/event-bus.service';
 
-import { DispatchService } from '../services/dispatch.service';
+import { QueueService } from '../../../infrastructure/queues/queue.service';
 
 import { AppLoggerService } from '../../../infrastructure/logger/logger.service';
 
+/**
+ * Production Readiness Stage A (Event Reliability): previously called
+ * `DispatchService.assignOrder()` directly, in-process — `EventBusService.publish()` only logs a
+ * handler's rejection (see its own doc comment), so a transient failure here (a momentary DB blip
+ * while `assignOrder()` queries available partners, for example) silently dropped the assignment
+ * attempt forever, with nothing else in the system re-scanning for "an order ready for pickup
+ * with no delivery partner" the way `PaymentReconciliationService` already re-scans pending
+ * payments every 5 minutes. Each event now enqueues a `dispatch-assignment` job
+ * (`QueueService.addDispatchAssignmentJob`) instead, handled by `AssignmentExpiryProcessor` —
+ * same `assignOrder()` call, same idempotent behavior, now with BullMQ's durability and
+ * retry/backoff (`QueueInfrastructureModule`'s `defaultJobOptions`) covering the transient case.
+ */
 @Injectable()
 export class DispatchListener implements OnModuleInit {
   constructor(
     private readonly eventBus: EventBusService,
 
-    private readonly dispatchService: DispatchService,
+    private readonly queueService: QueueService,
 
     private readonly logger: AppLoggerService,
   ) {}
@@ -30,7 +42,10 @@ export class DispatchListener implements OnModuleInit {
           'DispatchListener',
         );
 
-        await this.dispatchService.assignOrder(event.orderId);
+        await this.queueService.addDispatchAssignmentJob(
+          event.orderId,
+          'order.ready',
+        );
       },
     );
 
@@ -48,7 +63,10 @@ export class DispatchListener implements OnModuleInit {
           'DispatchListener',
         );
 
-        await this.dispatchService.assignOrder(event.orderId);
+        await this.queueService.addDispatchAssignmentJob(
+          event.orderId,
+          'dispatch.assignment.rejected',
+        );
       },
     );
 
@@ -66,7 +84,10 @@ export class DispatchListener implements OnModuleInit {
           'DispatchListener',
         );
 
-        await this.dispatchService.assignOrder(event.orderId);
+        await this.queueService.addDispatchAssignmentJob(
+          event.orderId,
+          'dispatch.assignment.expired',
+        );
       },
     );
   }

@@ -46,6 +46,49 @@ export class QueueService {
       },
     );
   }
+
+  /**
+   * Production Readiness Stage A (Event Reliability): `DispatchListener` used to call
+   * `DispatchService.assignOrder()` directly from its `EventBusService` handler — in-memory,
+   * fire-and-forget, no retry. Since `EventBusService.publish()` catches and only *logs* a
+   * handler's rejection, a transient failure (a momentary DB blip while querying available
+   * partners, for example) silently dropped the assignment attempt forever: nothing else in the
+   * system re-scans for "an order that's `READY_FOR_PICKUP` with no delivery partner assigned"
+   * (unlike payments, which `PaymentReconciliationService` already re-scans every 5 minutes).
+   * Routing this through the `dispatch` queue instead gives it BullMQ's durability (the job
+   * survives a process crash once enqueued) and the retry/backoff `QueueInfrastructureModule`'s
+   * `defaultJobOptions` now applies. `DispatchAssignmentProcessor` calls the exact same
+   * `DispatchService.assignOrder()` — already documented and written to be idempotent/safe to
+   * call repeatedly for the same order — so retries (or this job racing the same order via a
+   * different trigger) are safe by construction, not something this change had to add.
+   */
+  async addDispatchAssignmentJob(orderId: string, sourceEvent: string) {
+    return this.dispatchQueue.add('dispatch-assignment', {
+      orderId,
+      sourceEvent,
+    });
+  }
+
+  /**
+   * Production Readiness Stage A (Crash Recovery) — same repeatable-job pattern as
+   * `addPaymentReconciliationJob`, applied to `DispatchReconciliationService`'s periodic re-scan
+   * for stranded ready-for-pickup orders.
+   */
+  async addDispatchReconciliationJob() {
+    return this.dispatchQueue.upsertJobScheduler(
+      'dispatch-reconciliation',
+
+      {
+        every: 5 * 60 * 1000,
+      },
+
+      {
+        name: 'dispatch-reconciliation',
+
+        data: {},
+      },
+    );
+  }
   /**
    * Delayed one-shot job, same pattern as addAssignmentExpiryJob — but the delay is dynamic
    * (per-restaurant RestaurantSettings.acceptanceTimeoutMinutes) rather than a fixed constant.
