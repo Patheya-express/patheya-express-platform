@@ -96,6 +96,18 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+          # Production Readiness Stage D: without this, SIGTERM can reach the app (main.ts's own
+          # graceful-shutdown handling starts draining immediately) before kube-proxy/iptables on
+          # every node has finished removing this pod from the Service's Endpoints — a real,
+          # well-known race that briefly sends new traffic to a pod that's already closing its
+          # listener. Delaying actual SIGTERM delivery while the pod is already NotReady (removed
+          # from Endpoints, but the process is still up and serving) closes that gap. 5s is
+          # comfortably inside terminationGracePeriodSeconds (30s) and the app's own
+          # SHUTDOWN_TIMEOUT_MS (10s default) that runs after this.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 5"]
           # Covers slow cold starts (Prisma engine init, first Redis connect) without letting a
           # merely-slow-starting pod get killed by the (much stricter) liveness probe.
           startupProbe:

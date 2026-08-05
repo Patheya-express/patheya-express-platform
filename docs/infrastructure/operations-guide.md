@@ -36,6 +36,10 @@ emission but never accepts inbound Socket.IO connections itself.
 | `patheya_storage_upload_duration_seconds`/`upload_failures_total`/`download_failures_total` | Storage provider health — see `incident-runbooks.md`'s "Storage outage" runbook |
 | `patheya_redis_active_connections`/`reconnect_count`/`disconnect_count`/`auth_failure_count`/`average_ping_ms` | Bridged from `RedisMetricsService`'s in-memory counters — see `incident-runbooks.md`'s "Redis outage" runbook |
 | `patheya_prisma_query_duration_seconds`/`query_errors_total` | Database query latency/error rate — see `incident-runbooks.md`'s "Database outage" runbook |
+| `patheya_event_bus_events_published_total{event}`/`handler_failures_total{event}` | EventBusService publish volume/failure rate — the only Prometheus visibility into the in-process pub/sub mechanism most domain listeners (wallet, onboarding, notifications) run through |
+| `patheya_payment_reconciliation_runs_total`/`errors_total`/`pending_after_sweep` | Whether the payment reconciliation sweep is actually resolving stuck payments — `pending_after_sweep` staying non-zero across runs is the signal, not just "the job completed" |
+| `patheya_razorpay_api_call_duration_seconds{operation}`/`failures_total{operation}` | Razorpay SDK call latency/failures specifically — distinguishes "Razorpay is slow/erroring" from a bug in our own verification logic |
+| `patheya_support_agents_online`/`patheya_delivery_partners_online` | Live count from the Redis presence sets — a leading indicator for dispatch capacity |
 | `patheya_process_*` | Node process defaults (`prom-client`'s `collectDefaultMetrics`) — event loop lag, heap, GC |
 
 Full per-scenario triage using these metrics lives in [`incident-runbooks.md`](incident-runbooks.md)
