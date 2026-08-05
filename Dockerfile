@@ -71,9 +71,18 @@ RUN addgroup -S app && adduser -S app -G app && chown -R app:app /workspace
 
 USER app
 
-WORKDIR /workspace
+# Deployment audit finding (Production hardening — Render migration automation): the previous
+# `pnpm --filter api-gateway exec prisma` entrypoint fails outside a TTY —
+# `[ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY]`, pnpm's own dependency-status check trying to
+# interactively confirm a node_modules purge and aborting instead — reproduced against a real
+# build of this exact stage, unrelated to any other change; a real `kubectl run`/ArgoCD PreSync
+# Job has no TTY either, so this was silently broken for that path too, not just discovered here.
+# Invoking the already-resolved `prisma` binary directly sidesteps pnpm's CLI wrapper entirely —
+# verified working end-to-end (a real `migrate deploy` against a real, deliberately-behind
+# Postgres database) from this exact WORKDIR.
+WORKDIR /workspace/apps/api-gateway
 
-ENTRYPOINT ["pnpm", "--filter", "api-gateway", "exec", "prisma"]
+ENTRYPOINT ["node_modules/.bin/prisma"]
 
 CMD ["migrate", "deploy"]
 

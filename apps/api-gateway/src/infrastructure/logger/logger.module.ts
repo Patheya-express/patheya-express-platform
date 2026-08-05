@@ -2,10 +2,12 @@ import { Global, Module } from '@nestjs/common';
 
 import { AppLoggerService } from './logger.service';
 
+import { RequestContextService } from '../../common/request-context/request-context.service';
+
 @Global()
 @Module({
-  providers: [AppLoggerService],
+  providers: [AppLoggerService, RequestContextService],
 
-  exports: [AppLoggerService],
+  exports: [AppLoggerService, RequestContextService],
 })
 export class LoggerModule {}

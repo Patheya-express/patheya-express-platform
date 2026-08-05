@@ -1,8 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 
 import Razorpay from 'razorpay';
 
 import * as crypto from 'crypto';
+
+import { MetricsService } from '../../metrics/metrics.service';
 
 /**
  * Constant-time signature comparison — a plain `===` leaks timing information proportional to
@@ -26,7 +28,11 @@ function timingSafeEqualStrings(a: string, b: string): boolean {
 export class RazorpayProvider {
   private readonly razorpay: Razorpay;
 
-  constructor() {
+  constructor(
+    // Optional so razorpay.provider.spec.ts's `new RazorpayProvider()` (no args) keeps working.
+    @Optional()
+    private readonly metrics?: MetricsService,
+  ) {
     this.razorpay = new Razorpay({
       key_id: process.env.RAZORPAY_KEY_ID!,
 
@@ -34,14 +40,49 @@ export class RazorpayProvider {
     });
   }
 
+  /**
+   * Production Readiness Stage D (Observability): times and counts failures for the real
+   * Razorpay SDK call itself — distinct from patheya_payment_latency_seconds (a business-flow
+   * duration from Payment.createdAt to the success/failure event, which also includes DB writes
+   * and webhook round-trip time from the customer's device). This is what lets "Razorpay is
+   * slow/erroring" be distinguished from "our own verification/reconciliation logic has a bug."
+   */
+  private async timedCall<T>(
+    operation: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const start = Date.now();
+
+    try {
+      const result = await fn();
+
+      this.metrics?.observeRazorpayApiCall(
+        operation,
+        (Date.now() - start) / 1000,
+      );
+
+      return result;
+    } catch (error) {
+      this.metrics?.observeRazorpayApiCall(
+        operation,
+        (Date.now() - start) / 1000,
+      );
+      this.metrics?.recordRazorpayApiCallFailure(operation);
+
+      throw error;
+    }
+  }
+
   async createOrder(amount: number, receipt: string) {
-    return this.razorpay.orders.create({
-      amount: amount * 100,
+    return this.timedCall('createOrder', () =>
+      this.razorpay.orders.create({
+        amount: amount * 100,
 
-      currency: 'INR',
+        currency: 'INR',
 
-      receipt,
-    });
+        receipt,
+      }),
+    );
   }
 
   verifySignature(payload: any): boolean {
@@ -78,18 +119,20 @@ export class RazorpayProvider {
   }
 
   async refund(paymentId: string, amount: number) {
-    return this.razorpay.payments.refund(
-      paymentId,
-
-      {
+    return this.timedCall('refund', () =>
+      this.razorpay.payments.refund(paymentId, {
         amount: amount * 100,
-      },
+      }),
     );
   }
   async fetchPayment(providerPaymentId: string) {
-    return this.razorpay.payments.fetch(providerPaymentId);
+    return this.timedCall('fetchPayment', () =>
+      this.razorpay.payments.fetch(providerPaymentId),
+    );
   }
   async fetchOrderPayments(providerOrderId: string) {
-    return this.razorpay.orders.fetchPayments(providerOrderId);
+    return this.timedCall('fetchOrderPayments', () =>
+      this.razorpay.orders.fetchPayments(providerOrderId),
+    );
   }
 }

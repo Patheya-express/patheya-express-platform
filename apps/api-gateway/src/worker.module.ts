@@ -12,6 +12,8 @@ import { LoggerModule } from './infrastructure/logger/logger.module';
 
 import { RedisModule } from './infrastructure/redis/redis.module';
 
+import { RedisInfrastructureModule } from './infrastructure/redis-infrastructure/redis-infrastructure.module';
+
 import { StorageModule } from './modules/storage/storage.module';
 
 import { RealtimeModule } from './modules/realtime/realtime.module';
@@ -20,7 +22,9 @@ import { HealthModule } from './modules/health/health.module';
 
 import { MetricsModule } from './modules/metrics/metrics.module';
 
-import { QueuesModule } from './infrastructure/queues/queues.module';
+import { QueueInfrastructureModule } from './infrastructure/queues/queue-infrastructure.module';
+import { QueueProducerModule } from './infrastructure/queues/queue-producer.module';
+import { QueueWorkerModule } from './infrastructure/queues/queue-worker.module';
 
 import { EventsModule } from './modules/events/events.module';
 
@@ -33,11 +37,14 @@ import { EventsModule } from './modules/events/events.module';
  *
  * Deliberately excludes every business HTTP controller module (`AuthModule`, `OrdersModule`'s own
  * controllers, etc.) and `ThrottlerModule` — this process never serves customer/restaurant/admin
- * traffic, only the three BullMQ processors (`QueuesModule` already imports `DispatchModule`/
- * `NotificationsModule`/`OrdersModule` for their processors' own service dependencies) and a
- * minimal `/api/v1/health/*` surface for Kubernetes probes (`HealthModule`).
+ * traffic, only the three BullMQ processors `QueueWorkerModule` declares (which itself imports
+ * `DispatchModule`/`NotificationsModule`/`OrdersModule` for their processors' own service
+ * dependencies) and a minimal `/api/v1/health/*` surface for Kubernetes probes (`HealthModule`).
+ * `QueueWorkerModule` is imported only here, never by `AppModule` — that's what stops API pods
+ * from also instantiating BullMQ Workers (the queue-architecture producer/consumer refactor's
+ * whole point; see that report for the before/after connection counts).
  *
- * `RealtimeModule` is still imported: `QueuesModule`'s processors (via `OrdersService`/
+ * `RealtimeModule` is still imported: `QueueWorkerModule`'s processors (via `OrdersService`/
  * `NotificationsService`/`DispatchRepository`) emit Socket.IO events to notify connected clients
  * of state changes a background job caused (e.g. an order-acceptance timeout escalating) — those
  * services depend on `RealtimeService` regardless of which process runs them. The worker's own
@@ -48,7 +55,7 @@ import { EventsModule } from './modules/events/events.module';
  * `EventsModule` is imported directly here too: it's `@Global()`, but that only broadcasts
  * `EventBusService` within the module graph it's actually part of. This process boots a wholly
  * separate Nest application context from `WorkerModule` (not `AppModule`), so without this import
- * `QueuesModule` -> `NotificationsModule`'s `OrderNotificationListener`/
+ * `QueueWorkerModule` -> `NotificationsModule`'s `OrderNotificationListener`/
  * `RestaurantOrderNotificationListener` (both inject `EventBusService`) fail DI resolution here
  * even though the same providers resolve fine in the api-gateway process.
  */
@@ -63,12 +70,15 @@ import { EventsModule } from './modules/events/events.module';
     PrismaModule,
     LoggerModule,
     RedisModule,
+    RedisInfrastructureModule,
     StorageModule,
     MetricsModule,
     RealtimeModule,
     HealthModule,
     EventsModule,
-    QueuesModule,
+    QueueInfrastructureModule,
+    QueueProducerModule,
+    QueueWorkerModule,
   ],
 })
 export class WorkerModule {}

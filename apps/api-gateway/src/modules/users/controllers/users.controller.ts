@@ -296,8 +296,11 @@ export class UsersController {
   activateUser(
     @Param('id')
     id: string,
+
+    @CurrentUser()
+    user: any,
   ) {
-    return this.usersService.activateUser(id);
+    return this.usersService.activateUser(id, user.userId);
   }
 
   @ApiBearerAuth('JWT-auth')
@@ -360,7 +363,10 @@ export class UsersController {
   restoreUser(
     @Param('id')
     id: string,
+
+    @CurrentUser()
+    user: any,
   ) {
-    return this.usersService.restoreUser(id);
+    return this.usersService.restoreUser(id, user.userId);
   }
 }

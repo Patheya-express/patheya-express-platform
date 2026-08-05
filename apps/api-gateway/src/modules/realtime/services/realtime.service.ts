@@ -2,9 +2,14 @@ import { Injectable } from '@nestjs/common';
 
 import { RealtimeGateway } from '../gateways/realtime.gateway';
 
+import { MetricsService } from '../../metrics/metrics.service';
+
 @Injectable()
 export class RealtimeService {
-  constructor(private readonly gateway: RealtimeGateway) {}
+  constructor(
+    private readonly gateway: RealtimeGateway,
+    private readonly metrics: MetricsService,
+  ) {}
 
   emitToUser(
     userId: string,
@@ -13,6 +18,9 @@ export class RealtimeService {
 
     payload: any,
   ) {
+    this.metrics.recordSocketBroadcast('user');
+    this.metrics.recordSocketEventEmitted(event);
+
     this.gateway.server.to(`user:${userId}`).emit(
       event,
 
@@ -27,6 +35,9 @@ export class RealtimeService {
 
     payload: any,
   ) {
+    this.metrics.recordSocketBroadcast('restaurant');
+    this.metrics.recordSocketEventEmitted(event);
+
     this.gateway.server.to(`restaurant:${restaurantId}`).emit(
       event,
 
@@ -41,6 +52,9 @@ export class RealtimeService {
 
     payload: any,
   ) {
+    this.metrics.recordSocketBroadcast('order');
+    this.metrics.recordSocketEventEmitted(event);
+
     this.gateway.server.to(`order:${orderId}`).emit(
       event,
 
@@ -50,6 +64,9 @@ export class RealtimeService {
 
   /** Generic room emitter for rooms without a dedicated helper above (e.g. `ticket:<id>`, `support-queue`). */
   emitToRoom(room: string, event: string, payload: any) {
+    this.metrics.recordSocketBroadcast('other');
+    this.metrics.recordSocketEventEmitted(event);
+
     this.gateway.server.to(room).emit(event, payload);
   }
 

@@ -2,24 +2,23 @@ import { Module } from '@nestjs/common';
 
 import { SearchController } from './controllers/search.controller';
 import { SearchService } from './services/search.service';
-import { SearchRepository } from './repositories/search.repository';
-import { TrendingSearchProcessor } from './jobs/trending-search.processor';
-import { TrendingSearchBootstrap } from './jobs/trending-search.bootstrap';
 
 import { RestaurantsModule } from '../restaurants/restaurants.module';
 import { MenuModule } from '../menu/menu.module';
+import { SearchCoreModule } from './search-core.module';
 
+/**
+ * HTTP-facing half of the search feature — controller + `SearchService`. `SearchRepository`
+ * lives in `SearchCoreModule`, shared with `SearchWorkerModule` rather than duplicated.
+ * `TrendingSearchProcessor`/`TrendingSearchBootstrap` moved to `SearchWorkerModule` (imported
+ * only by the worker process) so this module no longer instantiates a BullMQ Worker.
+ */
 @Module({
-  imports: [RestaurantsModule, MenuModule],
+  imports: [RestaurantsModule, MenuModule, SearchCoreModule],
 
   controllers: [SearchController],
 
-  providers: [
-    SearchService,
-    SearchRepository,
-    TrendingSearchProcessor,
-    TrendingSearchBootstrap,
-  ],
+  providers: [SearchService],
 
   exports: [SearchService],
 })

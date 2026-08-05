@@ -15,15 +15,19 @@ import {
 
 import { Server, Socket } from 'socket.io';
 
-import Redis from 'ioredis';
-
 import { createAdapter } from '@socket.io/redis-adapter';
 
 import { UserRole } from '@prisma/client';
 
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
 
-import { getRedisConnectionOptions } from '../../../infrastructure/redis/redis-connection.config';
+import { RedisConnectionFactory } from '../../../infrastructure/redis-infrastructure/redis-connection-factory.service';
+
+import { RedisConnectionType } from '../../../infrastructure/redis-infrastructure/enums/redis-connection-type.enum';
+
+import { RedisConnectionName } from '../../../infrastructure/redis-infrastructure/enums/redis-connection-name.enum';
+
+import { MetricsService } from '../../metrics/metrics.service';
 
 import {
   AuthenticatedUser,
@@ -105,6 +109,10 @@ export class RealtimeGateway
     private readonly jwtService: JwtService,
 
     private readonly prisma: PrismaService,
+
+    private readonly redisConnectionFactory: RedisConnectionFactory,
+
+    private readonly metrics: MetricsService,
   ) {}
 
   /**
@@ -116,10 +124,35 @@ export class RealtimeGateway
    * the customer tracking them) ever land on the same pod. Two dedicated ioredis connections
    * (never the shared `RedisService`/BullMQ connections — the adapter's pub/sub subscriber
    * connection cannot issue any other command once subscribed, so it must never be shared).
+   *
+   * Connection creation moved onto `RedisConnectionFactory` (Redis Infrastructure migration).
+   * `createConnection()` builds its options via `RedisConfigurationService.getDefaultOptions()` —
+   * the same `getRedisConnectionOptions()` this file used to call directly — so `pubClient` is
+   * constructed identically to before. `duplicateConnection()` calls `pubClient.duplicate()`
+   * internally (verified in `@socket.io/redis-adapter`'s own source: `createAdapter` stores
+   * whatever clients it's given and calls `.publish()`/`.subscribe()`/`.on('error', ...)` on them
+   * directly — no further wrapping or duplication of its own), so `subClient` is the exact same
+   * kind of duplicate as `pubClient.duplicate()` produced before. The only difference is that both
+   * are now registered with the Redis connection registry and instrumented — observational
+   * additions, not behavior changes.
    */
   afterInit(server: Server): void {
-    const pubClient = new Redis(getRedisConnectionOptions());
-    const subClient = pubClient.duplicate();
+    const pubClient = this.redisConnectionFactory.createConnection({
+      name: RedisConnectionName.SOCKETIO_PUBLISHER,
+      type: RedisConnectionType.SOCKETIO_PUBLISHER,
+      owner: 'RealtimeGateway',
+      purpose: 'Socket.IO Redis adapter publisher',
+    });
+
+    const subClient = this.redisConnectionFactory.duplicateConnection(
+      pubClient,
+      {
+        name: RedisConnectionName.SOCKETIO_SUBSCRIBER,
+        type: RedisConnectionType.SOCKETIO_SUBSCRIBER,
+        owner: 'RealtimeGateway',
+        purpose: 'Socket.IO Redis adapter subscriber',
+      },
+    );
 
     server.adapter(createAdapter(pubClient, subClient));
 
@@ -153,6 +186,12 @@ export class RealtimeGateway
         role: payload.role,
       } satisfies AuthenticatedUser;
 
+      // Only successfully authenticated connections count — a rejected connection is disconnected
+      // immediately below in the catch/unauthenticated branches too, and `handleDisconnect` fires
+      // for those as well, so counting/decrementing must both key off the same condition
+      // (`client.data.user` being set) to avoid the gauge ever drifting negative.
+      this.metrics.recordSocketConnection();
+
       this.logger.log(`Connected: ${client.id} (user ${payload.sub})`);
     } catch {
       this.logger.warn(`Rejected connection with invalid token: ${client.id}`);
@@ -161,6 +200,10 @@ export class RealtimeGateway
   }
 
   handleDisconnect(client: Socket) {
+    if (client.data.user) {
+      this.metrics.recordSocketDisconnection();
+    }
+
     this.logger.log(`Disconnected: ${client.id}`);
   }
 

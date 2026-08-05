@@ -1,7 +1,8 @@
-import { Injectable, LoggerService } from '@nestjs/common';
+import { Injectable, LoggerService, Optional } from '@nestjs/common';
 
 import { winstonConfig } from './logger.config';
 import { redactSensitiveFields } from './redact.util';
+import { RequestContextService } from '../../common/request-context/request-context.service';
 
 /** Every structured log call goes through this — see redact.util.ts for exactly what's redacted
  *  and why. `context`/`trace` are passed through unredacted (always plain strings supplied by
@@ -17,11 +18,33 @@ function redactedPayload(message: unknown): Record<string, unknown> {
 
 @Injectable()
 export class AppLoggerService implements LoggerService {
+  constructor(
+    // Optional so logger.service.spec.ts's `new AppLoggerService()` (no args) keeps working —
+    // only the real DI-constructed instance (via the @Global() LoggerModule) has this available.
+    @Optional()
+    private readonly requestContext?: RequestContextService,
+  ) {}
+
+  /** Merges the current request's correlation ID (if any — e.g. a BullMQ worker log has none)
+   *  into every log line, without requiring any of this codebase's existing log call sites to
+   *  pass it explicitly. A call site's own explicit `requestId` field always wins. */
+  private withRequestId(
+    payload: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const requestId = this.requestContext?.getRequestId();
+
+    if (requestId === undefined || payload.requestId !== undefined) {
+      return payload;
+    }
+
+    return { requestId, ...payload };
+  }
+
   log(message: any, context?: string) {
     winstonConfig.info({
       context,
 
-      ...redactedPayload(message),
+      ...this.withRequestId(redactedPayload(message)),
     });
   }
 
@@ -37,7 +60,7 @@ export class AppLoggerService implements LoggerService {
 
       trace,
 
-      ...redactedPayload(message),
+      ...this.withRequestId(redactedPayload(message)),
     });
   }
 
@@ -45,7 +68,7 @@ export class AppLoggerService implements LoggerService {
     winstonConfig.warn({
       context,
 
-      ...redactedPayload(message),
+      ...this.withRequestId(redactedPayload(message)),
     });
   }
 
@@ -53,7 +76,7 @@ export class AppLoggerService implements LoggerService {
     winstonConfig.debug({
       context,
 
-      ...redactedPayload(message),
+      ...this.withRequestId(redactedPayload(message)),
     });
   }
 
@@ -61,7 +84,7 @@ export class AppLoggerService implements LoggerService {
     winstonConfig.verbose({
       context,
 
-      ...redactedPayload(message),
+      ...this.withRequestId(redactedPayload(message)),
     });
   }
 }

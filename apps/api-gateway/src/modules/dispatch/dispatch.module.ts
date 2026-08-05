@@ -2,21 +2,18 @@ import { Module } from '@nestjs/common';
 
 import { DispatchController } from './controllers/dispatch.controller';
 
-import { DispatchService } from './services/dispatch.service';
+import { DispatchCoreModule } from './dispatch-core.module';
 
-import { DispatchRepository } from './repositories/dispatch.repository';
-
-import { DispatchListener } from './listeners/dispatch.listener';
-import { PresenceModule } from '../presence/presence.module';
-import { AuditModule } from '../audit/audit.module';
-
+/**
+ * HTTP-facing half of the dispatch feature — controller only. `DispatchService`/
+ * `DispatchRepository`/`DispatchListener` live in `DispatchCoreModule`, re-exported here so
+ * existing consumers of `DispatchModule` keep working unchanged.
+ */
 @Module({
-  imports: [PresenceModule, AuditModule],
+  imports: [DispatchCoreModule],
 
   controllers: [DispatchController],
 
-  providers: [DispatchService, DispatchRepository, DispatchListener],
-
-  exports: [DispatchService, DispatchRepository],
+  exports: [DispatchCoreModule],
 })
 export class DispatchModule {}

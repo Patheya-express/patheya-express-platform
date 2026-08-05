@@ -46,6 +46,49 @@ export class QueueService {
       },
     );
   }
+
+  /**
+   * Production Readiness Stage A (Event Reliability): `DispatchListener` used to call
+   * `DispatchService.assignOrder()` directly from its `EventBusService` handler — in-memory,
+   * fire-and-forget, no retry. Since `EventBusService.publish()` catches and only *logs* a
+   * handler's rejection, a transient failure (a momentary DB blip while querying available
+   * partners, for example) silently dropped the assignment attempt forever: nothing else in the
+   * system re-scans for "an order that's `READY_FOR_PICKUP` with no delivery partner assigned"
+   * (unlike payments, which `PaymentReconciliationService` already re-scans every 5 minutes).
+   * Routing this through the `dispatch` queue instead gives it BullMQ's durability (the job
+   * survives a process crash once enqueued) and the retry/backoff `QueueInfrastructureModule`'s
+   * `defaultJobOptions` now applies. `DispatchAssignmentProcessor` calls the exact same
+   * `DispatchService.assignOrder()` — already documented and written to be idempotent/safe to
+   * call repeatedly for the same order — so retries (or this job racing the same order via a
+   * different trigger) are safe by construction, not something this change had to add.
+   */
+  async addDispatchAssignmentJob(orderId: string, sourceEvent: string) {
+    return this.dispatchQueue.add('dispatch-assignment', {
+      orderId,
+      sourceEvent,
+    });
+  }
+
+  /**
+   * Production Readiness Stage A (Crash Recovery) — same repeatable-job pattern as
+   * `addPaymentReconciliationJob`, applied to `DispatchReconciliationService`'s periodic re-scan
+   * for stranded ready-for-pickup orders.
+   */
+  async addDispatchReconciliationJob() {
+    return this.dispatchQueue.upsertJobScheduler(
+      'dispatch-reconciliation',
+
+      {
+        every: 5 * 60 * 1000,
+      },
+
+      {
+        name: 'dispatch-reconciliation',
+
+        data: {},
+      },
+    );
+  }
   /**
    * Delayed one-shot job, same pattern as addAssignmentExpiryJob — but the delay is dynamic
    * (per-restaurant RestaurantSettings.acceptanceTimeoutMinutes) rather than a fixed constant.
@@ -148,6 +191,87 @@ export class QueueService {
     );
 
     return Object.fromEntries(entries);
+  }
+
+  /**
+   * Production Readiness Stage B (Observability): per-state breakdown `getQueueDepths()`
+   * deliberately collapses into one "depth" figure (see its own doc comment — that combined
+   * number is what an existing Grafana dashboard/recording rule already expects, so it's kept
+   * exactly as-is). `MetricsService` needs the individual waiting/active/delayed counts, plus the
+   * age of the oldest waiting job, to expose them as separate labels — this is a new, additive
+   * method rather than a change to the existing one.
+   */
+  async getQueueJobCounts(): Promise<
+    Record<
+      string,
+      {
+        waiting: number;
+        active: number;
+        delayed: number;
+        oldestWaitingAgeSeconds: number;
+      }
+    >
+  > {
+    const queues: Record<string, Queue> = {
+      dispatch: this.dispatchQueue,
+      notifications: this.notificationQueue,
+      payments: this.paymentsQueue,
+      search: this.searchQueue,
+      tickets: this.ticketsQueue,
+      orders: this.ordersQueue,
+    };
+
+    const entries = await Promise.all(
+      Object.entries(queues).map(async ([name, queue]) => {
+        const [counts, oldestWaiting] = await Promise.all([
+          queue.getJobCounts('waiting', 'delayed', 'active'),
+          queue.getWaiting(0, 0),
+        ]);
+
+        const oldestWaitingAgeSeconds =
+          oldestWaiting.length > 0
+            ? (Date.now() - oldestWaiting[0].timestamp) / 1000
+            : 0;
+
+        return [
+          name,
+          {
+            waiting: counts.waiting ?? 0,
+            active: counts.active ?? 0,
+            delayed: counts.delayed ?? 0,
+            oldestWaitingAgeSeconds,
+          },
+        ] as const;
+      }),
+    );
+
+    return Object.fromEntries(entries);
+  }
+
+  /**
+   * Production Readiness Stage B (Observability): looks up a single job by queue name + id —
+   * `MetricsService` uses this to read `processedOn`/`finishedOn`/`attemptsMade` off a job that
+   * just completed or failed (none of which are in the terse QueueEvents `completed`/`failed`
+   * payload itself). Queue instances are private constructor fields, so this is the one place
+   * outside this class that can resolve a queue name to its `Queue` object.
+   */
+  async getJob(queueName: string, jobId: string) {
+    const queues: Record<string, Queue> = {
+      dispatch: this.dispatchQueue,
+      notifications: this.notificationQueue,
+      payments: this.paymentsQueue,
+      search: this.searchQueue,
+      tickets: this.ticketsQueue,
+      orders: this.ordersQueue,
+    };
+
+    const queue = queues[queueName];
+
+    if (!queue) {
+      return undefined;
+    }
+
+    return queue.getJob(jobId);
   }
 
   /**

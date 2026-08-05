@@ -56,8 +56,12 @@ export class MenuService {
       throw new NotFoundException('Menu item not found');
     }
 
+    // Production Readiness Stage C: requireMenuItemRestaurantId would re-fetch this exact
+    // MenuItem row a second time purely to read its category's restaurantId — menuItem.categoryId
+    // is already in hand from the fetch above, so go straight to the (lighter) Category lookup
+    // instead of duplicating the MenuItem query.
     await this.assertCanManageMenu(
-      await this.requireMenuItemRestaurantId(menuItemId),
+      await this.requireCategoryRestaurantId(menuItem.categoryId),
       user,
     );
 

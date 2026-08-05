@@ -6,28 +6,25 @@ import { FaqController } from './controllers/faq.controller';
 import { TicketsService } from './services/tickets.service';
 import { FaqService } from './services/faq.service';
 
-import { TicketsRepository } from './repositories/tickets.repository';
 import { FaqRepository } from './repositories/faq.repository';
-
-import { TicketEscalationProcessor } from './jobs/ticket-escalation.processor';
-import { TicketEscalationBootstrap } from './jobs/ticket-escalation.bootstrap';
 
 import { NotificationsModule } from '../notifications/notifications.module';
 import { AuditModule } from '../audit/audit.module';
+import { TicketsCoreModule } from './tickets-core.module';
 
+/**
+ * HTTP-facing half of the tickets feature — controllers + `TicketsService`/`FaqService`.
+ * `TicketsRepository` lives in `TicketsCoreModule`, shared with `TicketsWorkerModule` rather than
+ * duplicated. `TicketEscalationProcessor`/`TicketEscalationBootstrap` moved to
+ * `TicketsWorkerModule` (imported only by the worker process) so this module no longer
+ * instantiates a BullMQ Worker.
+ */
 @Module({
-  imports: [NotificationsModule, AuditModule],
+  imports: [NotificationsModule, AuditModule, TicketsCoreModule],
 
   controllers: [TicketsController, FaqController],
 
-  providers: [
-    TicketsService,
-    FaqService,
-    TicketsRepository,
-    FaqRepository,
-    TicketEscalationProcessor,
-    TicketEscalationBootstrap,
-  ],
+  providers: [TicketsService, FaqService, FaqRepository],
 
   exports: [TicketsService],
 })

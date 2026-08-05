@@ -2,15 +2,18 @@ import { Module } from '@nestjs/common';
 
 import { AuditController } from './controllers/audit.controller';
 
-import { AuditService } from './services/audit.service';
+import { AuditCoreModule } from './audit-core.module';
 
-import { AuditRepository } from './repositories/audit.repository';
-
+/**
+ * HTTP-facing half of the audit feature — controller only. `AuditService`/`AuditRepository` live
+ * in `AuditCoreModule`. Re-exports it so existing consumers of `AuditModule` keep working
+ * unchanged; anything reachable from the Worker process now imports `AuditCoreModule` directly.
+ */
 @Module({
+  imports: [AuditCoreModule],
+
   controllers: [AuditController],
 
-  providers: [AuditService, AuditRepository],
-
-  exports: [AuditService],
+  exports: [AuditCoreModule],
 })
 export class AuditModule {}

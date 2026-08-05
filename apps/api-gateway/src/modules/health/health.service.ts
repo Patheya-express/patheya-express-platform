@@ -18,6 +18,8 @@ import { LivenessResponseDto } from './dto/liveness-response.dto';
 
 import { ReadinessResponseDto } from './dto/readiness-response.dto';
 
+const HEALTH_CHECK_TIMEOUT_MS = 2000;
+
 @Injectable()
 export class HealthService {
   constructor(
@@ -142,25 +144,52 @@ export class HealthService {
     };
   }
 
-  private async checkDatabase(): Promise<boolean> {
+  /**
+   * Production Readiness Stage A (Failure Injection finding): bounds every dependency probe below
+   * to `HEALTH_CHECK_TIMEOUT_MS`, the same pattern `QueueService.checkHealth()` already used (its
+   * own doc comment: "A 2-second timeout keeps an unreachable Redis from hanging the readiness
+   * check indefinitely"). `checkRedis()` didn't have this before — verified against a real Redis
+   * instance stopped mid-run: with `getRedisConnectionOptions()`'s `maxRetriesPerRequest: null`,
+   * `redisClient.ping()` doesn't reject when disconnected, it queues forever waiting for
+   * reconnection, so `/health/ready` hung indefinitely rather than reporting `degraded` — worse
+   * than a fast failure, since an orchestrator's own probe timeout would eventually mark the pod
+   * unready anyway, but every hung check left a request in flight until then. `checkDatabase()`
+   * gets the same bound defensively, for the same reason, even though Prisma's own pool/connect
+   * timeouts likely already bound it in practice.
+   */
+  private async withTimeout(
+    operation: () => Promise<boolean>,
+  ): Promise<boolean> {
     try {
-      await this.prisma.$queryRaw`SELECT 1`;
-
-      return true;
+      return await Promise.race([
+        operation(),
+        new Promise<boolean>((_, reject) =>
+          setTimeout(
+            () => reject(new Error('health check timed out')),
+            HEALTH_CHECK_TIMEOUT_MS,
+          ),
+        ),
+      ]);
     } catch {
       return false;
     }
   }
 
+  private async checkDatabase(): Promise<boolean> {
+    return this.withTimeout(async () => {
+      await this.prisma.$queryRaw`SELECT 1`;
+
+      return true;
+    });
+  }
+
   private async checkRedis(): Promise<boolean> {
-    try {
+    return this.withTimeout(async () => {
       const redisClient = this.redis.getClient();
 
       const pong = await redisClient.ping();
 
       return pong === 'PONG';
-    } catch {
-      return false;
-    }
+    });
   }
 }

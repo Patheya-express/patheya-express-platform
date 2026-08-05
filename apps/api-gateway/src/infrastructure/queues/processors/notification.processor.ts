@@ -12,7 +12,16 @@ interface NotificationJobData {
   [key: string]: unknown;
 }
 
-@Processor('notifications')
+/**
+ * Production Readiness Stage C: concurrency raised from BullMQ's default of 1 — every job here
+ * processes one independent `notificationId`/user, with no shared in-memory state and no
+ * ordering requirement between notifications, so serializing them provided no correctness
+ * benefit while directly capping throughput on the queue every order/dispatch/ticket event in
+ * the system funnels through. 10 chosen conservatively (I/O-bound job body — one Prisma read +
+ * write per notification — well within a single worker process's capacity; not raised further
+ * without real production throughput data to justify it).
+ */
+@Processor('notifications', { concurrency: 10 })
 export class NotificationProcessor extends WorkerHost {
   constructor(
     private readonly notificationsService: NotificationsService,

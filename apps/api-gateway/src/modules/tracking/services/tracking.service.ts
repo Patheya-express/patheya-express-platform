@@ -90,22 +90,27 @@ export class TrackingService {
       etaMinutes,
     };
 
-    await this.redisService.set(
-      `tracking:order:${orderId}`,
+    // Production Readiness Stage C: the Redis snapshot and the DB last-known-location write touch
+    // unrelated stores and don't depend on each other's result — run in parallel instead of
+    // sequentially on this high-frequency (every few seconds per active delivery) endpoint.
+    await Promise.all([
+      this.redisService.set(
+        `tracking:order:${orderId}`,
 
-      JSON.stringify(trackingData),
+        JSON.stringify(trackingData),
 
-      TRACKING_TTL_SECONDS,
-    );
+        TRACKING_TTL_SECONDS,
+      ),
 
-    // Redis remains the authoritative "current" location; this is only a last-known snapshot
-    // for the partner's own profile (e.g. admin dashboards), and is deliberately best-effort.
-    if (order.deliveryPartnerId) {
-      await this.prisma.deliveryPartner.updateMany({
-        where: { userId: order.deliveryPartnerId },
-        data: { currentLatitude: latitude, currentLongitude: longitude },
-      });
-    }
+      // Redis remains the authoritative "current" location; this is only a last-known snapshot
+      // for the partner's own profile (e.g. admin dashboards), and is deliberately best-effort.
+      order.deliveryPartnerId
+        ? this.prisma.deliveryPartner.updateMany({
+            where: { userId: order.deliveryPartnerId },
+            data: { currentLatitude: latitude, currentLongitude: longitude },
+          })
+        : Promise.resolve(),
+    ]);
 
     this.realtimeService.emitToOrder(
       orderId,

@@ -6,6 +6,10 @@ import { RedisService } from '../../../infrastructure/redis/redis.service';
 // forever — the client is expected to refresh this within the window via periodic pings.
 const PRESENCE_TTL_SECONDS = 2 * 60;
 const ONLINE_AGENTS_SET_KEY = 'support:agents:online';
+// Production Readiness Stage D (Observability): mirrors ONLINE_AGENTS_SET_KEY's pattern — without
+// this, counting online delivery partners required an expensive SCAN driver:online:* rather than
+// a cheap SCARD, and there was no way to feed a Prometheus gauge for it at all.
+const ONLINE_DRIVERS_SET_KEY = 'driver:online:set';
 
 @Injectable()
 export class PresenceService {
@@ -19,13 +23,20 @@ export class PresenceService {
   async markAgentOnline(agentId: string) {
     const data = { online: true, lastSeen: new Date() };
 
-    await this.redisService.set(
-      `agent:online:${agentId}`,
-      JSON.stringify(data),
-      PRESENCE_TTL_SECONDS,
-    );
-
-    await this.redisService.getClient().sadd(ONLINE_AGENTS_SET_KEY, agentId);
+    // Production Readiness Stage C: the SET and SADD are independent (different keys, no
+    // read-your-write dependency), so they're pipelined into a single round trip instead of two
+    // sequential ones — this runs on every online ping from every support agent.
+    await this.redisService
+      .getClient()
+      .pipeline()
+      .set(
+        `agent:online:${agentId}`,
+        JSON.stringify(data),
+        'EX',
+        PRESENCE_TTL_SECONDS,
+      )
+      .sadd(ONLINE_AGENTS_SET_KEY, agentId)
+      .exec();
 
     return data;
   }
@@ -33,11 +44,12 @@ export class PresenceService {
   async markAgentOffline(agentId: string) {
     const data = { online: false, lastSeen: new Date() };
 
-    await this.redisService.set(
-      `agent:online:${agentId}`,
-      JSON.stringify(data),
-    );
-    await this.redisService.getClient().srem(ONLINE_AGENTS_SET_KEY, agentId);
+    await this.redisService
+      .getClient()
+      .pipeline()
+      .set(`agent:online:${agentId}`, JSON.stringify(data))
+      .srem(ONLINE_AGENTS_SET_KEY, agentId)
+      .exec();
 
     return data;
   }
@@ -52,20 +64,35 @@ export class PresenceService {
     return JSON.parse(data);
   }
 
+  /**
+   * Production Readiness Stage C: previously one Redis round trip per agent id (a sequential
+   * `for` loop) — the exact N+1 shape `isOnlineBatch` below already exists to eliminate for
+   * delivery-partner presence. Now a single `MGET`, same self-healing `srem` for stale ids,
+   * batched after the read instead of interleaved with it.
+   */
   async listOnlineAgentIds(): Promise<string[]> {
     const client = this.redisService.getClient();
     const ids = await client.smembers(ONLINE_AGENTS_SET_KEY);
 
+    if (ids.length === 0) {
+      return [];
+    }
+
+    const values = await client.mget(ids.map((id) => `agent:online:${id}`));
+
     const online: string[] = [];
+    const stale: string[] = [];
 
-    for (const id of ids) {
-      const raw = await this.redisService.get(`agent:online:${id}`);
-
-      if (raw) {
+    ids.forEach((id, index) => {
+      if (values[index]) {
         online.push(id);
       } else {
-        await client.srem(ONLINE_AGENTS_SET_KEY, id);
+        stale.push(id);
       }
+    });
+
+    if (stale.length > 0) {
+      await client.srem(ONLINE_AGENTS_SET_KEY, ...stale);
     }
 
     return online;
@@ -78,13 +105,20 @@ export class PresenceService {
       lastSeen: new Date(),
     };
 
-    await this.redisService.set(
-      `driver:online:${partnerId}`,
-
-      JSON.stringify(data),
-
-      PRESENCE_TTL_SECONDS,
-    );
+    // Production Readiness Stage D: SADD into ONLINE_DRIVERS_SET_KEY alongside the existing TTL
+    // key, same pipelined pattern as markAgentOnline — enables a cheap SCARD-based online count
+    // for patheya_delivery_partners_online, instead of no way to count online partners at all.
+    await this.redisService
+      .getClient()
+      .pipeline()
+      .set(
+        `driver:online:${partnerId}`,
+        JSON.stringify(data),
+        'EX',
+        PRESENCE_TTL_SECONDS,
+      )
+      .sadd(ONLINE_DRIVERS_SET_KEY, partnerId)
+      .exec();
 
     return data;
   }
@@ -96,13 +130,37 @@ export class PresenceService {
       lastSeen: new Date(),
     };
 
-    await this.redisService.set(
-      `driver:online:${partnerId}`,
-
-      JSON.stringify(data),
-    );
+    await this.redisService
+      .getClient()
+      .pipeline()
+      .set(`driver:online:${partnerId}`, JSON.stringify(data))
+      .srem(ONLINE_DRIVERS_SET_KEY, partnerId)
+      .exec();
 
     return data;
+  }
+
+  /** Production Readiness Stage D (Observability): backs patheya_delivery_partners_online. Same
+   *  self-healing shape as listOnlineAgentIds — a partner whose TTL key expired without an
+   *  explicit markOffline call (app crash) is pruned from the set on the next count, so it
+   *  converges even without ONLINE_DRIVERS_SET_KEY being perfectly maintained. */
+  async countOnlinePartners(): Promise<number> {
+    const client = this.redisService.getClient();
+    const ids = await client.smembers(ONLINE_DRIVERS_SET_KEY);
+
+    if (ids.length === 0) {
+      return 0;
+    }
+
+    const values = await client.mget(ids.map((id) => `driver:online:${id}`));
+
+    const stale = ids.filter((_, index) => !values[index]);
+
+    if (stale.length > 0) {
+      await client.srem(ONLINE_DRIVERS_SET_KEY, ...stale);
+    }
+
+    return ids.length - stale.length;
   }
 
   async getStatus(partnerId: string) {

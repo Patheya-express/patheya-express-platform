@@ -10,6 +10,7 @@ import {
 
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
 import { AppLoggerService } from '../../../infrastructure/logger/logger.service';
+import { MetricsService } from '../../metrics/metrics.service';
 import { DispatchRepository } from './dispatch.repository';
 import { DeliveryRepository } from '../../delivery/repositories/delivery.repository';
 
@@ -29,9 +30,10 @@ import { DeliveryRepository } from '../../delivery/repositories/delivery.reposit
  * covered directly in payments.repository tests.
  */
 describe('DispatchRepository — dispatch/assignment concurrency (real database)', () => {
-  const prisma = new PrismaService({
-    warn: () => undefined,
-  } as unknown as AppLoggerService);
+  const prisma = new PrismaService(
+    { warn: () => undefined } as unknown as AppLoggerService,
+    {} as unknown as MetricsService,
+  );
   const dispatchRepository = new DispatchRepository(prisma);
   const deliveryRepository = new DeliveryRepository(prisma);
 

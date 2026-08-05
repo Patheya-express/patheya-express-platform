@@ -68,6 +68,18 @@ function isSerializationFailure(error: unknown): boolean {
   );
 }
 
+/** Production Readiness Stage D: the (userId, type, orderId) unique constraint on
+ *  WalletTransaction throws this when a duplicate order-scoped credit/debit is attempted — see
+ *  writeLedgerEntry's catch handling below. */
+function isUniqueConstraintViolation(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: string }).code === 'P2002'
+  );
+}
+
 @Injectable()
 export class WalletService {
   constructor(
@@ -107,6 +119,13 @@ export class WalletService {
    * The single write path every wallet-crediting/-debiting caller in this module goes through —
    * retries once on a Postgres serialization failure (two concurrent writes for the same user),
    * pushes a realtime balance update, records a notification for credits, and audits every entry.
+   *
+   * Production Readiness Stage D (Disaster Recovery): also handles a duplicate order-scoped
+   * write (e.g. a duplicate 'order.status.changed'/'order.refunded' EventBusService publish for
+   * the same order — EventBusService has no built-in de-duplication) hitting the new
+   * (userId, type, orderId) unique constraint. Treated as an idempotent no-op — returns the
+   * transaction that already won, without re-firing side effects (realtime push, audit log,
+   * notification), since those already fired on the original write.
    */
   private async writeLedgerEntry(
     userId: string,
@@ -141,6 +160,18 @@ export class WalletService {
           opts,
           attempt + 1,
         );
+      }
+
+      if (isUniqueConstraintViolation(error) && opts.orderId) {
+        const existing = await this.walletRepository.findLedgerEntry(
+          userId,
+          type,
+          opts.orderId,
+        );
+
+        if (existing) {
+          return existing;
+        }
       }
 
       throw error;
@@ -325,21 +356,25 @@ export class WalletService {
       REFERRAL_REWARD_AMOUNT,
     );
 
-    await this.writeLedgerEntry(
-      referral.refereeId,
-      WalletTransactionType.REFERRAL_REWARD,
-      REFERRAL_REWARD_AMOUNT,
-      'Referral reward — welcome bonus',
-      { referralId: referral.id },
-    );
+    // Production Readiness Stage C: these credit two different users' wallets — no data
+    // dependency on each other (each has its own internal serialization-retry loop already).
+    await Promise.all([
+      this.writeLedgerEntry(
+        referral.refereeId,
+        WalletTransactionType.REFERRAL_REWARD,
+        REFERRAL_REWARD_AMOUNT,
+        'Referral reward — welcome bonus',
+        { referralId: referral.id },
+      ),
 
-    await this.writeLedgerEntry(
-      referral.referrerId,
-      WalletTransactionType.REFERRAL_REWARD,
-      REFERRAL_REWARD_AMOUNT,
-      'Referral reward — your friend placed their first order',
-      { referralId: referral.id },
-    );
+      this.writeLedgerEntry(
+        referral.referrerId,
+        WalletTransactionType.REFERRAL_REWARD,
+        REFERRAL_REWARD_AMOUNT,
+        'Referral reward — your friend placed their first order',
+        { referralId: referral.id },
+      ),
+    ]);
 
     await this.notificationsService.createNotification(
       referral.referrerId,

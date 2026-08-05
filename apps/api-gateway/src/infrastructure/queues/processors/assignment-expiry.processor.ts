@@ -6,6 +6,10 @@ import { AssignmentStatus, AuditAction } from '@prisma/client';
 
 import { DispatchRepository } from '../../../modules/dispatch/repositories/dispatch.repository';
 
+import { DispatchService } from '../../../modules/dispatch/services/dispatch.service';
+
+import { DispatchReconciliationService } from '../../../modules/dispatch/services/dispatch-reconciliation.service';
+
 import { EventBusService } from '../../../core/events/event-bus.service';
 
 import { RealtimeService } from '../../../modules/realtime/services/realtime.service';
@@ -14,14 +18,50 @@ import { AuditService } from '../../../modules/audit/services/audit.service';
 
 import { AppLoggerService } from '../../logger/logger.service';
 
+import { MetricsService } from '../../../modules/metrics/metrics.service';
+
 interface AssignmentExpiryJobData {
   assignmentId: string;
 }
 
-@Processor('dispatch')
+interface DispatchAssignmentJobData {
+  orderId: string;
+  sourceEvent: string;
+}
+
+/**
+ * The single Worker for the `dispatch` queue — every job name on this queue must be handled here
+ * (not in a second `@Processor('dispatch')` class), since `@nestjs/bullmq` creates one independent
+ * BullMQ `Worker` per decorated class: two classes on the same queue name would mean two workers
+ * both consuming from it, silently doubling `dispatch`'s concurrency and Redis connections rather
+ * than sharing one. `dispatch-assignment` (Production Readiness Stage A — Event Reliability) was
+ * added here for that reason: `DispatchListener` used to call `DispatchService.assignOrder()`
+ * directly and synchronously from its `EventBusService` handler, with no retry if that call
+ * failed transiently; it now enqueues this job instead (`QueueService.addDispatchAssignmentJob`),
+ * giving the same call BullMQ's durability and retry/backoff. `dispatch-reconciliation`
+ * (Production Readiness Stage A — Crash Recovery) is the periodic re-scan for orders a
+ * `dispatch-assignment` job never successfully assigned (see `DispatchReconciliationService`).
+ */
+/**
+ * Production Readiness Stage C: concurrency raised from BullMQ's default of 1. Every job on this
+ * queue (`dispatch-assignment`, `assignment-expiry`, `dispatch-reconciliation`) is scoped to a
+ * distinct `orderId`/`assignmentId`, and correctness against a racing job for the *same* order
+ * is already carried by an atomic conditional DB update, not by BullMQ serialization —
+ * `claimAssignmentTransition` above (line ~122) is exactly that: "the loser silently no-ops
+ * rather than expiring an assignment that was, in fact, just accepted a moment before." Since
+ * cross-job races are already resolved at the DB layer, there is no ordering property left for
+ * concurrency=1 to protect, only throughput it was costing. 8 chosen conservatively for the same
+ * reason as the notifications queue (I/O-bound job bodies, no production load data to justify
+ * going higher yet).
+ */
+@Processor('dispatch', { concurrency: 8 })
 export class AssignmentExpiryProcessor extends WorkerHost {
   constructor(
     private readonly dispatchRepository: DispatchRepository,
+
+    private readonly dispatchService: DispatchService,
+
+    private readonly dispatchReconciliationService: DispatchReconciliationService,
 
     private readonly eventBus: EventBusService,
 
@@ -30,17 +70,57 @@ export class AssignmentExpiryProcessor extends WorkerHost {
     private readonly auditService: AuditService,
 
     private readonly logger: AppLoggerService,
+
+    private readonly metrics: MetricsService,
   ) {
     super();
   }
 
-  async process(job: Job<AssignmentExpiryJobData>) {
+  async process(job: Job<AssignmentExpiryJobData | DispatchAssignmentJobData>) {
+    if (job.name === 'dispatch-reconciliation') {
+      await this.dispatchReconciliationService.reconcileStrandedAssignments();
+
+      return;
+    }
+
+    if (job.name === 'dispatch-assignment') {
+      const data = job.data as DispatchAssignmentJobData;
+
+      this.logger.log(
+        {
+          event: 'dispatch_assignment_job_started',
+          orderId: data.orderId,
+          sourceEvent: data.sourceEvent,
+          attempt: job.attemptsMade + 1,
+        },
+        'AssignmentExpiryProcessor',
+      );
+
+      this.metrics.recordDispatchAssignmentAttempt(data.sourceEvent);
+
+      if (data.sourceEvent !== 'order.ready') {
+        this.metrics.recordDispatchRedispatch(data.sourceEvent);
+      }
+
+      const assignmentStart = Date.now();
+
+      await this.dispatchService.assignOrder(data.orderId);
+
+      this.metrics.observeDispatchAssignmentDuration(
+        (Date.now() - assignmentStart) / 1000,
+      );
+
+      return;
+    }
+
     if (job.name !== 'assignment-expiry') {
       return;
     }
 
+    const expiryData = job.data as AssignmentExpiryJobData;
+
     const assignment = await this.dispatchRepository.findAssignmentById(
-      job.data.assignmentId,
+      expiryData.assignmentId,
     );
 
     if (!assignment) {

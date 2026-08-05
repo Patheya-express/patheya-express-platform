@@ -756,27 +756,32 @@ export class OrdersService {
       );
     }
 
-    await this.ordersRepository.createStatusHistory({
-      orderId: order.id,
+    // Production Readiness Stage C: none of these three depend on each other's result (all
+    // operate off order.id, already known at this point) — run in parallel instead of
+    // sequentially on the highest-volume write path in the system.
+    await Promise.all([
+      this.ordersRepository.createStatusHistory({
+        orderId: order.id,
 
-      status: OrderStatus.PENDING,
+        status: OrderStatus.PENDING,
 
-      changedById: customerId,
-    });
+        changedById: customerId,
+      }),
 
-    await this.scheduleAcceptanceTimeout(dto.restaurantId, order.id);
+      this.scheduleAcceptanceTimeout(dto.restaurantId, order.id),
 
-    await this.eventBus.publish(
-      'order.placed',
+      this.eventBus.publish(
+        'order.placed',
 
-      new OrderPlacedEvent(
-        order.id,
+        new OrderPlacedEvent(
+          order.id,
 
-        customerId,
+          customerId,
 
-        dto.restaurantId,
+          dto.restaurantId,
+        ),
       ),
-    );
+    ]);
 
     return {
       ...order,
@@ -834,38 +839,42 @@ export class OrdersService {
       return;
     }
 
-    await this.ordersRepository.createStatusHistory({
-      orderId,
+    // Production Readiness Stage C: status-history write, audit log, and event publish are all
+    // independent of each other's result — run in parallel instead of sequentially.
+    await Promise.all([
+      this.ordersRepository.createStatusHistory({
+        orderId,
 
-      status: nextStatus,
+        status: nextStatus,
 
-      note: autoAcceptOrders
-        ? 'Auto-accepted: acceptance timeout elapsed'
-        : 'Auto-rejected: acceptance timeout elapsed',
+        note: autoAcceptOrders
+          ? 'Auto-accepted: acceptance timeout elapsed'
+          : 'Auto-rejected: acceptance timeout elapsed',
 
-      changedById: null,
-    });
+        changedById: null,
+      }),
 
-    await this.auditService.log(
-      null,
-      'Order',
-      orderId,
-      AuditAction.STATUS_CHANGE,
-      { status: OrderStatus.PENDING },
-      { status: nextStatus, reason: 'acceptance-timeout' },
-    );
-
-    await this.eventBus.publish(
-      'order.status.changed',
-
-      new OrderStatusChangedEvent(
-        updatedOrder.id,
-        updatedOrder.customerId,
-        updatedOrder.status,
-        updatedOrder.restaurantId,
-        Number(updatedOrder.totalAmount),
+      this.auditService.log(
+        null,
+        'Order',
+        orderId,
+        AuditAction.STATUS_CHANGE,
+        { status: OrderStatus.PENDING },
+        { status: nextStatus, reason: 'acceptance-timeout' },
       ),
-    );
+
+      this.eventBus.publish(
+        'order.status.changed',
+
+        new OrderStatusChangedEvent(
+          updatedOrder.id,
+          updatedOrder.customerId,
+          updatedOrder.status,
+          updatedOrder.restaurantId,
+          Number(updatedOrder.totalAmount),
+        ),
+      ),
+    ]);
 
     this.realtimeService.emitToOrder(orderId, 'order.status.changed', {
       orderId,
@@ -880,7 +889,14 @@ export class OrdersService {
     );
   }
 
-  /** Invoked by OrderPaymentListener when a Razorpay payment succeeds. Idempotent — safe to call more than once. */
+  /**
+   * Invoked by OrderPaymentListener when a Razorpay payment succeeds. Idempotent — safe to call
+   * more than once. Production Readiness Stage D (Disaster Recovery): the paymentStatus flip is
+   * now an atomic conditional claim (`claimPaymentStatusTransition`) rather than a check-then-act
+   * read + unconditional write — closes the race where two near-simultaneous payment.success
+   * events for the same order could both pass the old `paymentStatus === PAID` guard before
+   * either write committed, and both fire the CONFIRMED transition + event publish.
+   */
   async markOrderPaid(orderId: string) {
     const order = await this.ordersRepository.findOrderById(orderId);
 
@@ -888,10 +904,16 @@ export class OrdersService {
       return;
     }
 
-    await this.ordersRepository.updatePaymentStatus(
+    const claim = await this.ordersRepository.claimPaymentStatusTransition(
       orderId,
+      [PaymentStatus.PENDING, PaymentStatus.FAILED, PaymentStatus.REFUNDED],
       PaymentStatus.PAID,
     );
+
+    if (claim.count === 0) {
+      // Lost the race to another concurrent call already marking this order paid — no-op.
+      return;
+    }
 
     if (order.status === OrderStatus.PENDING) {
       const updatedOrder = await this.ordersRepository.updateOrderStatus(
@@ -899,26 +921,30 @@ export class OrdersService {
         OrderStatus.CONFIRMED,
       );
 
-      await this.ordersRepository.createStatusHistory({
-        orderId,
+      // Production Readiness Stage C: neither depends on the other's result.
+      await Promise.all([
+        this.ordersRepository.createStatusHistory({
+          orderId,
 
-        status: OrderStatus.CONFIRMED,
-      });
+          status: OrderStatus.CONFIRMED,
+        }),
 
-      await this.eventBus.publish(
-        'order.status.changed',
+        this.eventBus.publish(
+          'order.status.changed',
 
-        new OrderStatusChangedEvent(
-          updatedOrder.id,
-          updatedOrder.customerId,
-          updatedOrder.status,
-          updatedOrder.restaurantId,
+          new OrderStatusChangedEvent(
+            updatedOrder.id,
+            updatedOrder.customerId,
+            updatedOrder.status,
+            updatedOrder.restaurantId,
+          ),
         ),
-      );
+      ]);
     }
   }
 
-  /** Invoked by OrderPaymentListener when a Razorpay payment fails. */
+  /** Invoked by OrderPaymentListener when a Razorpay payment fails. Production Readiness Stage D
+   *  (Disaster Recovery): same atomic-claim treatment as markOrderPaid, for the same reason. */
   async markOrderPaymentFailed(orderId: string) {
     const order = await this.ordersRepository.findOrderById(orderId);
 
@@ -926,8 +952,9 @@ export class OrdersService {
       return;
     }
 
-    await this.ordersRepository.updatePaymentStatus(
+    await this.ordersRepository.claimPaymentStatusTransition(
       orderId,
+      [PaymentStatus.PENDING, PaymentStatus.FAILED, PaymentStatus.REFUNDED],
       PaymentStatus.FAILED,
     );
   }
@@ -1150,31 +1177,34 @@ export class OrdersService {
       dto.status,
     );
 
-    await this.ordersRepository.createStatusHistory({
-      orderId,
+    // Production Readiness Stage C: neither depends on the other's result.
+    await Promise.all([
+      this.ordersRepository.createStatusHistory({
+        orderId,
 
-      status: dto.status,
+        status: dto.status,
 
-      note: dto.reason,
+        note: dto.reason,
 
-      changedById: user.userId,
-    });
+        changedById: user.userId,
+      }),
 
-    await this.eventBus.publish(
-      'order.status.changed',
+      this.eventBus.publish(
+        'order.status.changed',
 
-      new OrderStatusChangedEvent(
-        updatedOrder.id,
+        new OrderStatusChangedEvent(
+          updatedOrder.id,
 
-        updatedOrder.customerId,
+          updatedOrder.customerId,
 
-        updatedOrder.status,
+          updatedOrder.status,
 
-        updatedOrder.restaurantId,
+          updatedOrder.restaurantId,
 
-        Number(updatedOrder.totalAmount),
+          Number(updatedOrder.totalAmount),
+        ),
       ),
-    );
+    ]);
 
     this.realtimeService.emitToOrder(orderId, 'order.status.changed', {
       orderId,

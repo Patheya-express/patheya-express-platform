@@ -15,7 +15,6 @@ import { SettingsController } from './controllers/settings.controller';
 import { OperatingHoursController } from './controllers/operating-hours.controller';
 import { HolidaysController } from './controllers/holidays.controller';
 
-import { RestaurantsService } from './services/restaurants.service';
 import { CuisinesService } from './services/cuisines.service';
 import { ReviewsService } from './services/reviews.service';
 import { BranchesService } from './services/branches.service';
@@ -30,7 +29,6 @@ import { SettingsService } from './services/settings.service';
 import { OperatingHoursService } from './services/operating-hours.service';
 import { HolidaysService } from './services/holidays.service';
 
-import { RestaurantsRepository } from './repositories/restaurants.repository';
 import { CuisinesRepository } from './repositories/cuisines.repository';
 import { ReviewsRepository } from './repositories/reviews.repository';
 import { BranchesRepository } from './repositories/branches.repository';
@@ -44,12 +42,22 @@ import { SettingsRepository } from './repositories/settings.repository';
 import { OperatingHoursRepository } from './repositories/operating-hours.repository';
 import { HolidaysRepository } from './repositories/holidays.repository';
 
-import { OffersModule } from '../offers/offers.module';
 import { AuditModule } from '../audit/audit.module';
-import { NotificationsModule } from '../notifications/notifications.module';
+import { NotificationsCoreModule } from '../notifications/notifications-core.module';
+import { RestaurantsCoreModule } from './restaurants-core.module';
 
+/**
+ * HTTP-facing half of the restaurants feature. `RestaurantsService`/`RestaurantsRepository` moved
+ * to `RestaurantsCoreModule` (the only piece `OrdersCoreModule` needs); every other sub-feature
+ * here (Cuisines, Reviews, Branches, Staff, Documents, TaxProfile, BankAccount, Verification,
+ * Media, Compliance, Settings, OperatingHours, Holidays) is unchanged — nothing outside this
+ * module used them, so there was no reason to move them. Re-exports `RestaurantsCoreModule`
+ * alongside the same `CuisinesService`/`SettingsService`/`VerificationService` this module
+ * exported before, so existing consumers (`SearchModule`, `MenuModule`, etc.) keep working
+ * unchanged.
+ */
 @Module({
-  imports: [OffersModule, AuditModule, NotificationsModule],
+  imports: [AuditModule, NotificationsCoreModule, RestaurantsCoreModule],
 
   controllers: [
     RestaurantsController,
@@ -69,8 +77,6 @@ import { NotificationsModule } from '../notifications/notifications.module';
   ],
 
   providers: [
-    RestaurantsService,
-    RestaurantsRepository,
     CuisinesService,
     CuisinesRepository,
     ReviewsService,
@@ -99,7 +105,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
   ],
 
   exports: [
-    RestaurantsService,
+    RestaurantsCoreModule,
     CuisinesService,
     SettingsService,
     VerificationService,

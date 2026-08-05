@@ -122,13 +122,21 @@ export class WalletRepository {
           return { outcome: 'already_applied' as const };
         }
 
-        const transaction = await this.insertLedgerEntry(tx, {
-          userId: params.userId,
-          type: WalletTransactionType.ORDER_PAYMENT,
-          amount: -amountToApply,
-          description: params.description,
-          orderId: params.orderId,
-        });
+        // Production Readiness Stage C: `balance` above is already the exact aggregate
+        // insertLedgerEntry would otherwise recompute from scratch — passing it through avoids a
+        // second identical SUM(amount) query inside this SERIALIZABLE transaction, shortening its
+        // lock/validation window.
+        const transaction = await this.insertLedgerEntry(
+          tx,
+          {
+            userId: params.userId,
+            type: WalletTransactionType.ORDER_PAYMENT,
+            amount: -amountToApply,
+            description: params.description,
+            orderId: params.orderId,
+          },
+          balance,
+        );
 
         return {
           outcome: 'applied' as const,
@@ -141,8 +149,15 @@ export class WalletRepository {
     );
   }
 
-  /** Shared balance-check-then-insert body used by both writeLedgerEntry and
-   *  applyToOrderAtomic, each supplying their own transaction boundary. */
+  /**
+   * Shared balance-check-then-insert body used by both writeLedgerEntry and
+   * applyToOrderAtomic, each supplying their own transaction boundary.
+   *
+   * `knownBalanceBefore` (Production Readiness Stage C): applyToOrderAtomic already computes
+   * this exact aggregate a few lines above its own call site, inside the same SERIALIZABLE
+   * transaction — passed through here to avoid re-querying it. writeLedgerEntry has no such
+   * precomputed value and omits it, preserving its original single-query behavior.
+   */
   private async insertLedgerEntry(
     tx: TransactionClient,
     params: {
@@ -153,13 +168,21 @@ export class WalletRepository {
       orderId?: string;
       referralId?: string;
     },
+    knownBalanceBefore?: number,
   ): Promise<WalletTransaction> {
-    const current = await tx.walletTransaction.aggregate({
-      where: { userId: params.userId, status: 'COMPLETED' },
-      _sum: { amount: true },
-    });
+    let balanceBefore: number;
 
-    const balanceBefore = Number(current._sum.amount ?? 0);
+    if (knownBalanceBefore !== undefined) {
+      balanceBefore = knownBalanceBefore;
+    } else {
+      const current = await tx.walletTransaction.aggregate({
+        where: { userId: params.userId, status: 'COMPLETED' },
+        _sum: { amount: true },
+      });
+
+      balanceBefore = Number(current._sum.amount ?? 0);
+    }
+
     const balanceAfter = balanceBefore + params.amount;
 
     if (balanceAfter < 0) {
@@ -218,6 +241,20 @@ export class WalletRepository {
     ]);
 
     return { items, total };
+  }
+
+  /** Production Readiness Stage D: backs WalletService.writeLedgerEntry's duplicate-event
+   *  handling — when the new (userId, type, orderId) unique constraint rejects a second write
+   *  for the same order+type, this fetches the entry that already won so the caller can treat it
+   *  as an idempotent no-op instead of a genuine failure. */
+  async findLedgerEntry(
+    userId: string,
+    type: WalletTransactionType,
+    orderId: string,
+  ): Promise<WalletTransaction | null> {
+    return this.prisma.walletTransaction.findUnique({
+      where: { userId_type_orderId: { userId, type, orderId } },
+    });
   }
 
   async findOrderForWallet(orderId: string) {

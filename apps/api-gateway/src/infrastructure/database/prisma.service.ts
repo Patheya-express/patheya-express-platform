@@ -1,8 +1,14 @@
-import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  OnModuleInit,
+  OnApplicationShutdown,
+} from '@nestjs/common';
 
 import { Prisma, PrismaClient } from '@prisma/client';
 
 import { AppLoggerService } from '../logger/logger.service';
+
+import { MetricsService } from '../../modules/metrics/metrics.service';
 
 /** Production-validation observability finding: no slow-query visibility existed anywhere in
  *  this app. Deliberately a warn-only threshold, not full query logging — logging every query
@@ -11,17 +17,30 @@ const SLOW_QUERY_THRESHOLD_MS = 200;
 
 @Injectable()
 export class PrismaService
-  extends PrismaClient<Prisma.PrismaClientOptions, 'query'>
-  implements OnModuleInit, OnModuleDestroy
+  extends PrismaClient<Prisma.PrismaClientOptions, 'query' | 'error'>
+  implements OnModuleInit, OnApplicationShutdown
 {
-  constructor(private readonly logger: AppLoggerService) {
+  constructor(
+    private readonly logger: AppLoggerService,
+    private readonly metrics: MetricsService,
+  ) {
     super({
-      log: [{ emit: 'event', level: 'query' }],
+      log: [
+        { emit: 'event', level: 'query' },
+        { emit: 'event', level: 'error' },
+      ],
     });
   }
 
   async onModuleInit() {
     this.$on('query', (event: Prisma.QueryEvent) => {
+      // Production Readiness Stage B (Observability): every query already flows through here for
+      // the slow-query log line — recording its duration into a histogram too is additive, not a
+      // new hook. Not labeled by model/action: `event.query` is raw SQL text, not a structured
+      // model/action pair, and reliably recovering them would need a Prisma Client Extension
+      // (`$extends`), a larger change than this sprint's "instrument, don't redesign" scope.
+      this.metrics.observePrismaQueryDuration(event.duration / 1000);
+
       if (event.duration >= SLOW_QUERY_THRESHOLD_MS) {
         this.logger.warn(
           {
@@ -34,10 +53,40 @@ export class PrismaService
       }
     });
 
+    // Prisma's `error` log level fires for engine-level errors (e.g. a lost connection) — not
+    // every application-level query failure (those reject the calling `await` directly and are
+    // handled by whichever service issued them), but it's the only failure signal Prisma itself
+    // emits as an event, and is honest about what it covers rather than claiming full coverage.
+    this.$on('error', (event: Prisma.LogEvent) => {
+      this.metrics.recordPrismaQueryError();
+
+      this.logger.error(
+        {
+          event: 'prisma_error',
+          message: event.message,
+        },
+        undefined,
+        'PrismaService',
+      );
+    });
+
     await this.$connect();
   }
 
-  async onModuleDestroy() {
+  /**
+   * Production Readiness Stage D (Disaster Recovery): was `onModuleDestroy`, which Nest runs in
+   * the *first* shutdown phase — strictly before the HTTP server drains (`dispose()`) and before
+   * BullMQ's own graceful Worker.close() drain (`onApplicationShutdown`, `@nestjs/bullmq`'s
+   * `BullExplorer`). That ordering meant an in-flight HTTP request or an actively-processing
+   * BullMQ job could have its Prisma connection torn out from under it before either had a chance
+   * to finish — verified directly against `@nestjs/core`'s `nest-application-context.js`
+   * (`callDestroyHook` → `callBeforeShutdownHook` → `dispose()` → `callShutdownHook`) and
+   * `@nestjs/bullmq`'s `bull.explorer.js` (`onApplicationShutdown` is what calls
+   * `worker.close()`). Moving this to `onApplicationShutdown` puts Prisma's disconnect in the
+   * same final phase as the HTTP server close and the BullMQ drain, instead of strictly before
+   * both.
+   */
+  async onApplicationShutdown() {
     await this.$disconnect();
   }
 

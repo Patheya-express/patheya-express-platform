@@ -237,16 +237,15 @@ export class DispatchRepository {
     }
   }
 
+  // Production Readiness Stage C: dropped `include: { user: true }` — DispatchService.assignOrder
+  // (the only caller) never reads `partner.user`, only `partner.id`/`partner.userId`; the join
+  // was pure overhead on every automatic-dispatch attempt.
   async findAvailablePartners() {
     return this.prisma.deliveryPartner.findMany({
       where: {
         status: DeliveryPartnerStatus.AVAILABLE,
 
         isVerified: true,
-      },
-
-      include: {
-        user: true,
       },
     });
   }
@@ -397,6 +396,30 @@ export class DispatchRepository {
       where: {
         id: orderId,
       },
+    });
+  }
+
+  /**
+   * Production Readiness Stage A (Crash Recovery): finds orders that have sat in
+   * `READY_FOR_PICKUP` with no delivery partner for longer than `olderThanMs` — the stranded-order
+   * case `DispatchReconciliationService` periodically re-scans for, the same "PaymentReconciliation
+   * philosophy" `PaymentReconciliationService.reconcilePendingPayments()` already established for
+   * payments. `updatedAt` is a pragmatic proxy for "hasn't changed state since becoming
+   * dispatchable" — nothing else in the order lifecycle writes to a `READY_FOR_PICKUP` order
+   * without also moving it out of that status, so a stale `updatedAt` here reliably means
+   * assignment never succeeded (every prior BullMQ attempt failed or no partner was ever online).
+   * Capped at 50 per scan so one reconciliation cycle can't overwhelm the dispatch queue if a
+   * large backlog builds up during an extended outage.
+   */
+  async findStrandedReadyForPickupOrders(olderThanMs: number) {
+    return this.prisma.order.findMany({
+      where: {
+        status: OrderStatus.READY_FOR_PICKUP,
+        deliveryPartnerId: null,
+        updatedAt: { lt: new Date(Date.now() - olderThanMs) },
+      },
+      select: { id: true },
+      take: 50,
     });
   }
 }

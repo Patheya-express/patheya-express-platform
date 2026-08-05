@@ -31,7 +31,9 @@ export class RestaurantDashboardResponseDto {
   @ApiProperty() ordersToday: number;
   @ApiProperty() revenueToday: number;
 
-  @ApiProperty({ description: 'Sum of totalAmount for orders placed in the trailing 7 days.' })
+  @ApiProperty({
+    description: 'Sum of totalAmount for orders placed in the trailing 7 days.',
+  })
   revenueThisWeek: number;
 
   @ApiProperty({

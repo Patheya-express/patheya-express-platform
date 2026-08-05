@@ -481,7 +481,10 @@ export class DeliveryController {
   unblockPartner(
     @Param('id')
     id: string,
+
+    @CurrentUser()
+    user: any,
   ) {
-    return this.deliveryService.unblockPartner(id);
+    return this.deliveryService.unblockPartner(id, user.userId);
   }
 }

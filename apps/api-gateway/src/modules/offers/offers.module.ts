@@ -2,15 +2,18 @@ import { Module } from '@nestjs/common';
 
 import { OffersController } from './controllers/offers.controller';
 
-import { OffersService } from './services/offers.service';
+import { OffersCoreModule } from './offers-core.module';
 
-import { OffersRepository } from './repositories/offers.repository';
-
+/**
+ * HTTP-facing half of the offers feature — controller only. `OffersService`/`OffersRepository`
+ * live in `OffersCoreModule`, re-exported here so existing consumers of `OffersModule` keep
+ * working unchanged.
+ */
 @Module({
+  imports: [OffersCoreModule],
+
   controllers: [OffersController],
 
-  providers: [OffersService, OffersRepository],
-
-  exports: [OffersService],
+  exports: [OffersCoreModule],
 })
 export class OffersModule {}

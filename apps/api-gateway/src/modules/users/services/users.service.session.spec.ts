@@ -13,6 +13,7 @@ import { UsersService } from './users.service';
 describe('UsersService — session revocation on suspend/block/restore', () => {
   let usersRepository: { findById: jest.Mock; updateStatus: jest.Mock };
   let authService: { revokeAllRefreshTokens: jest.Mock };
+  let auditService: { log: jest.Mock };
   let realtimeService: { disconnectUser: jest.Mock };
   let redisService: { set: jest.Mock; del: jest.Mock };
   let service: UsersService;
@@ -40,6 +41,7 @@ describe('UsersService — session revocation on suspend/block/restore', () => {
     authService = {
       revokeAllRefreshTokens: jest.fn().mockResolvedValue(undefined),
     };
+    auditService = { log: jest.fn().mockResolvedValue(undefined) };
     realtimeService = { disconnectUser: jest.fn() };
     redisService = {
       set: jest.fn().mockResolvedValue(undefined),
@@ -50,7 +52,7 @@ describe('UsersService — session revocation on suspend/block/restore', () => {
       usersRepository as any,
       {} as any, // passwordService — unused
       authService as any,
-      {} as any, // auditService — unused
+      auditService as any,
       {} as any, // storageService — unused
       realtimeService as any,
       redisService as any,
@@ -127,7 +129,7 @@ describe('UsersService — session revocation on suspend/block/restore', () => {
         buildUser({ status: UserStatus.SUSPENDED }),
       );
 
-      await service.restoreUser('target-1');
+      await service.restoreUser('target-1', 'admin-1');
 
       expect(redisService.del).toHaveBeenCalledWith('auth:blocked:target-1');
     });
@@ -137,7 +139,7 @@ describe('UsersService — session revocation on suspend/block/restore', () => {
         buildUser({ status: UserStatus.BLOCKED }),
       );
 
-      await service.restoreUser('target-1');
+      await service.restoreUser('target-1', 'admin-1');
 
       expect(redisService.del).toHaveBeenCalledWith('auth:blocked:target-1');
     });

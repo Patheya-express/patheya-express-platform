@@ -6,12 +6,26 @@ How `prisma migrate deploy` actually runs against this platform — companion to
 
 ## Why a separate image tag
 
-The running service's image (`patheya-express-api-gateway:<tag>`) deliberately excludes the
-`prisma` CLI — it's a devDependency, pruned by `pnpm deploy --prod` in the `runtime` build stage,
-because the running service only ever needs the generated `@prisma/client`, never the CLI itself.
-`prisma migrate deploy` needs the CLI, so the Dockerfile's `migrate` stage reuses `build`'s full,
-unpruned `node_modules` instead. CI pushes it as `patheya-express-api-gateway-migrate:<tag>` — same
-ECR repository, second tag, never a second repository.
+The K8s/ArgoCD path never runs `prisma migrate deploy` inside the running service's own container —
+the Dockerfile's `migrate` stage reuses `build`'s full, unpruned `node_modules` (which already has
+the CLI, being a full dev install) instead. CI pushes it as `patheya-express-api-gateway-migrate:<tag>`
+— same ECR repository, second tag, never a second repository, and the `migrate-job.yaml` PreSync
+Job is what actually invokes it (see below).
+
+`runtime` — the `api-gateway`/`worker` services' own image — still deliberately excludes every
+*other* devDependency (TypeScript, ESLint, Jest, the NestJS CLI, etc.), pruned by `pnpm deploy
+--prod` exactly as before. The one exception: `prisma` (the CLI) itself moved from
+`devDependencies` to `dependencies` in `apps/api-gateway/package.json` (Production hardening —
+Render migration automation), so it now survives that same prune and is present in `runtime` too —
+see "The Render path" below for why. This costs `runtime` roughly +70MB (measured: 720MB → 791MB
+for a real build of this Dockerfile) — accepted specifically because it's the only way Render's
+native `preDeployCommand` can run migrations at all (Render always runs that command against the
+exact image a service deploys; it cannot target a different Dockerfile stage — verified against
+Render's own documentation, not assumed). The K8s path is entirely unaffected by this: it never
+uses `runtime`'s bundled CLI, and `docker build --target migrate`/`--target runtime` (what CI's
+`reusable-docker-publish.yml` actually runs) is unaffected by anything added to `runtime`'s
+dependency list, since `--target` always overrides Docker's own "build the last stage" default
+regardless of what stages exist elsewhere in the file.
 
 ## Ordering: PreSync hook, not a sync-wave number
 
@@ -23,6 +37,42 @@ never see a new pod roll out against a schema they don't match.
 
 `hook-delete-policy: BeforeHookCreation` keeps the previous run's Job (and its logs) inspectable
 until the *next* deploy needs the name again, rather than deleting it the moment it succeeds.
+
+## The Render path
+
+Render has no equivalent of ArgoCD's PreSync hook, no way to select a different Dockerfile stage
+per service, and its "One-off Jobs" feature is explicitly tied to a base service's *same* build
+artifact (confirmed against Render's docs) — none of the K8s path's mechanisms carry over as-is.
+What Render does have, and what `render.yaml`'s `api-gateway` service now sets, is
+`preDeployCommand`: a command that runs in a separate, ephemeral instance of the *same* image the
+service is about to deploy, after the build finishes and before the new deploy receives traffic —
+Render blocks (and does not promote) the deploy if it exits non-zero. That "same image" constraint
+is exactly why the CLI had to move into `runtime` (see above) rather than Render being pointed at
+`migrate` some other way — there isn't another way, verified directly against Render's
+documentation before implementing this, not assumed from how the K8s path happens to work.
+
+```yaml
+preDeployCommand: node_modules/.bin/prisma migrate deploy
+```
+
+Direct binary invocation, not `pnpm exec prisma ...` — `runtime` still has no functioning pnpm
+(only the `corepack` shim Node's own base image ships unconditionally, not an activated package
+manager), so the CLI is invoked the same way any other `node_modules/.bin/*` executable would be.
+
+Only the `api-gateway` Web Service has this set, not `worker` — migrations should run exactly once
+per deploy, and both services build from the same commit/image on every push, so gating it on one
+service is sufficient. (Prisma's own migration-lock table would make a second, accidental
+concurrent `migrate deploy` safe — it waits, then finds nothing left to apply — but there's no
+reason to rely on that when a single owner is simpler.)
+
+**Verified end-to-end against a real, deliberately-behind Postgres database** (not assumed):
+built the actual `runtime` image, applied migrations only through the one before
+`add_review_replies`, confirmed the `reviews` table was missing `replyText` (reproducing the exact
+reported production error), ran `node_modules/.bin/prisma migrate deploy` from inside that same
+built image against that database (exactly how Render's `preDeployCommand` invokes it), confirmed
+all pending migrations applied and `replyText` now exists, then booted the same image against the
+now-current schema and got a real HTTP 200 from `GET /restaurants/:id/reviews` with genuine reply
+data in the response.
 
 ## Rollback strategy
 

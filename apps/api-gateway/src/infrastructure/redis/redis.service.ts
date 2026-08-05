@@ -1,15 +1,35 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, OnApplicationShutdown } from '@nestjs/common';
 
 import Redis from 'ioredis';
 
-import { getRedisConnectionOptions } from './redis-connection.config';
+import { RedisConnectionFactory } from '../redis-infrastructure/redis-connection-factory.service';
+
+import { RedisConnectionType } from '../redis-infrastructure/enums/redis-connection-type.enum';
+
+import { RedisConnectionName } from '../redis-infrastructure/enums/redis-connection-name.enum';
 
 @Injectable()
-export class RedisService implements OnModuleDestroy {
+export class RedisService implements OnApplicationShutdown {
   private readonly redis: Redis;
 
-  constructor() {
-    this.redis = new Redis(getRedisConnectionOptions());
+  /**
+   * Connection creation moved onto `RedisConnectionFactory` (Redis Infrastructure Sprint B) —
+   * `factory.createConnection()` builds its options via `RedisConfigurationService
+   * .getDefaultOptions()`, which is `getRedisConnectionOptions()` itself, so this constructs the
+   * exact same `ioredis` client with the exact same options as the previous
+   * `new Redis(getRedisConnectionOptions())` call. The only difference is that the connection is
+   * now registered (name `RedisConnectionName.GENERAL`, type `RedisConnectionType.GENERAL`, owner
+   * "RedisService") and has lifecycle listeners attached for the registry/metrics services —
+   * observational additions, not behavior changes. `RedisService` still owns its own shutdown via
+   * `onModuleDestroy` below, unchanged.
+   */
+  constructor(private readonly connectionFactory: RedisConnectionFactory) {
+    this.redis = this.connectionFactory.createConnection({
+      name: RedisConnectionName.GENERAL,
+      type: RedisConnectionType.GENERAL,
+      owner: 'RedisService',
+      purpose: 'General Redis operations (KV, locks, health)',
+    });
   }
 
   getClient() {
@@ -59,7 +79,11 @@ export class RedisService implements OnModuleDestroy {
     await this.redis.del(key);
   }
 
-  async onModuleDestroy() {
+  /** Production Readiness Stage D (Disaster Recovery): was `onModuleDestroy` — see
+   *  PrismaService.onApplicationShutdown's doc comment for the verified Nest shutdown-phase
+   *  ordering bug this fixes (Redis was being torn down before the HTTP server/BullMQ workers
+   *  finished draining in-flight work, not after). */
+  async onApplicationShutdown() {
     await this.redis.quit();
   }
 }

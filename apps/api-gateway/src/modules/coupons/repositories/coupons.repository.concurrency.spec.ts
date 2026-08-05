@@ -4,6 +4,7 @@ import { CouponType, CouponScope, UserRole } from '@prisma/client';
 
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
 import { AppLoggerService } from '../../../infrastructure/logger/logger.service';
+import { MetricsService } from '../../metrics/metrics.service';
 import { CouponsRepository } from './coupons.repository';
 import { CouponsService } from '../services/coupons.service';
 
@@ -28,9 +29,10 @@ import { CouponsService } from '../services/coupons.service';
  * what a real caller (OrdersService) actually experiences.
  */
 describe('CouponsService.reserveRedemption — concurrency (real database)', () => {
-  const prisma = new PrismaService({
-    warn: () => undefined,
-  } as unknown as AppLoggerService);
+  const prisma = new PrismaService(
+    { warn: () => undefined } as unknown as AppLoggerService,
+    {} as unknown as MetricsService,
+  );
   const repository = new CouponsRepository(prisma);
   const service = new CouponsService(repository, {} as any);
   const createdCouponIds: string[] = [];

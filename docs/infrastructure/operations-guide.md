@@ -24,9 +24,29 @@ emission but never accepts inbound Socket.IO connections itself.
 | --- | --- |
 | `patheya_http_requests_total{app,method,route,status}` | Request volume/error rate per route — feeds `Critical-ApiGateway-SLOBurnRateFast/Slow` |
 | `patheya_http_request_duration_seconds{app,method,route}` | Latency — feeds the p95/p99 recording rules already built in Phase 5 |
+| `patheya_http_requests_in_flight{app}` | Concurrent in-progress requests — a sustained climb with flat throughput indicates requests piling up (a downstream dependency stalling), not just more traffic |
 | `patheya_bullmq_queue_depth{queue}` | Backlog per queue — a sustained climb on `dispatch`/`orders` means processing can't keep up with intake |
+| `patheya_bullmq_jobs_waiting`/`active`/`delayed`/`oldest_waiting_job_age_seconds{queue}` | Finer-grained queue state than `queue_depth` alone — `oldest_waiting_job_age_seconds` is what actually tells you how stale the backlog is |
 | `patheya_bullmq_jobs_failed_total{queue}` | Feeds `Warning-Worker-JobFailed-<queue>` |
+| `patheya_bullmq_jobs_completed_total`/`job_duration_seconds`/`job_retries_total{queue}` | Throughput/latency/retry-rate per queue — see `incident-runbooks.md`'s "Queue backlog" runbook for how to use these together |
+| `patheya_dispatch_assignment_attempts_total{source}` / `redispatch_total{reason}` / `assignment_duration_seconds` / `reconciliation_runs_total` / `orders_awaiting_assignment` | Dispatch health — see `incident-runbooks.md`'s "Dispatch degradation" runbook |
+| `patheya_orders_created_total`/`completed_total`/`cancelled_total`/`order_lifecycle_duration_seconds{outcome}` | Order funnel and time-to-terminal-state |
+| `patheya_payments_success_total`/`failed_total`/`refunded_total`/`payment_latency_seconds`/`refund_duration_seconds` | Payment provider health — see `incident-runbooks.md`'s "Payment provider outage" runbook |
+| `patheya_socketio_connections_total`/`disconnections_total`/`connected_clients`/`broadcasts_total{roomType}`/`events_emitted_total{event}` | Realtime gateway traffic and connected-client count, per pod |
+| `patheya_storage_upload_duration_seconds`/`upload_failures_total`/`download_failures_total` | Storage provider health — see `incident-runbooks.md`'s "Storage outage" runbook |
+| `patheya_redis_active_connections`/`reconnect_count`/`disconnect_count`/`auth_failure_count`/`average_ping_ms` | Bridged from `RedisMetricsService`'s in-memory counters — see `incident-runbooks.md`'s "Redis outage" runbook |
+| `patheya_prisma_query_duration_seconds`/`query_errors_total` | Database query latency/error rate — see `incident-runbooks.md`'s "Database outage" runbook |
+| `patheya_event_bus_events_published_total{event}`/`handler_failures_total{event}` | EventBusService publish volume/failure rate — the only Prometheus visibility into the in-process pub/sub mechanism most domain listeners (wallet, onboarding, notifications) run through |
+| `patheya_payment_reconciliation_runs_total`/`errors_total`/`pending_after_sweep` | Whether the payment reconciliation sweep is actually resolving stuck payments — `pending_after_sweep` staying non-zero across runs is the signal, not just "the job completed" |
+| `patheya_razorpay_api_call_duration_seconds{operation}`/`failures_total{operation}` | Razorpay SDK call latency/failures specifically — distinguishes "Razorpay is slow/erroring" from a bug in our own verification logic |
+| `patheya_support_agents_online`/`patheya_delivery_partners_online` | Live count from the Redis presence sets — a leading indicator for dispatch capacity |
 | `patheya_process_*` | Node process defaults (`prom-client`'s `collectDefaultMetrics`) — event loop lag, heap, GC |
+
+Full per-scenario triage using these metrics lives in [`incident-runbooks.md`](incident-runbooks.md)
+(Production Readiness Stage B) — this table is the index, that file is the playbook. Concrete new
+Grafana panel and Prometheus alert-rule recommendations for these metrics (to be authored in
+`patheya-express-terraform`) are in
+[`observability-dashboard-alert-recommendations.md`](observability-dashboard-alert-recommendations.md).
 
 Grafana's "Application Overview" dashboard (`patheya-express-terraform`'s
 `modules/observability/grafana-dashboards.tf`) was built in Phase 5 *before* these metrics existed

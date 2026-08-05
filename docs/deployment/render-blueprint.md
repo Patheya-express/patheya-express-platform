@@ -135,8 +135,11 @@ called for.
    values at this step; nothing here was pre-filled or committed.
 3. Render provisions both services from the one Blueprint apply — same commit, same Dockerfile,
    same env var group.
-4. Run `prisma migrate deploy` against the Neon database **before** relying on the deployed
-   services (see Limitations — this Blueprint intentionally does not automate this step).
+4. Migrations run automatically as part of the Web Service's deploy — `render.yaml`'s
+   `preDeployCommand` (`node_modules/.bin/prisma migrate deploy`) runs before every deploy and
+   blocks it on failure. No manual step required, including the first deploy against a fresh Neon
+   database (see `docs/infrastructure/migrations.md`'s "The Render path" section — the earlier
+   "no migration automation" limitation below is resolved, not a current gap).
 5. Confirm `/api/v1/health` returns 200 on the Web Service, and check the worker's logs for
    `worker_started` (the log event `worker-main.ts` emits once its own bootstrap completes).
 6. Subsequent pushes to the connected branch auto-deploy both services (`autoDeploy: true`), since
@@ -158,14 +161,21 @@ called for.
 
 ## Limitations
 
-- **No migration automation in this Blueprint.** Render's `preDeployCommand` feature runs inside
-  the *same* deployed service's container — which, for the Web Service, is the `runtime` image that
-  deliberately excludes the Prisma CLI (the same reason the Kubernetes path uses a separately-tagged
-  `-migrate` image for its `migrate-job.yaml` PreSync hook, Phase 9). Wiring `preDeployCommand` here
-  would silently fail. Running `prisma migrate deploy` against the Neon database therefore remains
-  a manual step for QA (via Render's Shell feature against a one-off build of the `migrate` Docker
-  stage, or locally against the Neon connection string) — not automated by this Blueprint, matching
-  `docs/deployment/render.md`'s same conclusion from Phase DEV-3.
+- **Migration automation — resolved, not a current gap.** An earlier phase concluded
+  `preDeployCommand` couldn't work here because it runs inside the *same* deployed image as the
+  Web Service — the `runtime` stage, which deliberately excludes the Prisma CLI — and wiring it up
+  would silently fail. That specific finding was correct: verified directly against Render's own
+  documentation that `preDeployCommand` (and One-off Jobs) can only ever run against a service's
+  own build artifact, with no way to target the Dockerfile's separate `migrate` stage instead.
+  Production hardening (Stage: Render migration automation) resolved it the other direction —
+  `prisma` (the CLI) moved from `devDependencies` to `dependencies` in
+  `apps/api-gateway/package.json`, so it now survives `runtime`'s `pnpm deploy --prod` prune too
+  (measured cost: +~70MB image size), and `render.yaml`'s `api-gateway` service now sets
+  `preDeployCommand: node_modules/.bin/prisma migrate deploy`. Verified end-to-end against a real,
+  deliberately-behind Postgres database, not assumed — see `docs/infrastructure/migrations.md`'s
+  "The Render path" section for the full mechanism and verification evidence. The Kubernetes
+  path's separately-tagged `-migrate` image is untouched and still used there; this only affects
+  what ships in the Render/QA `runtime` image.
 - **`/api/v1/health`'s always-200 behavior** (above) means Render's health gate is weaker than the
   Kubernetes path's `/health/ready`-based readiness probe — accepted per this phase's explicit
   instruction, documented rather than silently deviated from.
