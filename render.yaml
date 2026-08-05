@@ -121,6 +121,21 @@ services:
     # reports 'degraded', so it can't protect against a bad deploy via Render's gate. See
     # docs/deployment/render-blueprint.md's Health check section (Phase DEV-7.5).
     healthCheckPath: /api/v1/health/ready
+    # Runs `prisma migrate deploy` in a separate, ephemeral instance of this same build, after the
+    # build completes but before the new deploy receives traffic — Render blocks (and rolls back)
+    # the entire deploy if this command exits non-zero, so a bad migration never reaches a live
+    # instance. This is what closes the gap `docs/deployment/render-blueprint.md`'s "No migration
+    # automation" limitation used to document: Render's preDeployCommand always runs against the
+    # exact image a service deploys (confirmed against Render's own docs — it cannot target a
+    # different Dockerfile stage, and neither can a one-off Job), so making this work required the
+    # Prisma CLI to actually be present in `runtime` — see `apps/api-gateway/package.json`'s
+    # `prisma` entry (moved from devDependencies to dependencies) and `docs/infrastructure/
+    # migrations.md` for the full reasoning and the measured image-size cost. Invoked as a direct
+    # binary (`node_modules/.bin/prisma`), not `pnpm exec` — `runtime` still has no pnpm/corepack.
+    # Only on this service, not the worker — migrations should run exactly once per deploy, and
+    # Prisma's own migration-lock table makes a second concurrent `migrate deploy` safe (it waits,
+    # then no-ops) if this were ever accidentally duplicated, but there is no need to.
+    preDeployCommand: node_modules/.bin/prisma migrate deploy
     envVars:
       - fromGroup: patheya-qa-shared
       - key: APP_NAME

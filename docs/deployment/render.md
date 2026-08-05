@@ -186,15 +186,18 @@ Both the Web Service and Background Worker need the full set, since both process
 ## Deployment flow
 
 1. Provision Neon (Postgres) and Upstash (Redis) instances for QA.
-2. Run `prisma migrate deploy` against the Neon database — either as a Render **Job**/one-off
-   command (`pnpm --filter api-gateway exec prisma migrate deploy`, needs the same `build`-stage
-   `node_modules` the Kubernetes `migrate` Docker stage already reuses) or manually before first
-   deploy. This mirrors the `migrate-job.yaml` PreSync-hook role in the Kubernetes/ArgoCD path,
-   just without ArgoCD.
-3. Deploy the Web Service (`api-gateway`) with the environment variables above.
-4. Deploy the Background Worker (`worker`) with the same environment variables, different Start
-   Command.
-5. Confirm `/api/v1/health/ready` returns 200 on the Web Service before considering QA live.
+2. Deploy the Web Service (`api-gateway`) with the environment variables above. Migrations now run
+   automatically as part of this step — `render.yaml`'s `preDeployCommand:
+   node_modules/.bin/prisma migrate deploy` runs before every deploy and blocks it on failure. See
+   `docs/infrastructure/migrations.md`'s "The Render path" section for the full mechanism and why
+   a Render Job/one-off command (the previous plan, never actually automatable — see "Render
+   limitations" below) doesn't work here. Nothing manual is required, including on the very first
+   deploy — a fresh Neon database has no migration history, so `migrate deploy` simply applies all
+   of it.
+3. Deploy the Background Worker (`worker`) with the same environment variables, different Start
+   Command. No `preDeployCommand` needed here — migrations run exactly once, gated on the Web
+   Service's deploy.
+4. Confirm `/api/v1/health/ready` returns 200 on the Web Service before considering QA live.
 
 ## Render limitations found during this review
 
