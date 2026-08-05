@@ -64,7 +64,11 @@ const registeredQueues = BullModule.registerQueue(
  */
 @Global()
 @Module({
-  imports: [QueueInfrastructureModule, registeredQueues, RedisInfrastructureModule],
+  imports: [
+    QueueInfrastructureModule,
+    registeredQueues,
+    RedisInfrastructureModule,
+  ],
 
   providers: [QueueService, BullmqSharedConnectionObserver],
 

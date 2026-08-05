@@ -9,7 +9,12 @@ export interface RedisMetricsSnapshot {
   averagePingMs: number | null;
 }
 
-const AUTH_FAILURE_PATTERNS = ['NOAUTH', 'WRONGPASS', 'invalid password', 'ERR Client sent AUTH'];
+const AUTH_FAILURE_PATTERNS = [
+  'NOAUTH',
+  'WRONGPASS',
+  'invalid password',
+  'ERR Client sent AUTH',
+];
 const LATENCY_SAMPLE_WINDOW = 100;
 
 /**
@@ -44,7 +49,9 @@ export class RedisMetricsService {
   }
 
   recordError(error: Error): void {
-    if (AUTH_FAILURE_PATTERNS.some((pattern) => error.message.includes(pattern))) {
+    if (
+      AUTH_FAILURE_PATTERNS.some((pattern) => error.message.includes(pattern))
+    ) {
       this.authFailureCount += 1;
     }
   }

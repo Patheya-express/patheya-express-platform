@@ -54,12 +54,15 @@ export class BullmqSharedConnectionObserver implements OnModuleInit {
     // non-blocking pattern MetricsService's QueueEvents registration uses.
     this.notificationQueue.client
       .then((client) => {
-        this.redisConnectionFactory.registerExternalConnection(client as unknown as Redis, {
-          name: RedisConnectionName.BULLMQ_SHARED,
-          type: RedisConnectionType.BULLMQ_SHARED,
-          owner: 'QueueInfrastructureModule',
-          purpose: 'BullMQ shared queue connection',
-        });
+        this.redisConnectionFactory.registerExternalConnection(
+          client as unknown as Redis,
+          {
+            name: RedisConnectionName.BULLMQ_SHARED,
+            type: RedisConnectionType.BULLMQ_SHARED,
+            owner: 'QueueInfrastructureModule',
+            purpose: 'BullMQ shared queue connection',
+          },
+        );
       })
       .catch((error: unknown) => {
         this.logger.warn(

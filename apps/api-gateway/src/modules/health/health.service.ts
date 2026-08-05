@@ -157,7 +157,9 @@ export class HealthService {
    * gets the same bound defensively, for the same reason, even though Prisma's own pool/connect
    * timeouts likely already bound it in practice.
    */
-  private async withTimeout(operation: () => Promise<boolean>): Promise<boolean> {
+  private async withTimeout(
+    operation: () => Promise<boolean>,
+  ): Promise<boolean> {
     try {
       return await Promise.race([
         operation(),

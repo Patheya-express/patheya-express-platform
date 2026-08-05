@@ -28,7 +28,9 @@ export class AppLoggerService implements LoggerService {
   /** Merges the current request's correlation ID (if any — e.g. a BullMQ worker log has none)
    *  into every log line, without requiring any of this codebase's existing log call sites to
    *  pass it explicitly. A call site's own explicit `requestId` field always wins. */
-  private withRequestId(payload: Record<string, unknown>): Record<string, unknown> {
+  private withRequestId(
+    payload: Record<string, unknown>,
+  ): Record<string, unknown> {
     const requestId = this.requestContext?.getRequestId();
 
     if (requestId === undefined || payload.requestId !== undefined) {

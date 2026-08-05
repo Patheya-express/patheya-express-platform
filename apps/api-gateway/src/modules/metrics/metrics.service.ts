@@ -24,6 +24,7 @@ import { RedisConnectionFactory } from '../../infrastructure/redis-infrastructur
 import { RedisConfigurationService } from '../../infrastructure/redis-infrastructure/redis-configuration.service';
 import { RedisConnectionType } from '../../infrastructure/redis-infrastructure/enums/redis-connection-type.enum';
 import { RedisMetricsService } from '../../infrastructure/redis-infrastructure/redis-metrics.service';
+import { PresenceService } from '../presence/services/presence.service';
 
 const QUEUE_DEPTH_POLL_INTERVAL_MS = 15_000;
 
@@ -350,7 +351,9 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     help: 'Total Redis reconnect events observed by this process, across all registered connections',
     registers: [this.registry],
     collect: () => {
-      this.redisReconnectCount.set(this.redisMetrics.getSnapshot().reconnectCount);
+      this.redisReconnectCount.set(
+        this.redisMetrics.getSnapshot().reconnectCount,
+      );
     },
   });
 
@@ -359,7 +362,9 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     help: 'Total Redis disconnect events observed by this process, across all registered connections',
     registers: [this.registry],
     collect: () => {
-      this.redisDisconnectCount.set(this.redisMetrics.getSnapshot().disconnectCount);
+      this.redisDisconnectCount.set(
+        this.redisMetrics.getSnapshot().disconnectCount,
+      );
     },
   });
 
@@ -368,7 +373,9 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     help: 'Total Redis authentication failures observed by this process',
     registers: [this.registry],
     collect: () => {
-      this.redisAuthFailureCount.set(this.redisMetrics.getSnapshot().authFailureCount);
+      this.redisAuthFailureCount.set(
+        this.redisMetrics.getSnapshot().authFailureCount,
+      );
     },
   });
 
@@ -377,7 +384,9 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     help: 'Number of Redis connections currently registered as active by this process',
     registers: [this.registry],
     collect: () => {
-      this.redisActiveConnections.set(this.redisMetrics.getSnapshot().activeConnections);
+      this.redisActiveConnections.set(
+        this.redisMetrics.getSnapshot().activeConnections,
+      );
     },
   });
 
@@ -412,7 +421,102 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     registers: [this.registry],
   });
 
+  // ---------------------------------------------------------------------------------------------
+  // EventBus (Production Readiness Stage D)
+  // ---------------------------------------------------------------------------------------------
+
+  /** EventBusService.publish() catches and only *logs* a rejected handler — this is the only
+   *  place that failure becomes visible to Prometheus/alerting rather than requiring a log
+   *  search. Labeled by event name (a small, fixed set of string literals from call sites, not
+   *  user input — safe cardinality). */
+  private readonly eventBusEventsPublishedTotal = new Counter({
+    name: 'patheya_event_bus_events_published_total',
+    help: 'Total EventBusService.publish() calls, by event name',
+    labelNames: ['event'],
+    registers: [this.registry],
+  });
+
+  private readonly eventBusHandlerFailuresTotal = new Counter({
+    name: 'patheya_event_bus_handler_failures_total',
+    help: 'Total EventBusService subscriber handler rejections, by event name',
+    labelNames: ['event'],
+    registers: [this.registry],
+  });
+
+  // ---------------------------------------------------------------------------------------------
+  // Payment reconciliation (Production Readiness Stage D)
+  // ---------------------------------------------------------------------------------------------
+
+  /** Without this, PaymentReconciliationProcessor always reports its BullMQ job as "completed"
+   *  even if every single payment in the sweep failed to reconcile (reconcileOne() catches and
+   *  only logs per-payment errors) — a false-positive "healthy" signal on the one queue with no
+   *  other business metric. Mirrors dispatchReconciliationRunsTotal/
+   *  dispatchOrdersAwaitingAssignment's existing shape for the equivalent dispatch sweep. */
+  private readonly paymentReconciliationRunsTotal = new Counter({
+    name: 'patheya_payment_reconciliation_runs_total',
+    help: 'Total payment reconciliation sweep runs',
+    registers: [this.registry],
+  });
+
+  private readonly paymentReconciliationErrorsTotal = new Counter({
+    name: 'patheya_payment_reconciliation_errors_total',
+    help: 'Total per-payment errors encountered during payment reconciliation sweeps',
+    registers: [this.registry],
+  });
+
+  private readonly paymentReconciliationPendingAfterSweep = new Gauge({
+    name: 'patheya_payment_reconciliation_pending_after_sweep',
+    help: 'Number of payments still PENDING after the most recent reconciliation sweep',
+    registers: [this.registry],
+  });
+
+  // ---------------------------------------------------------------------------------------------
+  // Razorpay provider (Production Readiness Stage D)
+  // ---------------------------------------------------------------------------------------------
+
+  /** Distinct from the existing patheya_payment_latency_seconds (a business-flow duration from
+   *  Payment.createdAt to the success/failure event — includes DB writes, webhook round-trip
+   *  time from the customer's device, and queue delays). This times only the Razorpay SDK call
+   *  itself, so "Razorpay is slow/erroring" is distinguishable from "our own verification logic
+   *  has a bug." Labeled by operation, a small fixed set of string literals from call sites. */
+  private readonly razorpayApiCallDurationSeconds = new Histogram({
+    name: 'patheya_razorpay_api_call_duration_seconds',
+    help: 'Razorpay SDK call duration in seconds, by operation',
+    labelNames: ['operation'],
+    buckets: [0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30],
+    registers: [this.registry],
+  });
+
+  private readonly razorpayApiCallFailuresTotal = new Counter({
+    name: 'patheya_razorpay_api_call_failures_total',
+    help: 'Total Razorpay SDK call failures, by operation',
+    labelNames: ['operation'],
+    registers: [this.registry],
+  });
+
+  // ---------------------------------------------------------------------------------------------
+  // Presence (Production Readiness Stage D)
+  // ---------------------------------------------------------------------------------------------
+
+  /** Bridged from PresenceService's Redis-backed online sets, same pattern as the Redis-bridge
+   *  gauges above (re-read on every scrape via collect(), not pushed). A leading indicator for
+   *  dispatch capacity — "why is dispatch reconciliation finding stranded orders" often starts
+   *  with "how many delivery partners are online right now," previously invisible to Prometheus. */
+  private readonly supportAgentsOnline = new Gauge({
+    name: 'patheya_support_agents_online',
+    help: 'Number of support agents currently online (Redis presence set)',
+    registers: [this.registry],
+  });
+
+  private readonly deliveryPartnersOnline = new Gauge({
+    name: 'patheya_delivery_partners_online',
+    help: 'Number of delivery partners currently online (Redis presence set)',
+    registers: [this.registry],
+  });
+
   private pollHandle?: ReturnType<typeof setInterval>;
+
+  private presencePollHandle?: ReturnType<typeof setInterval>;
 
   private readonly queueEventListeners: QueueEvents[] = [];
 
@@ -422,6 +526,9 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     private readonly redisConnectionFactory: RedisConnectionFactory,
     private readonly redisConfiguration: RedisConfigurationService,
     private readonly redisMetrics: RedisMetricsService,
+    // MetricsModule imports PresenceCoreModule directly (Production Readiness Stage D) — always
+    // available, not marked @Optional(), same as the three Redis-infrastructure deps above.
+    private readonly presenceService: PresenceService,
     // Optional: worker-main.ts's WorkerModule does import QueueProducerModule (it needs the
     // processors), so QueueService is actually always available today — kept optional defensively, since a
     // future, further-slimmed process shape (e.g. a per-queue worker) shouldn't need this file to
@@ -436,6 +543,17 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleInit(): void {
+    // Production Readiness Stage D: independent of queueService's availability (unlike the
+    // BullMQ-specific polling below) — presence is a plain Redis-backed feature, always safe to
+    // poll on both the API and Worker processes.
+    this.presencePollHandle = setInterval(() => {
+      this.pollPresence().catch((error: unknown) => {
+        this.logger.warn(`Presence poll failed: ${String(error)}`);
+      });
+    }, QUEUE_DEPTH_POLL_INTERVAL_MS);
+
+    this.presencePollHandle.unref();
+
     if (!this.queueService) {
       return;
     }
@@ -469,11 +587,13 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
       events.on('failed', ({ jobId, failedReason }) => {
         this.recordJobFailed(queueName);
 
-        this.recordJobFinished(queueName, jobId, 'failed').catch((error: unknown) => {
-          this.logger.warn(
-            `Failed to record job duration/retry metrics for "${queueName}"/${jobId}: ${String(error)}`,
-          );
-        });
+        this.recordJobFinished(queueName, jobId, 'failed').catch(
+          (error: unknown) => {
+            this.logger.warn(
+              `Failed to record job duration/retry metrics for "${queueName}"/${jobId}: ${String(error)}`,
+            );
+          },
+        );
 
         this.logger.warn(
           `Job ${jobId} on queue "${queueName}" failed: ${failedReason}`,
@@ -483,11 +603,13 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
       events.on('completed', ({ jobId }) => {
         this.bullmqJobsCompletedTotal.inc({ queue: queueName });
 
-        this.recordJobFinished(queueName, jobId, 'completed').catch((error: unknown) => {
-          this.logger.warn(
-            `Failed to record job duration/retry metrics for "${queueName}"/${jobId}: ${String(error)}`,
-          );
-        });
+        this.recordJobFinished(queueName, jobId, 'completed').catch(
+          (error: unknown) => {
+            this.logger.warn(
+              `Failed to record job duration/retry metrics for "${queueName}"/${jobId}: ${String(error)}`,
+            );
+          },
+        );
       });
 
       // `events.client` is BullMQ's own accessor for the connection it just created — resolves
@@ -502,12 +624,15 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
           // instance (`this === target` for all forwarded calls; see `createIORedisClient` in
           // `bullmq`'s `classes/ioredis-client.js`). Structurally compatible with `Redis` for
           // every operation this factory performs on it, even though TS doesn't know that.
-          this.redisConnectionFactory.registerExternalConnection(client as unknown as Redis, {
-            name: `bullmq:queue-events:${queueName}`,
-            type: RedisConnectionType.BULLMQ_QUEUE_EVENTS,
-            owner: 'MetricsService',
-            purpose: 'BullMQ QueueEvents monitoring',
-          });
+          this.redisConnectionFactory.registerExternalConnection(
+            client as unknown as Redis,
+            {
+              name: `bullmq:queue-events:${queueName}`,
+              type: RedisConnectionType.BULLMQ_QUEUE_EVENTS,
+              owner: 'MetricsService',
+              purpose: 'BullMQ QueueEvents monitoring',
+            },
+          );
         })
         .catch((error: unknown) => {
           this.logger.warn(
@@ -535,7 +660,21 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
       clearInterval(this.pollHandle);
     }
 
+    if (this.presencePollHandle) {
+      clearInterval(this.presencePollHandle);
+    }
+
     await Promise.all(this.queueEventListeners.map((events) => events.close()));
+  }
+
+  private async pollPresence(): Promise<void> {
+    const [agents, partners] = await Promise.all([
+      this.presenceService.listOnlineAgentIds(),
+      this.presenceService.countOnlinePartners(),
+    ]);
+
+    this.recordSupportAgentsOnline(agents.length);
+    this.recordDeliveryPartnersOnline(partners);
   }
 
   private async pollQueueDepths(): Promise<void> {
@@ -551,7 +690,10 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
       this.bullmqJobsWaiting.set({ queue }, counts.waiting);
       this.bullmqJobsActive.set({ queue }, counts.active);
       this.bullmqJobsDelayed.set({ queue }, counts.delayed);
-      this.bullmqOldestWaitingJobAgeSeconds.set({ queue }, counts.oldestWaitingAgeSeconds);
+      this.bullmqOldestWaitingJobAgeSeconds.set(
+        { queue },
+        counts.oldestWaitingAgeSeconds,
+      );
     }
   }
 
@@ -575,7 +717,10 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    if (typeof job.processedOn === 'number' && typeof job.finishedOn === 'number') {
+    if (
+      typeof job.processedOn === 'number' &&
+      typeof job.finishedOn === 'number'
+    ) {
       this.bullmqJobDurationSeconds.observe(
         { queue: queueName, outcome },
         (job.finishedOn - job.processedOn) / 1000,
@@ -583,7 +728,10 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (typeof job.attemptsMade === 'number' && job.attemptsMade > 1) {
-      this.bullmqJobRetriesTotal.inc({ queue: queueName }, job.attemptsMade - 1);
+      this.bullmqJobRetriesTotal.inc(
+        { queue: queueName },
+        job.attemptsMade - 1,
+      );
     }
   }
 
@@ -662,7 +810,10 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     this.paymentsSuccessTotal.inc();
 
     if (typeof latencySeconds === 'number') {
-      this.paymentLatencySeconds.observe({ outcome: 'success' }, latencySeconds);
+      this.paymentLatencySeconds.observe(
+        { outcome: 'success' },
+        latencySeconds,
+      );
     }
   }
 
@@ -718,6 +869,39 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
 
   recordPrismaQueryError(): void {
     this.prismaQueryErrorsTotal.inc();
+  }
+
+  recordEventPublished(event: string): void {
+    this.eventBusEventsPublishedTotal.inc({ event });
+  }
+
+  recordEventHandlerFailure(event: string): void {
+    this.eventBusHandlerFailuresTotal.inc({ event });
+  }
+
+  recordPaymentReconciliationRun(pendingAfterSweep: number): void {
+    this.paymentReconciliationRunsTotal.inc();
+    this.paymentReconciliationPendingAfterSweep.set(pendingAfterSweep);
+  }
+
+  recordPaymentReconciliationError(): void {
+    this.paymentReconciliationErrorsTotal.inc();
+  }
+
+  observeRazorpayApiCall(operation: string, seconds: number): void {
+    this.razorpayApiCallDurationSeconds.observe({ operation }, seconds);
+  }
+
+  recordRazorpayApiCallFailure(operation: string): void {
+    this.razorpayApiCallFailuresTotal.inc({ operation });
+  }
+
+  recordSupportAgentsOnline(count: number): void {
+    this.supportAgentsOnline.set(count);
+  }
+
+  recordDeliveryPartnersOnline(count: number): void {
+    this.deliveryPartnersOnline.set(count);
   }
 
   async getMetrics(): Promise<string> {

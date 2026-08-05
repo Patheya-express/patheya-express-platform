@@ -144,12 +144,15 @@ export class RealtimeGateway
       purpose: 'Socket.IO Redis adapter publisher',
     });
 
-    const subClient = this.redisConnectionFactory.duplicateConnection(pubClient, {
-      name: RedisConnectionName.SOCKETIO_SUBSCRIBER,
-      type: RedisConnectionType.SOCKETIO_SUBSCRIBER,
-      owner: 'RealtimeGateway',
-      purpose: 'Socket.IO Redis adapter subscriber',
-    });
+    const subClient = this.redisConnectionFactory.duplicateConnection(
+      pubClient,
+      {
+        name: RedisConnectionName.SOCKETIO_SUBSCRIBER,
+        type: RedisConnectionType.SOCKETIO_SUBSCRIBER,
+        owner: 'RealtimeGateway',
+        purpose: 'Socket.IO Redis adapter subscriber',
+      },
+    );
 
     server.adapter(createAdapter(pubClient, subClient));
 

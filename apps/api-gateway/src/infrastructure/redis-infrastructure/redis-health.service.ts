@@ -39,7 +39,11 @@ export class RedisHealthService {
       const client = this.registry.getClient(metadata.name);
 
       if (!client) {
-        return { name: metadata.name, healthy: false, error: 'client not found' };
+        return {
+          name: metadata.name,
+          healthy: false,
+          error: 'client not found',
+        };
       }
 
       const start = Date.now();
@@ -52,7 +56,11 @@ export class RedisHealthService {
         this.metrics.recordLatencySample(latencyMs);
         return { name: metadata.name, healthy: true, latencyMs };
       } catch (error) {
-        return { name: metadata.name, healthy: false, error: (error as Error).message };
+        return {
+          name: metadata.name,
+          healthy: false,
+          error: (error as Error).message,
+        };
       }
     });
 

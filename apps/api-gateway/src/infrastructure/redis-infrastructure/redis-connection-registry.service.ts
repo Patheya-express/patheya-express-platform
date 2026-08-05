@@ -123,11 +123,15 @@ export class RedisConnectionRegistry {
   }
 
   getAll(): ReadonlyArray<RedisConnectionMetadata> {
-    return Array.from(this.connections.values()).map((record) => this.toMetadata(record));
+    return Array.from(this.connections.values()).map((record) =>
+      this.toMetadata(record),
+    );
   }
 
   getDisconnected(): ReadonlyArray<RedisConnectionMetadata> {
-    return this.getAll().filter((metadata) => DISCONNECTED_STATUSES.has(metadata.status));
+    return this.getAll().filter((metadata) =>
+      DISCONNECTED_STATUSES.has(metadata.status),
+    );
   }
 
   findDuplicateNames(): string[] {

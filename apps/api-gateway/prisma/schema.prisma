@@ -2896,6 +2896,17 @@ model WalletTransaction {
   @@index([userId, createdAt])
   @@index([orderId])
   @@index([type])
+  // Production Readiness Stage D (Disaster Recovery): defense-in-depth against a duplicate
+  // EventBusService.publish() (e.g. 'order.status.changed'/'order.refunded' fired twice for the
+  // same order — EventBusService has no built-in de-duplication) crediting a wallet twice for
+  // the same order+transaction-type. Every order-scoped WalletTransactionType (CASHBACK,
+  // REFUND_CREDIT, ORDER_PAYMENT) is legitimately exactly-once per (user, order) — verified
+  // against every write site (WalletService.creditCashback/creditRefund/applyToOrder, all
+  // upstream-gated by an order-level atomic claim already). Non-order-scoped types
+  // (REFERRAL_REWARD, ADMIN_ADJUSTMENT) always have orderId = NULL, and Postgres treats each NULL
+  // as distinct in a unique index, so they're unaffected. Confirmed zero existing duplicate
+  // (userId, type, orderId) groups in the dev database before adding this.
+  @@unique([userId, type, orderId])
   @@map("wallet_transactions")
 }
 

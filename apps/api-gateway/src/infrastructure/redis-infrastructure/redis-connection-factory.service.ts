@@ -103,7 +103,10 @@ export class RedisConnectionFactory {
 
   /** Registers/instruments a client this factory did not construct — see the migration note
    *  above for why `QueueEvents` specifically must use this instead of `createConnection()`. */
-  registerExternalConnection(client: Redis, params: RegisterExternalConnectionParams): void {
+  registerExternalConnection(
+    client: Redis,
+    params: RegisterExternalConnectionParams,
+  ): void {
     this.registerClient(client, params);
 
     this.logger.log(
@@ -113,9 +116,14 @@ export class RedisConnectionFactory {
 
   private registerClient(
     client: Redis,
-    params: { name: string; type: RedisConnectionType; purpose: string; owner: string },
+    params: {
+      name: string;
+      type: RedisConnectionType;
+      purpose: string;
+      owner: string;
+    },
   ): void {
-    const options = client.options as RedisOptions;
+    const options = client.options;
 
     this.registry.register({
       name: params.name,

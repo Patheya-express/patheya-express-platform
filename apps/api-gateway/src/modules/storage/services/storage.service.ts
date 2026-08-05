@@ -27,7 +27,9 @@ export class StorageService {
 
     folder: string,
   ): Promise<string> {
-    const result = await this.timedUpload(() => this.provider.upload(file, folder));
+    const result = await this.timedUpload(() =>
+      this.provider.upload(file, folder),
+    );
 
     return result.url;
   }
@@ -60,7 +62,9 @@ export class StorageService {
     folder: string,
     existingKey: string,
   ): Promise<UploadResult> {
-    return this.timedUpload(() => this.provider.replace(file, folder, existingKey));
+    return this.timedUpload(() =>
+      this.provider.replace(file, folder, existingKey),
+    );
   }
 
   async delete(key: string) {

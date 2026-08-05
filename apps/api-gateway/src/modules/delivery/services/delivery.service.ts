@@ -540,9 +540,9 @@ export class DeliveryService {
     return this.usersService.blockUser(partner.userId, actingUserId);
   }
 
-  async unblockPartner(deliveryPartnerId: string) {
+  async unblockPartner(deliveryPartnerId: string, actingUserId: string) {
     const partner = await this.findAdminTarget(deliveryPartnerId);
 
-    return this.usersService.restoreUser(partner.userId);
+    return this.usersService.restoreUser(partner.userId, actingUserId);
   }
 }

@@ -3,8 +3,11 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
+
+import { AppLoggerService } from '../../../infrastructure/logger/logger.service';
 
 import {
   UserRole,
@@ -112,6 +115,10 @@ export class UsersService {
     private readonly storageService: StorageService,
     private readonly realtimeService: RealtimeService,
     private readonly redisService: RedisService,
+
+    // Optional so users.service.session.spec.ts's 7-arg construction keeps working.
+    @Optional()
+    private readonly logger?: AppLoggerService,
   ) {}
 
   async getProfile(userId: string) {
@@ -276,7 +283,7 @@ export class UsersService {
     return this.usersRepository.countByRole(role);
   }
 
-  async activateUser(targetUserId: string) {
+  async activateUser(targetUserId: string, actingUserId: string) {
     const target = await this.usersRepository.findById(targetUserId);
 
     if (!target) {
@@ -290,6 +297,18 @@ export class UsersService {
     const updated = await this.usersRepository.updateStatus(
       targetUserId,
       UserStatus.ACTIVE,
+    );
+
+    // Production Readiness Stage D (Security Operations): account-status-change actions
+    // (activate/suspend/restore/block) previously had no audit trail — the same class of
+    // action changePassword()/deleteAccount() already audit-log in this file.
+    await this.auditService.log(
+      actingUserId,
+      'User',
+      targetUserId,
+      AuditAction.STATUS_CHANGE,
+      { status: target.status },
+      { status: UserStatus.ACTIVE, action: 'activated' },
     );
 
     return toSafeUser(updated);
@@ -322,12 +341,21 @@ export class UsersService {
       UserStatus.SUSPENDED,
     );
 
+    await this.auditService.log(
+      actingUserId,
+      'User',
+      targetUserId,
+      AuditAction.STATUS_CHANGE,
+      { status: target.status },
+      { status: UserStatus.SUSPENDED, action: 'suspended' },
+    );
+
     await this.revokeAllSessions(targetUserId);
 
     return toSafeUser(updated);
   }
 
-  async restoreUser(targetUserId: string) {
+  async restoreUser(targetUserId: string, actingUserId: string) {
     const target = await this.usersRepository.findById(targetUserId);
 
     if (!target) {
@@ -346,6 +374,15 @@ export class UsersService {
     const updated = await this.usersRepository.updateStatus(
       targetUserId,
       UserStatus.ACTIVE,
+    );
+
+    await this.auditService.log(
+      actingUserId,
+      'User',
+      targetUserId,
+      AuditAction.STATUS_CHANGE,
+      { status: target.status },
+      { status: UserStatus.ACTIVE, action: 'restored' },
     );
 
     // Mirror image of suspend/block's blockedKey write below — safe to call even if it was
@@ -384,6 +421,15 @@ export class UsersService {
       UserStatus.BLOCKED,
     );
 
+    await this.auditService.log(
+      actingUserId,
+      'User',
+      targetUserId,
+      AuditAction.STATUS_CHANGE,
+      { status: target.status },
+      { status: UserStatus.BLOCKED, action: 'blocked' },
+    );
+
     await this.revokeAllSessions(targetUserId);
 
     return toSafeUser(updated);
@@ -409,10 +455,20 @@ export class UsersService {
 
     try {
       await this.redisService.set(blockedKey(userId), '1');
-    } catch {
+    } catch (error) {
       // Redis unavailable — the refresh-token revocation above still holds; the access-token
       // window is bounded to at most 15 minutes regardless, same fail-open posture as
-      // jwt.strategy.ts's own Redis calls.
+      // jwt.strategy.ts's own Redis calls. Production Readiness Stage D (Logging Audit): this
+      // doc comment already claimed "failures there are logged" — this catch previously had no
+      // logger call at all, a real doc/code mismatch on an auth-enforcement path.
+      this.logger?.warn(
+        {
+          event: 'revoke_all_sessions_redis_flag_failed',
+          userId,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+        'UsersService',
+      );
     }
 
     this.realtimeService.disconnectUser(userId);

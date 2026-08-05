@@ -1,10 +1,12 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Optional, UnauthorizedException } from '@nestjs/common';
 
 import { PassportStrategy } from '@nestjs/passport';
 
 import { ExtractJwt, Strategy } from 'passport-jwt';
 
 import { RedisService } from '../../../infrastructure/redis/redis.service';
+
+import { AppLoggerService } from '../../../infrastructure/logger/logger.service';
 
 interface AccessTokenPayload {
   sub: string;
@@ -15,7 +17,13 @@ interface AccessTokenPayload {
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
-  constructor(private readonly redisService: RedisService) {
+  constructor(
+    private readonly redisService: RedisService,
+
+    // Optional so jwt.strategy.spec.ts's `new JwtStrategy(redisService)` (one arg) keeps working.
+    @Optional()
+    private readonly logger?: AppLoggerService,
+  ) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
 
@@ -52,15 +60,36 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
           : Promise.resolve(null),
         this.redisService.get(`auth:blocked:${payload.sub}`),
       ]);
-    } catch {
-      // Redis unavailable — fail open, see doc comment above.
+    } catch (error) {
+      // Redis unavailable — fail open, see doc comment above. Production Readiness Stage D
+      // (Logging Audit): this previously had no log call at all, despite the doc comment above
+      // claiming "logs and allows the request through" — an auth-enforcement path silently
+      // degrading (blacklist/blocked checks stop being enforced) had zero log trail.
+      this.logger?.warn(
+        {
+          event: 'jwt_strategy_redis_check_failed',
+          userId: payload.sub,
+          reason: error instanceof Error ? error.message : String(error),
+        },
+        'JwtStrategy',
+      );
     }
 
     if (blacklisted) {
+      this.logger?.warn(
+        { event: 'auth_token_rejected_blacklisted', userId: payload.sub },
+        'JwtStrategy',
+      );
+
       throw new UnauthorizedException('Session has been logged out');
     }
 
     if (blocked) {
+      this.logger?.warn(
+        { event: 'auth_token_rejected_account_blocked', userId: payload.sub },
+        'JwtStrategy',
+      );
+
       throw new UnauthorizedException('Account is no longer active');
     }
 

@@ -1,4 +1,8 @@
-import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  OnModuleInit,
+  OnApplicationShutdown,
+} from '@nestjs/common';
 
 import { Prisma, PrismaClient } from '@prisma/client';
 
@@ -14,7 +18,7 @@ const SLOW_QUERY_THRESHOLD_MS = 200;
 @Injectable()
 export class PrismaService
   extends PrismaClient<Prisma.PrismaClientOptions, 'query' | 'error'>
-  implements OnModuleInit, OnModuleDestroy
+  implements OnModuleInit, OnApplicationShutdown
 {
   constructor(
     private readonly logger: AppLoggerService,
@@ -69,7 +73,20 @@ export class PrismaService
     await this.$connect();
   }
 
-  async onModuleDestroy() {
+  /**
+   * Production Readiness Stage D (Disaster Recovery): was `onModuleDestroy`, which Nest runs in
+   * the *first* shutdown phase — strictly before the HTTP server drains (`dispose()`) and before
+   * BullMQ's own graceful Worker.close() drain (`onApplicationShutdown`, `@nestjs/bullmq`'s
+   * `BullExplorer`). That ordering meant an in-flight HTTP request or an actively-processing
+   * BullMQ job could have its Prisma connection torn out from under it before either had a chance
+   * to finish — verified directly against `@nestjs/core`'s `nest-application-context.js`
+   * (`callDestroyHook` → `callBeforeShutdownHook` → `dispose()` → `callShutdownHook`) and
+   * `@nestjs/bullmq`'s `bull.explorer.js` (`onApplicationShutdown` is what calls
+   * `worker.close()`). Moving this to `onApplicationShutdown` puts Prisma's disconnect in the
+   * same final phase as the HTTP server close and the BullMQ drain, instead of strictly before
+   * both.
+   */
+  async onApplicationShutdown() {
     await this.$disconnect();
   }
 

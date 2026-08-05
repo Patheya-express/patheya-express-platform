@@ -889,7 +889,14 @@ export class OrdersService {
     );
   }
 
-  /** Invoked by OrderPaymentListener when a Razorpay payment succeeds. Idempotent — safe to call more than once. */
+  /**
+   * Invoked by OrderPaymentListener when a Razorpay payment succeeds. Idempotent — safe to call
+   * more than once. Production Readiness Stage D (Disaster Recovery): the paymentStatus flip is
+   * now an atomic conditional claim (`claimPaymentStatusTransition`) rather than a check-then-act
+   * read + unconditional write — closes the race where two near-simultaneous payment.success
+   * events for the same order could both pass the old `paymentStatus === PAID` guard before
+   * either write committed, and both fire the CONFIRMED transition + event publish.
+   */
   async markOrderPaid(orderId: string) {
     const order = await this.ordersRepository.findOrderById(orderId);
 
@@ -897,10 +904,16 @@ export class OrdersService {
       return;
     }
 
-    await this.ordersRepository.updatePaymentStatus(
+    const claim = await this.ordersRepository.claimPaymentStatusTransition(
       orderId,
+      [PaymentStatus.PENDING, PaymentStatus.FAILED, PaymentStatus.REFUNDED],
       PaymentStatus.PAID,
     );
+
+    if (claim.count === 0) {
+      // Lost the race to another concurrent call already marking this order paid — no-op.
+      return;
+    }
 
     if (order.status === OrderStatus.PENDING) {
       const updatedOrder = await this.ordersRepository.updateOrderStatus(
@@ -930,7 +943,8 @@ export class OrdersService {
     }
   }
 
-  /** Invoked by OrderPaymentListener when a Razorpay payment fails. */
+  /** Invoked by OrderPaymentListener when a Razorpay payment fails. Production Readiness Stage D
+   *  (Disaster Recovery): same atomic-claim treatment as markOrderPaid, for the same reason. */
   async markOrderPaymentFailed(orderId: string) {
     const order = await this.ordersRepository.findOrderById(orderId);
 
@@ -938,8 +952,9 @@ export class OrdersService {
       return;
     }
 
-    await this.ordersRepository.updatePaymentStatus(
+    await this.ordersRepository.claimPaymentStatusTransition(
       orderId,
+      [PaymentStatus.PENDING, PaymentStatus.FAILED, PaymentStatus.REFUNDED],
       PaymentStatus.FAILED,
     );
   }

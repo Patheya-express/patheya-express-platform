@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, OnApplicationShutdown } from '@nestjs/common';
 
 import Redis from 'ioredis';
 
@@ -9,7 +9,7 @@ import { RedisConnectionType } from '../redis-infrastructure/enums/redis-connect
 import { RedisConnectionName } from '../redis-infrastructure/enums/redis-connection-name.enum';
 
 @Injectable()
-export class RedisService implements OnModuleDestroy {
+export class RedisService implements OnApplicationShutdown {
   private readonly redis: Redis;
 
   /**
@@ -79,7 +79,11 @@ export class RedisService implements OnModuleDestroy {
     await this.redis.del(key);
   }
 
-  async onModuleDestroy() {
+  /** Production Readiness Stage D (Disaster Recovery): was `onModuleDestroy` — see
+   *  PrismaService.onApplicationShutdown's doc comment for the verified Nest shutdown-phase
+   *  ordering bug this fixes (Redis was being torn down before the HTTP server/BullMQ workers
+   *  finished draining in-flight work, not after). */
+  async onApplicationShutdown() {
     await this.redis.quit();
   }
 }

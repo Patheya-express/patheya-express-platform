@@ -5,7 +5,12 @@ describe('RealtimeGateway.disconnectUser', () => {
     const disconnectSockets = jest.fn().mockResolvedValue(undefined);
     const server = { in: jest.fn().mockReturnValue({ disconnectSockets }) };
 
-    const gateway = new RealtimeGateway({} as any, {} as any, {} as any, {} as any);
+    const gateway = new RealtimeGateway(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
     (gateway as unknown as { server: typeof server }).server = server;
 
     gateway.disconnectUser('user-1');

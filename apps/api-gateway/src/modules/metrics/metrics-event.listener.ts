@@ -44,7 +44,10 @@ export class MetricsEventListener implements OnModuleInit {
     this.eventBus.subscribe(
       'order.status.changed',
       async (event: { orderId: string; status: string }) => {
-        if (event.status !== OrderStatus.DELIVERED && event.status !== OrderStatus.CANCELLED) {
+        if (
+          event.status !== OrderStatus.DELIVERED &&
+          event.status !== OrderStatus.CANCELLED
+        ) {
           return;
         }
 

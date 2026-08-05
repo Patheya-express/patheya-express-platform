@@ -243,6 +243,20 @@ export class WalletRepository {
     return { items, total };
   }
 
+  /** Production Readiness Stage D: backs WalletService.writeLedgerEntry's duplicate-event
+   *  handling — when the new (userId, type, orderId) unique constraint rejects a second write
+   *  for the same order+type, this fetches the entry that already won so the caller can treat it
+   *  as an idempotent no-op instead of a genuine failure. */
+  async findLedgerEntry(
+    userId: string,
+    type: WalletTransactionType,
+    orderId: string,
+  ): Promise<WalletTransaction | null> {
+    return this.prisma.walletTransaction.findUnique({
+      where: { userId_type_orderId: { userId, type, orderId } },
+    });
+  }
+
   async findOrderForWallet(orderId: string) {
     return this.prisma.order.findUnique({
       where: { id: orderId },

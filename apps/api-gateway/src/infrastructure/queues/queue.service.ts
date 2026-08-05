@@ -204,7 +204,12 @@ export class QueueService {
   async getQueueJobCounts(): Promise<
     Record<
       string,
-      { waiting: number; active: number; delayed: number; oldestWaitingAgeSeconds: number }
+      {
+        waiting: number;
+        active: number;
+        delayed: number;
+        oldestWaitingAgeSeconds: number;
+      }
     >
   > {
     const queues: Record<string, Queue> = {

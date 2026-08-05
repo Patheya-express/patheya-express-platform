@@ -33,9 +33,10 @@ export class DispatchReconciliationService {
   ) {}
 
   async reconcileStrandedAssignments(): Promise<void> {
-    const orders = await this.dispatchRepository.findStrandedReadyForPickupOrders(
-      STRANDED_THRESHOLD_MS,
-    );
+    const orders =
+      await this.dispatchRepository.findStrandedReadyForPickupOrders(
+        STRANDED_THRESHOLD_MS,
+      );
 
     // Recorded even when zero — a gauge left unset after the last non-zero run would keep
     // reporting stale data forever instead of reflecting "nothing stranded right now".
@@ -50,7 +51,10 @@ export class DispatchReconciliationService {
     );
 
     for (const order of orders) {
-      await this.queueService.addDispatchAssignmentJob(order.id, 'reconciliation');
+      await this.queueService.addDispatchAssignmentJob(
+        order.id,
+        'reconciliation',
+      );
     }
   }
 }

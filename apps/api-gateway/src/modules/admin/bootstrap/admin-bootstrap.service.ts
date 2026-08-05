@@ -201,7 +201,11 @@ export class AdminBootstrapService implements OnApplicationBootstrap {
         {
           event: 'super_admin_created',
 
-          email: created.email,
+          // Production Readiness Stage D (Logging Audit): logs userId, not email — matching
+          // AuthService's own convention elsewhere (register/login log userId, never email).
+          // `email` isn't in redact.util.ts's redaction pattern, so it would have passed through
+          // to the log sink unredacted.
+          userId: created.id,
 
           role: UserRole.SUPER_ADMIN,
         },

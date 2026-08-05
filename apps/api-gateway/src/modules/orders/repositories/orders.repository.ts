@@ -485,7 +485,10 @@ export class OrdersRepository extends BaseRepository {
    * call, wallet credit, coupon release) — every other concurrent caller's claim affects zero
    * rows and is a clean, cheap no-op. Also used, with the args reversed, as the compensating
    * revert (REFUNDED→PAID) if the refund attempt fails after this claim already committed — a
-   * single local conditional update, not a saga.
+   * single local conditional update, not a saga. Production Readiness Stage D (Disaster
+   * Recovery): also reused by OrdersService.markOrderPaid/markOrderPaymentFailed, replacing what
+   * used to be a check-then-act read + unconditional `updatePaymentStatus` write there — same
+   * race, same fix.
    */
   async claimPaymentStatusTransition(
     orderId: string,
