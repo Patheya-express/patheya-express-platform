@@ -107,6 +107,7 @@ export class DispatchRepository {
     deliveryPartnerId: string;
     expiresAt: Date;
     dispatchableStatuses: OrderStatus[];
+    cycle: number;
   }): Promise<CreateAssignmentResult> {
     return this.prisma.$transaction(async (tx: TransactionClient) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${params.orderId}))`;
@@ -150,6 +151,8 @@ export class DispatchRepository {
           deliveryPartnerId: params.deliveryPartnerId,
 
           expiresAt: params.expiresAt,
+
+          cycle: params.cycle,
         },
       });
 
@@ -388,15 +391,197 @@ export class DispatchRepository {
       select: {
         deliveryPartnerId: true,
         status: true,
+        cycle: true,
+        // Enterprise Dispatch Engine Enhancement — Phase 2 (rejection cooldown). Reuses the
+        // pre-existing respondedAt column (already set by claimAssignmentTransition on every
+        // reject/expiry) rather than adding a new timestamp — DispatchService.assignOrder()
+        // compares this against DISPATCH_REJECTION_COOLDOWN_SECONDS to keep a partner who just
+        // rejected out of the pool across a cycle boundary, without a new column or a timer.
+        respondedAt: true,
+        // Phase 3 (Change 6 — admin visibility). AdminDispatchService.getDispatchDebugInfo()'s
+        // lastAttemptAt reuses this same query rather than adding a new one.
+        assignedAt: true,
       },
     });
   }
+
+  /**
+   * Enterprise Dispatch Engine Enhancement — adds the pickup branch's coordinates (needed for the
+   * "nearest to restaurant" priority tiebreak) on top of the pre-existing return shape. Purely
+   * additive: every field `assignOrder()` already read off this result (`status`,
+   * `deliveryPartnerId`, `customerId`, etc.) is untouched, this only adds a populated `branch`
+   * relation that was previously left unfetched (Order.branchId is optional, so `branch` can
+   * legitimately be null for an order with no branch on record — callers must treat missing
+   * coordinates as "skip distance ranking for this order", not an error).
+   *
+   * Phase 3 (Change 4 — restaurant cancellation): also adds `branch.isActive`/`timezone`/
+   * `operatingHours` and `restaurant.status`, needed for DispatchService.assignOrder() to detect
+   * "the restaurant closed/became unavailable since this order was queued" on every call —
+   * including every delayed BullMQ retry, since every one of them re-enters through this same
+   * method. `operatingHours` reuses the exact shape `computeIsOpenNow` (restaurants module)
+   * already expects — no new open-hours logic, the existing one is called as-is.
+   */
   async findOrderById(orderId: string) {
     return this.prisma.order.findUnique({
       where: {
         id: orderId,
       },
+
+      include: {
+        branch: {
+          select: {
+            latitude: true,
+            longitude: true,
+            isActive: true,
+            timezone: true,
+            operatingHours: {
+              select: {
+                dayOfWeek: true,
+                opensAt: true,
+                closesAt: true,
+                isClosed: true,
+              },
+            },
+          },
+        },
+
+        restaurant: {
+          select: { status: true },
+        },
+      },
     });
+  }
+
+  /**
+   * Enterprise Dispatch Engine Enhancement — priority tiebreak #7 ("oldest previous assignment
+   * timestamp"): the most recent `assignedAt` this partner has ever received, across every order,
+   * any status. A partner absent from the returned map has never been assigned anything — callers
+   * should treat that as more preferred than any real timestamp (they've been waiting longest).
+   * `groupBy`'s `_max` keeps this to one aggregate query for the whole candidate list rather than
+   * one query per partner.
+   */
+  async findLastAssignmentTimestamps(
+    partnerIds: string[],
+  ): Promise<Map<string, Date>> {
+    if (partnerIds.length === 0) {
+      return new Map();
+    }
+
+    const rows = await this.prisma.deliveryAssignment.groupBy({
+      by: ['deliveryPartnerId'],
+
+      where: { deliveryPartnerId: { in: partnerIds } },
+
+      _max: { assignedAt: true },
+    });
+
+    return new Map(
+      rows
+        .filter((row) => row._max.assignedAt !== null)
+        .map((row) => [row.deliveryPartnerId, row._max.assignedAt as Date]),
+    );
+  }
+
+  /**
+   * Phase 3 (Change 2 — partner load balancing), priority criterion #1 ("lowest active
+   * workload"). Replaces the Phase 1 lifetime-assignment count, which eventually favored
+   * whichever partner joined earliest forever (a partner's lifetime total only ever grows).
+   * Counts current PENDING/ACCEPTED assignments per partner, same statuses
+   * `findPartnerIdsWithActiveAssignment` already excludes on — by construction every candidate
+   * reaching this ranking has 0 here (anyone non-zero was already filtered out upstream), so this
+   * criterion is a guaranteed tie among `onlinePartners` under the current one-order-at-a-time
+   * partner model. Kept anyway (not skipped) because it's the literal, explicitly requested first
+   * criterion, gracefully falls through to #2 below (which does differentiate), and would start
+   * differentiating on its own the moment multi-order carrying is ever introduced — without this
+   * method needing to change at all.
+   */
+  async countActiveAssignmentsForPartners(
+    partnerIds: string[],
+  ): Promise<Map<string, number>> {
+    if (partnerIds.length === 0) {
+      return new Map();
+    }
+
+    const rows = await this.prisma.deliveryAssignment.groupBy({
+      by: ['deliveryPartnerId'],
+
+      where: {
+        deliveryPartnerId: { in: partnerIds },
+        status: { in: [AssignmentStatus.PENDING, AssignmentStatus.ACCEPTED] },
+      },
+
+      _count: { _all: true },
+    });
+
+    return new Map(rows.map((row) => [row.deliveryPartnerId, row._count._all]));
+  }
+
+  /**
+   * Phase 3 (Change 2 — partner load balancing), priority criterion #2 ("fewest completed
+   * deliveries in the last DISPATCH_LOAD_WINDOW_MINUTES"). There is no "completed" AssignmentStatus
+   * (PENDING/ASSIGNED/ACCEPTED/REJECTED/EXPIRED only — `ASSIGNED` is unused dead enum, confirmed
+   * nowhere referenced in application code) — a completed delivery is recorded on `Order`
+   * (`status: DELIVERED`, `deliveredAt` set), keyed by `Order.deliveryPartnerId`, which — unlike
+   * `DeliveryAssignment.deliveryPartnerId` — stores the delivery partner's *User* id
+   * (`acceptAssignmentAtomic` sets it to `deliveryPartnerUserId`), so this is intentionally keyed
+   * by `userId`, not `DeliveryPartner.id`, and callers must look it up accordingly. A partner
+   * absent from the returned map completed 0 deliveries in the window.
+   */
+  async countRecentCompletedDeliveriesForPartners(
+    partnerUserIds: string[],
+    windowMs: number,
+  ): Promise<Map<string, number>> {
+    if (partnerUserIds.length === 0) {
+      return new Map();
+    }
+
+    const rows = await this.prisma.order.groupBy({
+      by: ['deliveryPartnerId'],
+
+      where: {
+        deliveryPartnerId: { in: partnerUserIds },
+        status: OrderStatus.DELIVERED,
+        deliveredAt: { gte: new Date(Date.now() - windowMs) },
+      },
+
+      _count: { _all: true },
+    });
+
+    return new Map(
+      rows
+        .filter((row) => row.deliveryPartnerId !== null)
+        .map((row) => [row.deliveryPartnerId as string, row._count._all]),
+    );
+  }
+
+  /**
+   * Phase 3 (Change 3 — assignment notification rate limit). Reuses the pre-existing `assignedAt`
+   * timestamp (set on every `createAssignmentForOrder` call, i.e. every time a partner is actually
+   * notified) — no new column, no timer, no poll, same "compare a timestamp live during filtering"
+   * shape as the Phase 2 rejection cooldown. Deliberately global (every order, every status), not
+   * scoped to one order — this caps how many *notifications* a partner receives per minute overall,
+   * not how many times they can be offered one specific order.
+   */
+  async countRecentAssignmentsForPartners(
+    partnerIds: string[],
+    windowMs: number,
+  ): Promise<Map<string, number>> {
+    if (partnerIds.length === 0) {
+      return new Map();
+    }
+
+    const rows = await this.prisma.deliveryAssignment.groupBy({
+      by: ['deliveryPartnerId'],
+
+      where: {
+        deliveryPartnerId: { in: partnerIds },
+        assignedAt: { gte: new Date(Date.now() - windowMs) },
+      },
+
+      _count: { _all: true },
+    });
+
+    return new Map(rows.map((row) => [row.deliveryPartnerId, row._count._all]));
   }
 
   /**

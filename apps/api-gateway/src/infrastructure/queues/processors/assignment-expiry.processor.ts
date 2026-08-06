@@ -27,6 +27,11 @@ interface AssignmentExpiryJobData {
 interface DispatchAssignmentJobData {
   orderId: string;
   sourceEvent: string;
+  // Enterprise Dispatch Engine Enhancement — set only by DispatchService's own cycle-exhausted
+  // retry path (QueueService.addDispatchAssignmentJob's 4th argument); every other producer of
+  // this job (DispatchListener, DispatchReconciliationService) omits it, so assignOrder() derives
+  // the cycle from the DB as it always has.
+  cycle?: number;
 }
 
 /**
@@ -104,7 +109,7 @@ export class AssignmentExpiryProcessor extends WorkerHost {
 
       const assignmentStart = Date.now();
 
-      await this.dispatchService.assignOrder(data.orderId);
+      await this.dispatchService.assignOrder(data.orderId, data.cycle);
 
       this.metrics.observeDispatchAssignmentDuration(
         (Date.now() - assignmentStart) / 1000,
@@ -148,6 +153,20 @@ export class AssignmentExpiryProcessor extends WorkerHost {
         },
         'AssignmentExpiryProcessor',
       );
+
+      // Enterprise Dispatch Engine Enhancement — required structured log/metric for the timeout
+      // path, additive alongside the pre-existing dispatch_assignment_expired log above.
+      this.logger.log(
+        {
+          event: 'dispatch_assignment_timeout',
+          assignmentId: assignment.id,
+          orderId: assignment.orderId,
+          cycle: assignment.cycle,
+        },
+        'AssignmentExpiryProcessor',
+      );
+
+      this.metrics.recordDispatchAssignmentTimeout();
 
       await this.auditService.log(
         null,
