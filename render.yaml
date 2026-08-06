@@ -160,3 +160,51 @@ services:
       - key: APP_NAME
         value: worker
     autoDeploy: true
+
+  # 3. api-gateway-sg — Singapore region migration. Byte-for-byte identical to api-gateway-qa
+  #    above except `name`/`region` (immutable after creation — confirmed against Render's own
+  #    Blueprint spec, which is why this is a new service rather than an in-place edit of #1) and
+  #    `API_PUBLIC_URL` (must be this service's own public URL for Swagger UI's CORS
+  #    self-reference to keep working — copying qa's value here would silently break it, since
+  #    the two services are on different hostnames). Region migration only: Oregon → Singapore,
+  #    to sit next to the already-Singapore Neon database and cut cross-region request latency.
+  #    `-qa` is untouched and keeps serving all real traffic until this is validated and Vercel
+  #    is repointed — see docs/deployment/render-blueprint.md's migration section.
+  - type: web
+    name: patheya-express-api-gateway-sg
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter
+    region: singapore
+    # Explicit rather than inherited from the repo's default branch — #1/#2 above rely on that
+    # default (no `branch:` set), which happens to be `develop` today; pinning it here for a
+    # brand-new service is a more precise match of that same actual behavior, not a change to it.
+    branch: develop
+    healthCheckPath: /api/v1/health/ready
+    preDeployCommand: node_modules/.bin/prisma migrate deploy
+    envVars:
+      - fromGroup: patheya-qa-shared
+      - key: APP_NAME
+        value: api-gateway
+      - key: API_PUBLIC_URL
+        value: https://patheya-express-api-gateway-sg.onrender.com
+    autoDeploy: true
+
+  # 4. worker-sg — Singapore region migration. Byte-for-byte identical to worker-qa above except
+  #    `name`/`region` for the same reason as api-gateway-sg. No preDeployCommand here either,
+  #    same reasoning as worker-qa — migrations run exactly once, gated on api-gateway-sg only.
+  - type: worker
+    name: patheya-express-worker-sg
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: node dist/src/worker-main.js
+    plan: starter
+    region: singapore
+    branch: develop
+    envVars:
+      - fromGroup: patheya-qa-shared
+      - key: APP_NAME
+        value: worker
+    autoDeploy: true
