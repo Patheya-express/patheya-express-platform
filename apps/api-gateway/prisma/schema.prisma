@@ -554,6 +554,14 @@ enum AssignmentStatus {
   REJECTED
 
   EXPIRED
+
+  /**
+   * Terminal state once the underlying order reaches DELIVERED (or is cancelled/force-completed
+   * by an admin after acceptance). Without this, an accepted assignment stayed ACCEPTED forever —
+   * findPartnerIdsWithActiveAssignment() treats PENDING/ACCEPTED as "still busy", so a partner who
+   * had ever completed a single delivery became permanently excluded from all future dispatch.
+   */
+  COMPLETED
 }
 
 enum WalletTransactionType {

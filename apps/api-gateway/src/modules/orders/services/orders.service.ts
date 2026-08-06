@@ -1239,6 +1239,7 @@ export class OrdersService {
       if (updatedOrder.deliveryPartnerId) {
         await this.deliveryService.releasePartnerFromDelivery(
           updatedOrder.deliveryPartnerId,
+          updatedOrder.id,
         );
       }
     }
@@ -1437,6 +1438,7 @@ export class OrdersService {
     if (order.deliveryPartnerId) {
       await this.deliveryService.releasePartnerFromDelivery(
         order.deliveryPartnerId,
+        orderId,
       );
     }
 
@@ -1470,6 +1472,7 @@ export class OrdersService {
     if (order.deliveryPartnerId) {
       await this.deliveryService.releasePartnerFromDelivery(
         order.deliveryPartnerId,
+        orderId,
       );
     }
 

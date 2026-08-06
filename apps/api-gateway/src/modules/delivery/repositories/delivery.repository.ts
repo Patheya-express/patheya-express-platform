@@ -1,6 +1,10 @@
 import { Injectable } from '@nestjs/common';
 
-import { DeliveryPartnerStatus, OrderStatus } from '@prisma/client';
+import {
+  AssignmentStatus,
+  DeliveryPartnerStatus,
+  OrderStatus,
+} from '@prisma/client';
 
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
 
@@ -98,18 +102,49 @@ export class DeliveryRepository extends BaseRepository {
    *  claim — conditional, not a plain update: a partner who's OFFLINE/SUSPENDED (e.g. suspended
    *  mid-delivery, or who force-went-offline) must not be silently pulled back to AVAILABLE just
    *  because their order finally reached DELIVERED/CANCELLED. `count` tells the caller whether a
-   *  release actually happened. */
-  async releaseFromDelivery(userId: string): Promise<{ count: number }> {
-    return this.prisma.deliveryPartner.updateMany({
-      where: {
-        userId,
+   *  release actually happened.
+   *
+   *  `orderId`, when passed, also closes out that order's PENDING/ACCEPTED DeliveryAssignment row
+   *  to COMPLETED in the same transaction. Without this, the assignment stayed ACCEPTED forever —
+   *  findPartnerIdsWithActiveAssignment() (dispatch.repository.ts) treats PENDING/ACCEPTED as
+   *  "still busy" on ANY order, so a partner who had ever completed a single delivery became
+   *  permanently excluded from all future automatic dispatch, regardless of presence/status.
+   *  Optional (not required) so existing callers/tests that only care about the partner-status
+   *  release, with no real order/assignment in play, are unaffected. */
+  async releaseFromDelivery(
+    userId: string,
+    orderId?: string,
+  ): Promise<{ count: number }> {
+    return this.prisma.$transaction(async (tx) => {
+      const partnerResult = await tx.deliveryPartner.updateMany({
+        where: {
+          userId,
 
-        status: DeliveryPartnerStatus.ON_DELIVERY,
-      },
+          status: DeliveryPartnerStatus.ON_DELIVERY,
+        },
 
-      data: {
-        status: DeliveryPartnerStatus.AVAILABLE,
-      },
+        data: {
+          status: DeliveryPartnerStatus.AVAILABLE,
+        },
+      });
+
+      if (orderId) {
+        await tx.deliveryAssignment.updateMany({
+          where: {
+            orderId,
+
+            status: {
+              in: [AssignmentStatus.PENDING, AssignmentStatus.ACCEPTED],
+            },
+          },
+
+          data: {
+            status: AssignmentStatus.COMPLETED,
+          },
+        });
+      }
+
+      return partnerResult;
     });
   }
 
