@@ -69,40 +69,6 @@ const DISPATCH_MAX_CYCLES =
 const DISPATCH_UNLIMITED_MODE = DISPATCH_MAX_CYCLES_CONFIGURED === 0;
 
 /**
- * Enterprise Dispatch Engine Enhancement — Phase 2 (rejection cooldown). How long a partner who
- * explicitly rejected an order stays excluded from it, even across a cycle boundary where the
- * cycle-scoped `attemptedPartnerIds` exclusion would otherwise have reset for them. Deliberately
- * scoped to REJECTED only, not EXPIRED — the problem this solves ("every partner rejects, then
- * immediately gets the same order again") is specific to an explicit decline, not a timeout.
- */
-// Exported (not just module-private) so AdminDispatchService's debug endpoint (Phase 3, Change 6)
-// reads the exact same configured value rather than duplicating the env-var-plus-default pattern.
-export const DISPATCH_REJECTION_COOLDOWN_SECONDS = Number(
-  process.env.DISPATCH_REJECTION_COOLDOWN_SECONDS ?? 60,
-);
-
-/**
- * Phase 3 (Change 2 — partner load balancing). Window for "fewest completed deliveries" —
- * replaces the Phase 1 lifetime-assignment-count tiebreak, which only ever grew for a given
- * partner and so eventually favored whoever joined earliest, permanently.
- */
-const DISPATCH_LOAD_WINDOW_MINUTES = Number(
-  process.env.DISPATCH_LOAD_WINDOW_MINUTES ?? 30,
-);
-
-/**
- * Phase 3 (Change 3 — assignment notification rate limit). A hard cap on how many assignment
- * *notifications* (i.e. `createAssignmentForOrder` calls — regardless of which order, regardless
- * of outcome) a single partner may receive within a rolling one-minute window, to stop
- * notification spam during a busy dispatch period. Deliberately distinct from
- * DISPATCH_REJECTION_COOLDOWN_SECONDS, which is scoped to one order.
- */
-const DISPATCH_MAX_ASSIGNMENTS_PER_MINUTE = Number(
-  process.env.DISPATCH_MAX_ASSIGNMENTS_PER_MINUTE ?? 4,
-);
-const DISPATCH_RATE_LIMIT_WINDOW_MS = 60 * 1000;
-
-/**
  * Enterprise Dispatch Engine Enhancement — priority criterion "nearest to restaurant".
  * Haversine great-circle distance (already the formula used here since Phase 1 — Phase 3's audit
  * confirmed this was never a naive Euclidean lat/lng subtraction) — deterministic, no external
@@ -126,54 +92,6 @@ function distanceMeters(
       Math.sin(dLon / 2) ** 2;
 
   return EARTH_RADIUS_METERS * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-/**
- * Enterprise Dispatch Engine Enhancement — Phase 2's rejection-cooldown computation, extracted
- * into its own exported function in Phase 3 so AdminDispatchService's new debug endpoint (Change
- * 6) can report `cooldownPartners` without reimplementing this logic — the "no duplicated code"
- * non-functional requirement for this phase. Behavior is byte-for-byte identical to Phase 2's
- * original inline version; this is purely a location/reuse change, not a logic change.
- */
-export function computeCooldownStatus(
-  assignments: Array<{
-    deliveryPartnerId: string;
-    status: AssignmentStatus;
-    respondedAt: Date | null;
-  }>,
-  cooldownSeconds: number,
-  now: Date = new Date(),
-): { onCooldown: Set<string>; lastRejectionByPartnerId: Map<string, Date> } {
-  const lastRejectionByPartnerId = new Map<string, Date>();
-
-  for (const assignment of assignments) {
-    if (
-      assignment.status === AssignmentStatus.REJECTED &&
-      assignment.respondedAt
-    ) {
-      const existing = lastRejectionByPartnerId.get(
-        assignment.deliveryPartnerId,
-      );
-
-      if (!existing || assignment.respondedAt > existing) {
-        lastRejectionByPartnerId.set(
-          assignment.deliveryPartnerId,
-          assignment.respondedAt,
-        );
-      }
-    }
-  }
-
-  const cooldownMs = cooldownSeconds * 1000;
-  const nowMs = now.getTime();
-
-  const onCooldown = new Set(
-    [...lastRejectionByPartnerId.entries()]
-      .filter(([, respondedAt]) => nowMs - respondedAt.getTime() < cooldownMs)
-      .map(([partnerId]) => partnerId),
-  );
-
-  return { onCooldown, lastRejectionByPartnerId };
 }
 
 @Injectable()
@@ -340,20 +258,6 @@ export class DispatchService {
 
     const isFirstOfferInCycle = attemptedPartnerIds.length === 0;
 
-    // Enterprise Dispatch Engine Enhancement — Phase 2 (rejection cooldown), extracted in Phase 3
-    // into computeCooldownStatus() so AdminDispatchService's debug endpoint can reuse it verbatim
-    // instead of reimplementing it. Behavior unchanged from Phase 2: reuses the pre-existing
-    // respondedAt column, no new timestamp, no timer, no poll. Deliberately independent of
-    // attemptedPartnerIds' cycle scoping — a recent reject still holds even across a new cycle.
-    const { onCooldown: partnersOnCooldown, lastRejectionByPartnerId } =
-      computeCooldownStatus(
-        previousAssignments,
-        DISPATCH_REJECTION_COOLDOWN_SECONDS,
-      );
-
-    const cooldownMs = DISPATCH_REJECTION_COOLDOWN_SECONDS * 1000;
-    const nowMs = Date.now();
-
     const partners = await this.dispatchRepository.findAvailablePartners();
 
     this.logger.log(
@@ -376,19 +280,12 @@ export class DispatchService {
         partners.map((partner) => partner.id),
       );
 
-    // Phase 3 (Change 3 — assignment notification rate limit). Global (every order, every
-    // status) — reuses the pre-existing assignedAt timestamp, no new column/timer/poll, same
-    // "compare live during filtering" shape as the Phase 2 cooldown.
-    const recentAssignmentCounts =
-      await this.dispatchRepository.countRecentAssignmentsForPartners(
-        partners.map((partner) => partner.id),
-        DISPATCH_RATE_LIMIT_WINDOW_MS,
-      );
-
-    // Phase 3 (Change 5 — observability). A plain filter() can't attribute *why* a given partner
-    // didn't make it without running the same conditions twice — this loop computes each
-    // exclusion reason once and increments its metric inline, then builds the same onlinePartners
-    // result the pre-existing filter() produced.
+    // Dispatch Simplification — a partner is eligible once: DeliveryPartner.status==AVAILABLE and
+    // isVerified==true (both already enforced by findAvailablePartners()'s own WHERE clause,
+    // reflected here in eligible_partner_count above), Redis presence==online, no ACTIVE
+    // assignment (PENDING/ACCEPTED), and not already offered this order in the current cycle.
+    // Nothing else — no rejection cooldown, no per-minute notification cap, no recent-completion
+    // penalty. A partner with zero active assignments is immediately eligible for the next order.
     const onlinePartners = partners.filter((partner) => {
       if (onlineMap.get(partner.userId) !== true) {
         this.metrics.recordDispatchPartnerSkippedOffline();
@@ -396,33 +293,12 @@ export class DispatchService {
       }
 
       if (attemptedPartnerIds.includes(partner.id)) {
+        this.metrics.recordDispatchPartnerSkippedAttemptedThisCycle();
         return false;
       }
 
       if (activePartnerAssignments.has(partner.id)) {
         this.metrics.recordDispatchPartnerSkippedActiveAssignment();
-        return false;
-      }
-
-      if (partnersOnCooldown.has(partner.id)) {
-        return false;
-      }
-
-      if (
-        (recentAssignmentCounts.get(partner.id) ?? 0) >=
-        DISPATCH_MAX_ASSIGNMENTS_PER_MINUTE
-      ) {
-        this.logger.log(
-          {
-            event: 'dispatch_partner_rate_limited',
-            orderId,
-            cycle: currentCycle,
-            partnerId: partner.id,
-          },
-          'DispatchService',
-        );
-
-        this.metrics.recordDispatchPartnerSkippedRateLimit();
         return false;
       }
 
@@ -439,40 +315,6 @@ export class DispatchService {
       },
       'DispatchService',
     );
-
-    // Enterprise Dispatch Engine Enhancement — Phase 2 (rejection cooldown logging). Both events
-    // are derived purely from the timestamp comparison above, computed fresh on this call — no
-    // separate "cooldown expired" detection/state, exactly as required ("naturally expire through
-    // timestamps checked during partner filtering").
-    for (const [partnerId, respondedAt] of lastRejectionByPartnerId) {
-      const elapsedMs = nowMs - respondedAt.getTime();
-
-      if (elapsedMs < cooldownMs) {
-        this.logger.log(
-          {
-            event: 'dispatch_partner_cooldown',
-            orderId,
-            cycle: currentCycle,
-            partnerId,
-            cooldownSeconds: Math.ceil((cooldownMs - elapsedMs) / 1000),
-          },
-          'DispatchService',
-        );
-
-        this.metrics.recordDispatchPartnerCooldown();
-      } else if (onlinePartners.some((partner) => partner.id === partnerId)) {
-        this.logger.log(
-          {
-            event: 'dispatch_partner_cooldown_expired',
-            orderId,
-            cycle: currentCycle,
-            partnerId,
-            cooldownSeconds: DISPATCH_REJECTION_COOLDOWN_SECONDS,
-          },
-          'DispatchService',
-        );
-      }
-    }
 
     if (isFirstOfferInCycle && onlinePartners.length > 0) {
       this.logger.log(
@@ -586,8 +428,10 @@ export class DispatchService {
     // Enterprise Dispatch Engine Enhancement — Change 3 (deterministic priority ordering).
     // Replaces the previous onlinePartners[0] (implicit Postgres row order — findAvailablePartners()
     // has no ORDER BY) with an explicit, reproducible ranking. See selectPartnerByPriority's own
-    // doc comment for the exact criteria and tie-break order.
-    const partner = await this.selectPartnerByPriority(
+    // doc comment for the exact criteria and tie-break order. Synchronous since Dispatch
+    // Simplification removed the last of its async data lookups (active workload, recent
+    // completions, idle time) — distance and rotation are both pure, in-memory computations.
+    const partner = this.selectPartnerByPriority(
       order,
       onlinePartners,
       orderId,
@@ -706,39 +550,46 @@ export class DispatchService {
   }
 
   /**
-   * Enterprise Dispatch Engine Enhancement — deterministic priority ordering. `onlinePartners`
-   * has already passed every existing filter (online, verified, available, not attempted this
-   * cycle, no active assignment elsewhere, not on rejection cooldown, under the notification rate
-   * limit) — this only decides which ONE of the survivors goes first. Priority, in order (never
-   * randomized; a tie at every criterion falls through to the next, and a total tie preserves
-   * `onlinePartners`' own incoming order, itself a stable, deterministic `Array.sort`):
-   *   Phase 3 (Change 2 — partner load balancing), replacing Phase 1's distance-first ordering:
-   *     1. Lowest active workload (current PENDING/ACCEPTED assignment count — see
-   *        countActiveAssignmentsForPartners's own doc comment for why this is always 0 among
-   *        candidates reaching here today, and why it's kept anyway).
-   *     2. Fewest completed deliveries in the last DISPATCH_LOAD_WINDOW_MINUTES.
-   *     3. Nearest to the order's pickup branch, in meters (missing coordinates on either side
-   *        sort last, never throw).
-   *     4. Longest idle (oldest Redis presence `lastSeen`; no presence timestamp on record sorts
-   *        last, not first).
-   *   Preserved from Phase 1 as one further, final tiebreak beyond the four explicitly specified
-   *   above — not requested to be removed, and free since the query already existed:
-   *     5. Oldest previous assignment timestamp (never assigned anything sorts first).
-   * (Online, Verified, Available are the pre-existing filters that already ran, before this.)
+   * Dispatch Simplification — deterministic priority ordering, reduced to exactly what the
+   * business rule calls for and nothing else. `onlinePartners` has already passed every filter
+   * (online, verified, available, not attempted this cycle, no active assignment elsewhere) —
+   * this only decides which ONE of the survivors goes first:
+   *   1. Active assignment count — already guaranteed zero for everyone here by the
+   *      `findPartnerIdsWithActiveAssignment` filter above; there is nothing left to sort by for
+   *      this criterion, so no additional query/field exists for it (it would be a no-op tie every
+   *      time). Documented as satisfied by the filter, not as a redundant sort key.
+   *   2. Nearest to the order's pickup branch, in meters (missing coordinates on either side sort
+   *      last, never throw — an order with no branch on record, or a partner who's never reported
+   *      a location, still gets dispatched, just without a distance advantage).
+   *   3. Round-robin cycle rotation (unchanged from Phase 2 — see below).
+   * No lifetime/recent assignment counts, no idle time, no last-assignment timestamp — a rider
+   * with zero active assignments is immediately eligible for the next order, full stop.
    *
-   * Enterprise Dispatch Engine Enhancement — Phase 2 (round-robin cycle start). After the above
-   * produces its fully deterministic ranking, the ranked list is rotated by `(cycle - 1) % length`
-   * before picking index 0 — cycle 1 starts at the top-ranked partner exactly as before, cycle 2
-   * starts one position further round the same ranked list, cycle 3 two positions further, and so
-   * on, wrapping around. Never randomized: the rotation offset is a pure function of `cycle`, and
-   * `cycle` is itself already persisted on `DeliveryAssignment` — so a worker restart mid-dispatch
-   * recomputes the exact same rotation from the DB, no additional state needed. Because
-   * `onlinePartners` here has already excluded every partner attempted earlier in THIS cycle, the
-   * same rotation offset applied to each successive (shrinking) candidate list within one cycle
-   * naturally produces "start at B, then C, then A" rather than re-offering the same partner
-   * rotation picked first — verified by dispatch.service.spec.ts's round-robin fairness tests.
+   * Pre-merge review finding: `findAvailablePartners()` has no `ORDER BY`, so Postgres gives no
+   * ordering guarantee for its result — two partners genuinely tied on distance (the common case:
+   * both missing coordinates, both scoring `Infinity`) would otherwise fall back to whatever row
+   * order the query planner happened to produce, which can differ across deployments, replicas, or
+   * even repeated runs against the same data. `Array.sort` is stable, so a tie preserves *input*
+   * order — but that input order was never guaranteed in the first place. Partner `id` (a UUID,
+   * unique, with no behavioral/historical meaning of its own) is added as the final tiebreaker
+   * specifically to close that gap: it turns the sort into a true total order, independent of
+   * whatever order the database returned partners in. This is deliberately NOT a reintroduction of
+   * any removed business criterion — it carries no preference for any partner, only determinism.
+   * Compared with plain `<`/`>` (safe but reads oddly for strings) rather than `localeCompare`
+   * (ICU-dependent, and therefore not guaranteed identical across Node builds/environments) — the
+   * one thing this must never do is vary by locale.
+   *
+   * Round-robin cycle start (Phase 2, unchanged): after the distance+id ranking above, the ranked
+   * list is rotated by `(cycle - 1) % length` before picking index 0 — cycle 1 starts at the
+   * nearest partner exactly as before, cycle 2 starts one position further round the same ranked
+   * list, cycle 3 two positions further, and so on, wrapping around. Never randomized: the
+   * rotation offset is a pure function of `cycle`, and `cycle` is itself already persisted on
+   * `DeliveryAssignment` — so a worker restart mid-dispatch recomputes the exact same rotation
+   * from the DB, no additional state needed. Rotation's own fairness guarantee ("cycle 2 starts
+   * one position after cycle 1's start") only holds if the array being rotated is itself
+   * deterministic — which is exactly what the id tiebreaker above now guarantees.
    */
-  private async selectPartnerByPriority(
+  private selectPartnerByPriority(
     order: {
       branch: { latitude: number | null; longitude: number | null } | null;
     },
@@ -754,25 +605,6 @@ export class DispatchService {
     if (onlinePartners.length === 1) {
       return onlinePartners[0];
     }
-
-    const partnerIds = onlinePartners.map((partner) => partner.id);
-    const partnerUserIds = onlinePartners.map((partner) => partner.userId);
-    const loadWindowMs = DISPATCH_LOAD_WINDOW_MINUTES * 60 * 1000;
-
-    const [
-      lastSeenByUserId,
-      activeWorkloadByPartnerId,
-      recentCompletionsByUserId,
-      lastAssignmentByPartnerId,
-    ] = await Promise.all([
-      this.presenceService.getLastSeenBatch(partnerUserIds),
-      this.dispatchRepository.countActiveAssignmentsForPartners(partnerIds),
-      this.dispatchRepository.countRecentCompletedDeliveriesForPartners(
-        partnerUserIds,
-        loadWindowMs,
-      ),
-      this.dispatchRepository.findLastAssignmentTimestamps(partnerIds),
-    ]);
 
     const branchLat = order.branch?.latitude;
     const branchLon = order.branch?.longitude;
@@ -797,49 +629,25 @@ export class DispatchService {
         this.metrics.recordDispatchPartnerSkippedDistance();
       }
 
-      const activeWorkload = activeWorkloadByPartnerId.get(partner.id) ?? 0;
-
-      const recentCompletions =
-        recentCompletionsByUserId.get(partner.userId) ?? 0;
-
-      const lastSeen = lastSeenByUserId.get(partner.userId) ?? null;
-      const idleSortKey = lastSeen
-        ? lastSeen.getTime()
-        : Number.POSITIVE_INFINITY;
-
-      const lastAssignment = lastAssignmentByPartnerId.get(partner.id) ?? null;
-      const lastAssignmentSortKey = lastAssignment
-        ? lastAssignment.getTime()
-        : Number.NEGATIVE_INFINITY;
-
-      return {
-        partner,
-        activeWorkload,
-        recentCompletions,
-        distance,
-        idleSortKey,
-        lastAssignmentSortKey,
-      };
+      return { partner, distance };
     });
 
     scored.sort((a, b) => {
-      if (a.activeWorkload !== b.activeWorkload) {
-        return a.activeWorkload - b.activeWorkload;
-      }
-
-      if (a.recentCompletions !== b.recentCompletions) {
-        return a.recentCompletions - b.recentCompletions;
-      }
-
       if (a.distance !== b.distance) {
         return a.distance - b.distance;
       }
 
-      if (a.idleSortKey !== b.idleSortKey) {
-        return a.idleSortKey - b.idleSortKey;
+      // Deterministic tiebreaker — see this method's doc comment. Ordinal string comparison
+      // only (never localeCompare), so this is identical on every machine/Node build.
+      if (a.partner.id < b.partner.id) {
+        return -1;
       }
 
-      return a.lastAssignmentSortKey - b.lastAssignmentSortKey;
+      if (a.partner.id > b.partner.id) {
+        return 1;
+      }
+
+      return 0;
     });
 
     const rotationOffset = (cycle - 1) % scored.length;

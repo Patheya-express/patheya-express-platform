@@ -216,47 +216,4 @@ export class PresenceService {
       }),
     );
   }
-
-  /**
-   * Enterprise Dispatch Engine Enhancement — DispatchService's "longest idle" priority tiebreak
-   * needs `lastSeen`, not just the boolean `isOnlineBatch` already returns. Same `driver:online:*`
-   * key/JSON shape `markOnline` already writes (`{ online, lastSeen }`), just reading the second
-   * field — no new Redis key, no new write path. A missing/unparsable key returns `null`
-   * (partner has no recent presence signal), which callers should treat as "least preferred" for
-   * an idle-time sort, not as "most idle".
-   */
-  async getLastSeenBatch(
-    partnerIds: string[],
-  ): Promise<Map<string, Date | null>> {
-    if (partnerIds.length === 0) {
-      return new Map();
-    }
-
-    const client = this.redisService.getClient();
-
-    const values = await client.mget(
-      partnerIds.map((partnerId) => `driver:online:${partnerId}`),
-    );
-
-    return new Map(
-      partnerIds.map((partnerId, index) => {
-        const raw = values[index];
-
-        if (!raw) {
-          return [partnerId, null] as const;
-        }
-
-        try {
-          const parsed = JSON.parse(raw) as { lastSeen?: string };
-
-          return [
-            partnerId,
-            parsed.lastSeen ? new Date(parsed.lastSeen) : null,
-          ] as const;
-        } catch {
-          return [partnerId, null] as const;
-        }
-      }),
-    );
-  }
 }

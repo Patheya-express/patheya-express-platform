@@ -115,7 +115,7 @@ export class AdminDispatchController {
   @ApiOperation({
     summary: "Debug an order's dispatch state (support/debugging only)",
     description:
-      "Enterprise Dispatch Engine Enhancement Phase 3 — a read-only snapshot of an order's dispatch history: current cycle, total attempts, last attempt time, partners who did not accept, and partners currently within their rejection cooldown for this order. Not consumed by any frontend; exists for support engineers.",
+      "Enterprise Dispatch Engine Enhancement — a read-only snapshot of an order's dispatch history: current cycle, total attempts, last attempt time, and partners who did not accept. Not consumed by any frontend; exists for support engineers.",
   })
   @ApiParam({ name: 'orderId' })
   @ApiOkResponse({

@@ -34,11 +34,6 @@ import { AvailableDeliveryPartnerResponseDto } from '../dto/available-delivery-p
 import { AssignOrderToPartnerDto } from '../dto/assign-order-to-partner.dto';
 import { DispatchDebugInfoResponseDto } from '../dto/dispatch-debug-info-response.dto';
 
-import {
-  computeCooldownStatus,
-  DISPATCH_REJECTION_COOLDOWN_SECONDS,
-} from '../../dispatch/services/dispatch.service';
-
 const TERMINAL_ORDER_STATUSES: OrderStatus[] = [
   OrderStatus.DELIVERED,
   OrderStatus.CANCELLED,
@@ -353,13 +348,14 @@ export class AdminDispatchService {
   /**
    * Enterprise Dispatch Engine Enhancement — Phase 3 (Change 6, admin visibility). Debugging/
    * support-only: no frontend consumes this, no existing DTO/contract changes. Derived entirely
-   * from this order's own DeliveryAssignment history — reuses computeCooldownStatus (the exact
-   * same function DispatchService.assignOrder() itself calls) rather than reimplementing the
-   * cooldown computation, per this phase's "no duplicated code" requirement. `partnersSkipped` is
-   * a historical view (every partner who didn't accept, across every cycle), not a live
-   * re-evaluation of current eligibility — computing that would mean re-running the full presence/
-   * rate-limit/active-assignment pipeline just to render a debug page, which this deliberately
-   * avoids.
+   * from this order's own DeliveryAssignment history. `partnersSkipped` is a historical view
+   * (every partner who didn't accept, across every cycle), not a live re-evaluation of current
+   * eligibility — computing that would mean re-running the full presence/active-assignment
+   * pipeline just to render a debug page, which this deliberately avoids.
+   *
+   * Dispatch Simplification — no longer reports a `cooldownPartners` field: rejection cooldown
+   * was removed from the dispatch pipeline entirely, so there is nothing left for this endpoint
+   * to compute or report for it.
    */
   async getDispatchDebugInfo(
     orderId: string,
@@ -391,18 +387,12 @@ export class AdminDispatchService {
       ),
     ];
 
-    const { onCooldown } = computeCooldownStatus(
-      assignments,
-      DISPATCH_REJECTION_COOLDOWN_SECONDS,
-    );
-
     return {
       orderId,
       currentCycle,
       attemptCount: assignments.length,
       lastAttemptAt,
       partnersSkipped,
-      cooldownPartners: [...onCooldown],
     };
   }
 }

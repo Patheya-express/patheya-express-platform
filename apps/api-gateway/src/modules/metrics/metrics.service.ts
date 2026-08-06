@@ -255,15 +255,10 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     registers: [this.registry],
   });
 
-  // Enterprise Dispatch Engine Enhancement — Phase 2 (unlimited mode, round-robin fairness,
-  // rejection cooldown). Same "one Registry, additive counters" pattern as Phase 1's dispatch
-  // metrics above.
-
-  private readonly dispatchPartnerCooldownTotal = new Counter({
-    name: 'patheya_dispatch_partner_cooldown_total',
-    help: 'Total times a partner was excluded from an offer because their rejection cooldown for that order had not yet elapsed',
-    registers: [this.registry],
-  });
+  // Enterprise Dispatch Engine Enhancement — Phase 2 (unlimited mode, round-robin fairness).
+  // Same "one Registry, additive counters" pattern as Phase 1's dispatch metrics above.
+  // (The Phase 2 rejection-cooldown counter that used to live here was removed by the Dispatch
+  // Simplification pass — cooldown no longer exists anywhere in the dispatch pipeline.)
 
   private readonly dispatchUnlimitedCycleTotal = new Counter({
     name: 'patheya_dispatch_unlimited_cycle_total',
@@ -276,13 +271,6 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     help: 'Total times round-robin rotation actually changed which partner started a cycle',
     registers: [this.registry],
   });
-
-  // Phase 3 (Change 5 — observability). `dispatch_partner_skipped_cooldown` was explicitly
-  // requested but is deliberately NOT added here — it would be a second counter measuring the
-  // exact same event `patheya_dispatch_partner_cooldown_total` above already measures (Phase 2),
-  // which the "no duplicated code" non-functional requirement for this phase rules out; that
-  // existing metric already satisfies the ask under its Phase 2 name. Every other requested
-  // metric name below is genuinely new.
 
   /** Histogram, not a hand-maintained running average — Prometheus best practice is sum/count via
    *  PromQL rather than a service computing its own average, and a Histogram additionally exposes
@@ -307,12 +295,6 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     registers: [this.registry],
   });
 
-  private readonly dispatchPartnerSkippedRateLimitTotal = new Counter({
-    name: 'patheya_dispatch_partner_skipped_rate_limit_total',
-    help: 'Total times a partner was excluded from an offer because DISPATCH_MAX_ASSIGNMENTS_PER_MINUTE had already been reached',
-    registers: [this.registry],
-  });
-
   private readonly dispatchPartnerSkippedOfflineTotal = new Counter({
     name: 'patheya_dispatch_partner_skipped_offline_total',
     help: 'Total times a partner was excluded from an offer because their Redis presence check found them offline',
@@ -322,6 +304,15 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
   private readonly dispatchPartnerSkippedActiveAssignmentTotal = new Counter({
     name: 'patheya_dispatch_partner_skipped_active_assignment_total',
     help: 'Total times a partner was excluded from an offer because they already hold a PENDING/ACCEPTED assignment elsewhere',
+    registers: [this.registry],
+  });
+
+  /** Dispatch Simplification — the one exclusion reason that existed in code since Phase 1 but
+   *  was never independently observable before (unlike offline/active-assignment above, which
+   *  already had metrics). Maps to the canonical ATTEMPTED_THIS_CYCLE diagnostic reason. */
+  private readonly dispatchPartnerSkippedAttemptedThisCycleTotal = new Counter({
+    name: 'patheya_dispatch_partner_skipped_attempted_this_cycle_total',
+    help: 'Total times a partner was excluded from an offer because they were already offered this order earlier in the current dispatch cycle',
     registers: [this.registry],
   });
 
@@ -944,12 +935,6 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     this.dispatchMaxCyclesTotal.inc();
   }
 
-  /** Called once per candidate found to still be within its rejection cooldown for an order,
-   *  every time assignOrder() filters partners. */
-  recordDispatchPartnerCooldown(): void {
-    this.dispatchPartnerCooldownTotal.inc();
-  }
-
   /** Called each time a cycle-exhausted retry is scheduled while DISPATCH_MAX_CYCLES=0. */
   recordDispatchUnlimitedCycle(): void {
     this.dispatchUnlimitedCycleTotal.inc();
@@ -972,16 +957,16 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     this.dispatchAverageCycles.observe(cycle);
   }
 
-  recordDispatchPartnerSkippedRateLimit(): void {
-    this.dispatchPartnerSkippedRateLimitTotal.inc();
-  }
-
   recordDispatchPartnerSkippedOffline(): void {
     this.dispatchPartnerSkippedOfflineTotal.inc();
   }
 
   recordDispatchPartnerSkippedActiveAssignment(): void {
     this.dispatchPartnerSkippedActiveAssignmentTotal.inc();
+  }
+
+  recordDispatchPartnerSkippedAttemptedThisCycle(): void {
+    this.dispatchPartnerSkippedAttemptedThisCycleTotal.inc();
   }
 
   recordDispatchPartnerSkippedDistance(): void {

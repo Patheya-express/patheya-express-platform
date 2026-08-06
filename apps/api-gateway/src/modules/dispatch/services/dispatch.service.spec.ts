@@ -55,10 +55,6 @@ describe('DispatchService', () => {
     findAvailablePartners: jest.Mock;
     findPartnerIdsWithActiveAssignment: jest.Mock;
     createAssignmentForOrder: jest.Mock;
-    findLastAssignmentTimestamps: jest.Mock;
-    countActiveAssignmentsForPartners: jest.Mock;
-    countRecentCompletedDeliveriesForPartners: jest.Mock;
-    countRecentAssignmentsForPartners: jest.Mock;
     findPartnerByUserId: jest.Mock;
     findAssignmentById: jest.Mock;
     acceptAssignmentAtomic: jest.Mock;
@@ -71,7 +67,6 @@ describe('DispatchService', () => {
   };
   let presenceService: {
     isOnlineBatch: jest.Mock;
-    getLastSeenBatch: jest.Mock;
   };
   let eventBus: { publish: jest.Mock };
   let logger: { log: jest.Mock; error: jest.Mock; warn: jest.Mock };
@@ -82,14 +77,13 @@ describe('DispatchService', () => {
     recordDispatchMaxCyclesReached: jest.Mock;
     recordDispatchPartnerAccept: jest.Mock;
     recordDispatchPartnerReject: jest.Mock;
-    recordDispatchPartnerCooldown: jest.Mock;
     recordDispatchUnlimitedCycle: jest.Mock;
     recordDispatchCycleRotation: jest.Mock;
     observeDispatchAssignmentAcceptanceLatency: jest.Mock;
     observeDispatchCyclesToAcceptance: jest.Mock;
-    recordDispatchPartnerSkippedRateLimit: jest.Mock;
     recordDispatchPartnerSkippedOffline: jest.Mock;
     recordDispatchPartnerSkippedActiveAssignment: jest.Mock;
+    recordDispatchPartnerSkippedAttemptedThisCycle: jest.Mock;
     recordDispatchPartnerSkippedDistance: jest.Mock;
   };
 
@@ -114,12 +108,6 @@ describe('DispatchService', () => {
           assignedAt: NOW,
         },
       }),
-      findLastAssignmentTimestamps: jest.fn().mockResolvedValue(new Map()),
-      countActiveAssignmentsForPartners: jest.fn().mockResolvedValue(new Map()),
-      countRecentCompletedDeliveriesForPartners: jest
-        .fn()
-        .mockResolvedValue(new Map()),
-      countRecentAssignmentsForPartners: jest.fn().mockResolvedValue(new Map()),
       findPartnerByUserId: jest.fn(),
       findAssignmentById: jest.fn(),
       acceptAssignmentAtomic: jest.fn(),
@@ -133,7 +121,6 @@ describe('DispatchService', () => {
     };
     presenceService = {
       isOnlineBatch: jest.fn().mockResolvedValue(new Map([['user-1', true]])),
-      getLastSeenBatch: jest.fn().mockResolvedValue(new Map()),
     };
     eventBus = { publish: jest.fn() };
     logger = { log: jest.fn(), error: jest.fn(), warn: jest.fn() };
@@ -144,14 +131,13 @@ describe('DispatchService', () => {
       recordDispatchMaxCyclesReached: jest.fn(),
       recordDispatchPartnerAccept: jest.fn(),
       recordDispatchPartnerReject: jest.fn(),
-      recordDispatchPartnerCooldown: jest.fn(),
       recordDispatchUnlimitedCycle: jest.fn(),
       recordDispatchCycleRotation: jest.fn(),
       observeDispatchAssignmentAcceptanceLatency: jest.fn(),
       observeDispatchCyclesToAcceptance: jest.fn(),
-      recordDispatchPartnerSkippedRateLimit: jest.fn(),
       recordDispatchPartnerSkippedOffline: jest.fn(),
       recordDispatchPartnerSkippedActiveAssignment: jest.fn(),
+      recordDispatchPartnerSkippedAttemptedThisCycle: jest.fn(),
       recordDispatchPartnerSkippedDistance: jest.fn(),
     };
 
@@ -297,7 +283,7 @@ describe('DispatchService', () => {
     });
   });
 
-  describe('deterministic priority ordering (Change 3)', () => {
+  describe('deterministic priority ordering — distance only, then rotation (Dispatch Simplification)', () => {
     it('prefers the nearer partner over a farther one', async () => {
       const near = buildPartner({
         id: 'partner-near',
@@ -324,41 +310,6 @@ describe('DispatchService', () => {
 
       expect(repository.createAssignmentForOrder).toHaveBeenCalledWith(
         expect.objectContaining({ deliveryPartnerId: 'partner-near' }),
-      );
-    });
-
-    it('Phase 3: falls back to fewest recent completed deliveries when distance ties (both missing coordinates)', async () => {
-      const busy = buildPartner({
-        id: 'partner-busy',
-        userId: 'user-busy',
-        currentLatitude: null,
-        currentLongitude: null,
-      });
-      const idle = buildPartner({
-        id: 'partner-idle',
-        userId: 'user-idle',
-        currentLatitude: null,
-        currentLongitude: null,
-      });
-
-      repository.findAvailablePartners.mockResolvedValue([busy, idle]);
-      presenceService.isOnlineBatch.mockResolvedValue(
-        new Map([
-          ['user-busy', true],
-          ['user-idle', true],
-        ]),
-      );
-      repository.countRecentCompletedDeliveriesForPartners.mockResolvedValue(
-        new Map([
-          ['user-busy', 5],
-          ['user-idle', 1],
-        ]),
-      );
-
-      await service.assignOrder('order-1');
-
-      expect(repository.createAssignmentForOrder).toHaveBeenCalledWith(
-        expect.objectContaining({ deliveryPartnerId: 'partner-idle' }),
       );
     });
 
@@ -395,6 +346,66 @@ describe('DispatchService', () => {
       }
 
       expect(picks.size).toBe(1);
+    });
+
+    it('a tie on distance resolves identically no matter what order the repository returns partners in — never depends on Postgres row order', async () => {
+      // Pre-merge review finding: findAvailablePartners() has no ORDER BY, so Postgres gives no
+      // row-order guarantee. All three partners here tie on distance (all missing coordinates,
+      // all score Infinity) — the only real-world case this matters, since equal real coordinates
+      // are rare but "no location reported at all" is common in QA/early rollout. Feeding the
+      // repository mock every permutation of the same three partners and asserting one single
+      // winner directly proves the id tiebreaker, not just that repeated calls with the same input
+      // order agree with each other (the pre-existing test above only proved that weaker property).
+      const a = buildPartner({
+        id: 'partner-a',
+        userId: 'user-a',
+        currentLatitude: null,
+        currentLongitude: null,
+      });
+      const b = buildPartner({
+        id: 'partner-b',
+        userId: 'user-b',
+        currentLatitude: null,
+        currentLongitude: null,
+      });
+      const c = buildPartner({
+        id: 'partner-c',
+        userId: 'user-c',
+        currentLatitude: null,
+        currentLongitude: null,
+      });
+
+      presenceService.isOnlineBatch.mockResolvedValue(
+        new Map([
+          ['user-a', true],
+          ['user-b', true],
+          ['user-c', true],
+        ]),
+      );
+
+      const permutations = [
+        [a, b, c],
+        [c, b, a],
+        [b, c, a],
+        [a, c, b],
+      ];
+
+      const picks = new Set<string>();
+      for (const permutation of permutations) {
+        repository.findAvailablePartners.mockResolvedValue(permutation);
+        repository.createAssignmentForOrder.mockClear();
+        await service.assignOrder('order-1');
+        picks.add(
+          repository.createAssignmentForOrder.mock.calls[0][0]
+            .deliveryPartnerId,
+        );
+      }
+
+      expect(picks.size).toBe(1);
+      // The winner is specifically the lowest partner id (ordinal comparison) — 'partner-a' sorts
+      // first among 'partner-a'/'partner-b'/'partner-c' — confirming *which* deterministic rule is
+      // in effect, not just that some rule is.
+      expect([...picks][0]).toBe('partner-a');
     });
 
     it('does not crash when the order has no branch on record', async () => {
@@ -801,9 +812,16 @@ describe('DispatchService', () => {
     });
   });
 
-  describe('rejection cooldown (Phase 2, Change 3)', () => {
-    it('keeps a partner excluded across a cycle boundary while their cooldown is still active', async () => {
-      const rejectedAt = new Date(NOW.getTime() - 30_000); // 30s ago, default cooldown is 60s
+  /**
+   * Dispatch Simplification — Business rule: a delivery partner must become immediately eligible
+   * for the next order once they have no active assignment. No cooldown period, no recent-delivery
+   * penalty, no assignment-per-minute rate limiting. These tests replace the Phase 2 "rejection
+   * cooldown" describe block, which tested the exact opposite of this business rule and has been
+   * removed along with the feature it covered.
+   */
+  describe('Dispatch Simplification — immediate re-eligibility, no cooldown/rate-limit', () => {
+    it('a rider who just rejected an order is immediately eligible again once a new cycle starts — no cooldown holds them back', async () => {
+      const rejectedAt = new Date(NOW.getTime() - 1000); // 1s ago — would still be well inside any of the old cooldown windows this feature used to enforce
 
       repository.findAssignmentsForOrder.mockResolvedValue([
         {
@@ -817,103 +835,280 @@ describe('DispatchService', () => {
         buildPartner({ id: 'partner-1', userId: 'user-1' }),
       ]);
 
-      // forcedCycle=2 means attemptedPartnerIds (cycle-scoped) no longer excludes partner-1 —
-      // only the cooldown should be holding them out now.
-      await expect(service.assignOrder('order-1', 2)).resolves.toBeNull();
+      // forcedCycle=2: the only thing that used to matter here was attemptedPartnerIds' cycle
+      // scoping (which already resets on a new cycle) plus, previously, a rejection cooldown that
+      // would have kept this partner excluded regardless of cycle. That second mechanism is gone.
+      const assignment = await service.assignOrder('order-1', 2);
 
-      expect(repository.createAssignmentForOrder).not.toHaveBeenCalled();
-      expect(
-        logger.log.mock.calls.some(
-          ([payload]: any) => payload.event === 'dispatch_partner_cooldown',
-        ),
-      ).toBe(true);
-      expect(metrics.recordDispatchPartnerCooldown).toHaveBeenCalledTimes(1);
+      expect(assignment).not.toBeNull();
+      expect(repository.createAssignmentForOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ deliveryPartnerId: 'partner-1', cycle: 2 }),
+      );
     });
 
-    it('does not exclude other partners while one is on cooldown', async () => {
-      const rejectedAt = new Date(NOW.getTime() - 10_000);
+    it('a rider immediately receives the next order right after accepting (completing) the previous one', async () => {
+      repository.findPartnerByUserId.mockResolvedValue({
+        id: 'partner-1',
+        userId: 'user-1',
+        isVerified: true,
+        status: DeliveryPartnerStatus.AVAILABLE,
+      });
 
-      repository.findAssignmentsForOrder.mockResolvedValue([
-        {
+      // Order A: dispatched, then accepted.
+      await service.assignOrder('order-a');
+      repository.findAssignmentById.mockResolvedValue({
+        id: 'assignment-a',
+        orderId: 'order-a',
+        deliveryPartnerId: 'partner-1',
+        cycle: 1,
+        assignedAt: NOW,
+      });
+      repository.acceptAssignmentAtomic.mockResolvedValue({ accepted: true });
+      await service.acceptAssignment('assignment-a', 'user-1');
+
+      // Order B: a brand new order for the same partner, no assignment history of its own, and
+      // (per the default mock) zero active assignments — nothing in the dispatch pipeline should
+      // hold them back from receiving it immediately.
+      repository.createAssignmentForOrder.mockClear();
+      repository.findAssignmentsForOrder.mockResolvedValue([]);
+      const assignmentB = await service.assignOrder('order-b');
+
+      expect(assignmentB).not.toBeNull();
+      expect(repository.createAssignmentForOrder).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderId: 'order-b',
           deliveryPartnerId: 'partner-1',
-          status: AssignmentStatus.REJECTED,
+        }),
+      );
+    });
+
+    it('a rider can accept consecutive orders back to back with no artificial gap between them', async () => {
+      repository.findPartnerByUserId.mockResolvedValue({
+        id: 'partner-1',
+        userId: 'user-1',
+        isVerified: true,
+        status: DeliveryPartnerStatus.AVAILABLE,
+      });
+      repository.acceptAssignmentAtomic.mockResolvedValue({ accepted: true });
+
+      for (const orderId of ['order-a', 'order-b', 'order-c']) {
+        repository.findAssignmentsForOrder.mockResolvedValue([]);
+        repository.createAssignmentForOrder.mockResolvedValue({
+          created: true,
+          assignment: {
+            id: `assignment-${orderId}`,
+            orderId,
+            deliveryPartnerId: 'partner-1',
+            cycle: 1,
+            assignedAt: NOW,
+          },
+        });
+
+        const assignment = await service.assignOrder(orderId);
+        expect(assignment).not.toBeNull();
+
+        repository.findAssignmentById.mockResolvedValue({
+          id: `assignment-${orderId}`,
+          orderId,
+          deliveryPartnerId: 'partner-1',
           cycle: 1,
-          respondedAt: rejectedAt,
-        },
-      ]);
+          assignedAt: NOW,
+        });
+        const result = await service.acceptAssignment(
+          `assignment-${orderId}`,
+          'user-1',
+        );
+        expect(result).toEqual({ success: true });
+      }
+
+      expect(metrics.recordDispatchPartnerAccept).toHaveBeenCalledTimes(3);
+    });
+
+    it('a single online rider continuously receives every order in a row — nothing artificially skips their turn', async () => {
       repository.findAvailablePartners.mockResolvedValue([
         buildPartner({ id: 'partner-1', userId: 'user-1' }),
-        buildPartner({ id: 'partner-2', userId: 'user-2' }),
       ]);
+
+      for (let i = 0; i < 5; i += 1) {
+        repository.createAssignmentForOrder.mockClear();
+        repository.findAssignmentsForOrder.mockResolvedValue([]); // each order is independent
+        const assignment = await service.assignOrder(`order-${i}`);
+
+        expect(assignment).not.toBeNull();
+        expect(repository.createAssignmentForOrder).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it('QA scenario — single rider: 10 consecutive orders, the same rider is dispatched and accepts all 10', async () => {
+      repository.findPartnerByUserId.mockResolvedValue({
+        id: 'partner-1',
+        userId: 'user-1',
+        isVerified: true,
+        status: DeliveryPartnerStatus.AVAILABLE,
+      });
+      repository.findAvailablePartners.mockResolvedValue([
+        buildPartner({ id: 'partner-1', userId: 'user-1' }),
+      ]);
+      repository.acceptAssignmentAtomic.mockResolvedValue({ accepted: true });
+
+      for (let i = 0; i < 10; i += 1) {
+        const orderId = `order-${i}`;
+        const assignmentId = `assignment-${i}`;
+
+        repository.findAssignmentsForOrder.mockResolvedValue([]); // each order's own history is independent
+        repository.createAssignmentForOrder.mockResolvedValue({
+          created: true,
+          assignment: {
+            id: assignmentId,
+            orderId,
+            deliveryPartnerId: 'partner-1',
+            cycle: 1,
+            assignedAt: NOW,
+          },
+        });
+
+        const assignment = await service.assignOrder(orderId);
+        expect(assignment).not.toBeNull();
+        expect(assignment).toMatchObject({ deliveryPartnerId: 'partner-1' });
+
+        repository.findAssignmentById.mockResolvedValue({
+          id: assignmentId,
+          orderId,
+          deliveryPartnerId: 'partner-1',
+          cycle: 1,
+          assignedAt: NOW,
+        });
+
+        const result = await service.acceptAssignment(assignmentId, 'user-1');
+        expect(result).toEqual({ success: true });
+      }
+
+      expect(metrics.recordDispatchPartnerAccept).toHaveBeenCalledTimes(10);
+    });
+
+    it('multiple riders still rotate correctly across cycles, with no cooldown/rate-limit interference', async () => {
+      const a = buildPartner({
+        id: 'partner-a',
+        userId: 'user-a',
+        currentLatitude: null,
+        currentLongitude: null,
+      });
+      const b = buildPartner({
+        id: 'partner-b',
+        userId: 'user-b',
+        currentLatitude: null,
+        currentLongitude: null,
+      });
+
+      repository.findAvailablePartners.mockResolvedValue([a, b]);
       presenceService.isOnlineBatch.mockResolvedValue(
         new Map([
-          ['user-1', true],
-          ['user-2', true],
+          ['user-a', true],
+          ['user-b', true],
         ]),
       );
 
-      await service.assignOrder('order-1', 2);
+      repository.findAssignmentsForOrder.mockResolvedValue([]);
+      await service.assignOrder('order-1');
+      expect(
+        repository.createAssignmentForOrder.mock.calls[0][0].deliveryPartnerId,
+      ).toBe('partner-a');
 
-      expect(repository.createAssignmentForOrder).toHaveBeenCalledWith(
-        expect.objectContaining({ deliveryPartnerId: 'partner-2' }),
+      // Cycle 2: A rejected moments ago — no cooldown holds them out, but rotation (not cooldown)
+      // still determines who starts this cycle, and it's B's turn.
+      repository.createAssignmentForOrder.mockClear();
+      repository.findAssignmentsForOrder.mockResolvedValue([
+        {
+          deliveryPartnerId: 'partner-a',
+          status: AssignmentStatus.REJECTED,
+          cycle: 1,
+          respondedAt: NOW,
+        },
+      ]);
+      await service.assignOrder('order-1', 2);
+      expect(
+        repository.createAssignmentForOrder.mock.calls[0][0].deliveryPartnerId,
+      ).toBe('partner-b');
+    });
+
+    it('QA scenario — presence expiry: once Redis presence reports a partner offline (e.g. the heartbeat stopped and the TTL lapsed), they no longer receive assignments', async () => {
+      // DispatchService only ever asks presenceService.isOnlineBatch() fresh on every call — it
+      // has no memory of "was online a moment ago". A stopped heartbeat causing the Redis TTL to
+      // lapse (Presence Heartbeat Hardening's own concern) surfaces here purely as this mock
+      // flipping to false; there is nothing else to fake for this scenario at the unit level.
+      repository.findAvailablePartners.mockResolvedValue([
+        buildPartner({ id: 'partner-1', userId: 'user-1' }),
+      ]);
+      presenceService.isOnlineBatch.mockResolvedValue(
+        new Map([['user-1', false]]),
+      );
+
+      // With the only partner offline, onlinePartners is empty but partners.length > 0 — that's
+      // the recoverable "cycle exhausted, schedule a retry" path (default DISPATCH_MAX_CYCLES=10
+      // means cycle 1 always retries rather than failing outright), not an immediate throw. The
+      // one thing that matters for this scenario either way: no assignment was created.
+      await expect(service.assignOrder('order-1')).resolves.toBeNull();
+
+      expect(repository.createAssignmentForOrder).not.toHaveBeenCalled();
+      expect(metrics.recordDispatchPartnerSkippedOffline).toHaveBeenCalledTimes(
+        1,
       );
     });
 
-    it('makes the partner eligible again once the cooldown window has elapsed, and logs the expiry', async () => {
-      const rejectedAt = new Date(NOW.getTime() - 61_000); // 61s ago, past the default 60s cooldown
-
-      repository.findAssignmentsForOrder.mockResolvedValue([
-        {
-          deliveryPartnerId: 'partner-1',
-          status: AssignmentStatus.REJECTED,
-          cycle: 1,
-          respondedAt: rejectedAt,
-        },
-      ]);
+    it('QA scenario — heartbeat recovery: the moment presence reports the same partner online again, they are immediately eligible, with no lingering penalty for having been offline', async () => {
       repository.findAvailablePartners.mockResolvedValue([
         buildPartner({ id: 'partner-1', userId: 'user-1' }),
       ]);
 
-      const assignment = await service.assignOrder('order-1', 2);
+      // First call: offline (heartbeat stopped / TTL lapsed) — matches the presence-expiry
+      // scenario above (schedules a cycle retry rather than throwing; see that test's comment).
+      presenceService.isOnlineBatch.mockResolvedValue(
+        new Map([['user-1', false]]),
+      );
+      await expect(service.assignOrder('order-1')).resolves.toBeNull();
+      expect(repository.createAssignmentForOrder).not.toHaveBeenCalled();
+
+      // Second call: back online (heartbeat resumed) — nothing about the prior offline moment is
+      // remembered or held against them; they are dispatched immediately.
+      presenceService.isOnlineBatch.mockResolvedValue(
+        new Map([['user-1', true]]),
+      );
+      const assignment = await service.assignOrder('order-1');
 
       expect(assignment).not.toBeNull();
       expect(repository.createAssignmentForOrder).toHaveBeenCalledWith(
         expect.objectContaining({ deliveryPartnerId: 'partner-1' }),
       );
-      expect(
-        logger.log.mock.calls.some(
-          ([payload]: any) =>
-            payload.event === 'dispatch_partner_cooldown_expired',
-        ),
-      ).toBe(true);
-      expect(metrics.recordDispatchPartnerCooldown).not.toHaveBeenCalled();
     });
 
-    it('does not apply the cooldown to an EXPIRED (timeout) assignment, only an explicit REJECTED one', async () => {
-      const expiredAt = new Date(NOW.getTime() - 10_000);
+    it('rejecting never schedules a delayed cooldown-style job — only cycle exhaustion schedules a delayed retry', async () => {
+      repository.findPartnerByUserId.mockResolvedValue({
+        id: 'partner-1',
+        userId: 'user-1',
+      });
+      repository.findAssignmentById.mockResolvedValue({
+        id: 'assignment-1',
+        orderId: 'order-1',
+        deliveryPartnerId: 'partner-1',
+        cycle: 1,
+      });
+      repository.claimAssignmentTransition.mockResolvedValue({ count: 1 });
 
-      repository.findAssignmentsForOrder.mockResolvedValue([
-        {
-          deliveryPartnerId: 'partner-1',
-          status: AssignmentStatus.EXPIRED,
-          cycle: 1,
-          respondedAt: expiredAt,
-        },
-      ]);
-      repository.findAvailablePartners.mockResolvedValue([
-        buildPartner({ id: 'partner-1', userId: 'user-1' }),
-      ]);
+      await service.rejectAssignment('assignment-1', 'user-1');
 
-      await service.assignOrder('order-1', 2);
-
-      expect(repository.createAssignmentForOrder).toHaveBeenCalledWith(
-        expect.objectContaining({ deliveryPartnerId: 'partner-1' }),
+      // rejectAssignment() itself never enqueues a job directly — redispatch happens via
+      // DispatchListener reacting to this published event, unchanged and untouched by this
+      // simplification. The point being verified: nothing here schedules any delayed job.
+      expect(queueService.addDispatchAssignmentJob).not.toHaveBeenCalled();
+      expect(eventBus.publish).toHaveBeenCalledWith(
+        'dispatch.assignment.rejected',
+        { orderId: 'order-1', assignmentId: 'assignment-1' },
       );
     });
   });
 
   describe('Phase 2 backward compatibility', () => {
-    it('cycle 1 with default configuration reproduces Phase 1 behavior exactly (no rotation, no cooldown, finite max cycles)', async () => {
+    it('cycle 1 with default configuration reproduces Phase 1 behavior exactly (no rotation, finite max cycles)', async () => {
       repository.findAvailablePartners.mockResolvedValue([buildPartner()]);
       repository.findAssignmentsForOrder.mockResolvedValue([]);
 
@@ -926,7 +1121,6 @@ describe('DispatchService', () => {
         ),
       ).toBe(false);
       expect(metrics.recordDispatchCycleRotation).not.toHaveBeenCalled();
-      expect(metrics.recordDispatchPartnerCooldown).not.toHaveBeenCalled();
     });
   });
 
@@ -968,7 +1162,7 @@ describe('DispatchService', () => {
       );
     });
 
-    it('still picks the nearer of two partners under the new criteria order (ties on workload/completions)', async () => {
+    it('still picks the nearer of two partners — distance is now the only ranking signal before rotation', async () => {
       const near = buildPartner({
         id: 'partner-near',
         userId: 'user-near',
@@ -1024,122 +1218,6 @@ describe('DispatchService', () => {
       expect(
         metrics.recordDispatchPartnerSkippedDistance,
       ).toHaveBeenCalledTimes(2);
-    });
-  });
-
-  describe('Phase 3: partner load balancing (Change 2)', () => {
-    it('prefers the partner with lower active workload over one with higher, even if farther away', async () => {
-      const busyButNear = buildPartner({
-        id: 'partner-busy',
-        userId: 'user-busy',
-        currentLatitude: 12.901,
-        currentLongitude: 77.601,
-      });
-      const idleButFar = buildPartner({
-        id: 'partner-idle',
-        userId: 'user-idle',
-        currentLatitude: 13.5,
-        currentLongitude: 78.2,
-      });
-
-      repository.findAvailablePartners.mockResolvedValue([
-        busyButNear,
-        idleButFar,
-      ]);
-      presenceService.isOnlineBatch.mockResolvedValue(
-        new Map([
-          ['user-busy', true],
-          ['user-idle', true],
-        ]),
-      );
-      repository.countActiveAssignmentsForPartners.mockResolvedValue(
-        new Map([['partner-busy', 1]]), // idle partner absent from map => 0
-      );
-
-      await service.assignOrder('order-1');
-
-      expect(repository.createAssignmentForOrder).toHaveBeenCalledWith(
-        expect.objectContaining({ deliveryPartnerId: 'partner-idle' }),
-      );
-    });
-
-    it('DISPATCH_LOAD_WINDOW_MINUTES governs the recent-completions window passed to the repository query', async () => {
-      const a = buildPartner({ id: 'partner-a', userId: 'user-a' });
-      const b = buildPartner({
-        id: 'partner-b',
-        userId: 'user-b',
-        currentLatitude: null,
-        currentLongitude: null,
-      });
-
-      repository.findAvailablePartners.mockResolvedValue([a, b]);
-      presenceService.isOnlineBatch.mockResolvedValue(
-        new Map([
-          ['user-a', true],
-          ['user-b', true],
-        ]),
-      );
-
-      await service.assignOrder('order-1');
-
-      expect(
-        repository.countRecentCompletedDeliveriesForPartners,
-      ).toHaveBeenCalledWith(
-        expect.arrayContaining(['user-a', 'user-b']),
-        30 * 60 * 1000, // default DISPATCH_LOAD_WINDOW_MINUTES=30
-      );
-    });
-  });
-
-  describe('Phase 3: assignment notification rate limit (Change 3)', () => {
-    it('skips a partner who already received DISPATCH_MAX_ASSIGNMENTS_PER_MINUTE notifications in the last minute', async () => {
-      const rateLimited = buildPartner({ id: 'partner-1', userId: 'user-1' });
-      const other = buildPartner({ id: 'partner-2', userId: 'user-2' });
-
-      repository.findAvailablePartners.mockResolvedValue([rateLimited, other]);
-      presenceService.isOnlineBatch.mockResolvedValue(
-        new Map([
-          ['user-1', true],
-          ['user-2', true],
-        ]),
-      );
-      repository.countRecentAssignmentsForPartners.mockResolvedValue(
-        new Map([['partner-1', 4]]), // default DISPATCH_MAX_ASSIGNMENTS_PER_MINUTE=4
-      );
-
-      await service.assignOrder('order-1');
-
-      expect(repository.createAssignmentForOrder).toHaveBeenCalledWith(
-        expect.objectContaining({ deliveryPartnerId: 'partner-2' }),
-      );
-      expect(
-        metrics.recordDispatchPartnerSkippedRateLimit,
-      ).toHaveBeenCalledTimes(1);
-      expect(
-        logger.log.mock.calls.some(
-          ([payload]: any) => payload.event === 'dispatch_partner_rate_limited',
-        ),
-      ).toBe(true);
-    });
-
-    it('a partner under the limit is not skipped', async () => {
-      repository.countRecentAssignmentsForPartners.mockResolvedValue(
-        new Map([['partner-1', 3]]),
-      );
-
-      await expect(service.assignOrder('order-1')).resolves.not.toBeNull();
-      expect(
-        metrics.recordDispatchPartnerSkippedRateLimit,
-      ).not.toHaveBeenCalled();
-    });
-
-    it('the limit is scoped per minute across all orders, not per order (global, reusing assignedAt)', async () => {
-      await service.assignOrder('order-1');
-
-      expect(repository.countRecentAssignmentsForPartners).toHaveBeenCalledWith(
-        expect.arrayContaining(['partner-1']),
-        60 * 1000,
-      );
     });
   });
 
@@ -1239,7 +1317,7 @@ describe('DispatchService', () => {
       jest.resetModules();
     });
 
-    it('keeps retrying under unlimited mode even with the new rate-limit/restaurant checks in place', async () => {
+    it('keeps retrying under unlimited mode even with the restaurant-availability checks in place', async () => {
       process.env.DISPATCH_MAX_CYCLES = '0';
       jest.resetModules();
 
@@ -1281,7 +1359,7 @@ describe('DispatchService', () => {
     });
   });
 
-  describe('Phase 3: observability metrics', () => {
+  describe('Phase 3 + Dispatch Simplification: observability metrics', () => {
     it('observes acceptance latency and cycle-to-acceptance on a successful accept', async () => {
       repository.findPartnerByUserId.mockResolvedValue({
         id: 'partner-1',
@@ -1306,7 +1384,7 @@ describe('DispatchService', () => {
       expect(metrics.observeDispatchCyclesToAcceptance).toHaveBeenCalledWith(3);
     });
 
-    it('records per-reason skip metrics: offline and active-assignment-elsewhere', async () => {
+    it('records per-reason skip metrics: OFFLINE and ACTIVE_ASSIGNMENT', async () => {
       const offline = buildPartner({
         id: 'partner-offline',
         userId: 'user-offline',
@@ -1345,21 +1423,32 @@ describe('DispatchService', () => {
         expect.objectContaining({ deliveryPartnerId: 'partner-ok' }),
       );
     });
+
+    it('records the ATTEMPTED_THIS_CYCLE skip reason for a partner already offered this order earlier in the cycle', async () => {
+      repository.findAssignmentsForOrder.mockResolvedValue([
+        {
+          deliveryPartnerId: 'partner-1',
+          status: AssignmentStatus.REJECTED,
+          cycle: 1,
+        },
+      ]);
+      repository.findAvailablePartners.mockResolvedValue([
+        buildPartner({ id: 'partner-1', userId: 'user-1' }),
+      ]);
+
+      await expect(service.assignOrder('order-1')).resolves.toBeNull();
+
+      expect(
+        metrics.recordDispatchPartnerSkippedAttemptedThisCycle,
+      ).toHaveBeenCalledTimes(1);
+    });
   });
 
-  describe('Phase 3: backward compatibility', () => {
-    it('a simple single-partner, no-load, in-hours dispatch behaves exactly as before across all three phases', async () => {
+  describe('Phase 3 backward compatibility', () => {
+    it('a simple single-partner, no-load, in-hours dispatch behaves exactly as before', async () => {
       const assignment = await service.assignOrder('order-1');
 
       expect(assignment).not.toBeNull();
-      expect(
-        metrics.recordDispatchPartnerSkippedRateLimit,
-      ).not.toHaveBeenCalled();
-      expect(
-        logger.log.mock.calls.some(
-          ([payload]: any) => payload.event === 'dispatch_partner_rate_limited',
-        ),
-      ).toBe(false);
     });
 
     it('an order with no branch on record is still dispatchable (Change 4 checks are branch-conditional, not mandatory)', async () => {
