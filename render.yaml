@@ -1,30 +1,37 @@
-# Render Blueprint — QA environment only. See docs/deployment/render-blueprint.md.
+# Render Blueprint — SG (Dev/QA) environment only. See docs/deployment/render-blueprint.md.
 #
-# Two services, one repository, one Dockerfile (root). No secrets are stored here — every
-# secret-shaped variable uses `sync: false`, which makes Render prompt for a value in its own
-# dashboard and never persists it to this file or git history. Plain, non-secret structural values
-# (NODE_ENV, feature flags, ports, non-sensitive defaults) are set directly since there's nothing
-# to protect.
+# Phase 0 remediation: the QA services (`patheya-express-api-gateway-qa`,
+# `patheya-express-worker-qa`) and their shared `patheya-qa-shared` envVarGroup have been removed
+# from this blueprint. SG (`-sg`, Singapore region) is now the only active Dev/QA deployment and
+# owns its own dedicated envVarGroup (`patheya-sg-shared`) rather than sharing QA's — SG no longer
+# structurally depends on any QA-named configuration. See docs/deployment/render-blueprint.md and
+# the Phase 0 remediation report for the historical QA→SG transition.
+#
+# One repository, one Dockerfile (root). No secrets are stored here — every secret-shaped variable
+# uses `sync: false`, which makes Render prompt for a value in its own dashboard and never
+# persists it to this file or git history. Plain, non-secret structural values (NODE_ENV, feature
+# flags, ports, non-sensitive defaults) are set directly since there's nothing to protect.
 #
 # AWS/Aurora/ElastiCache/Terraform/GitOps/Kubernetes are entirely untouched by this file — it only
-# describes how Render (QA) builds and runs the same application code.
+# describes how Render (SG) builds and runs the same application code. Future production
+# infrastructure (separate API/workers/Postgres, AWS ElastiCache/Valkey) is not introduced here.
 
 envVarGroups:
-  - name: patheya-qa-shared
+  - name: patheya-sg-shared
     envVars:
       # --- Core ---
       - key: NODE_ENV
         value: staging
       - key: DATABASE_URL
-        sync: false # Neon connection string, e.g. postgresql://...?sslmode=require
+        sync: false # SG Postgres connection string (Neon), e.g. postgresql://...?sslmode=require — must be SG's own database, not QA's former one
       - key: REDIS_HOST
-        sync: false # Upstash endpoint
+        sync: false # SG Redis endpoint (Upstash) — must be a dedicated SG instance, not shared with any other environment
       - key: REDIS_PORT
         value: 6379
       - key: REDIS_TLS
         value: true
       - key: REDIS_AUTH_TOKEN
-        sync: false # Upstash password
+        sync: false # SG Redis password (Upstash)
       - key: JWT_ACCESS_SECRET
         generateValue: true
       - key: JWT_REFRESH_SECRET
@@ -50,7 +57,7 @@ envVarGroups:
       - key: RAZORPAY_WEBHOOK_SECRET
         sync: false
 
-      # --- CORS allowlist / frontend origins (Vercel QA URLs) ---
+      # --- CORS allowlist / frontend origins (Vercel SG URLs) ---
       - key: CUSTOMER_APP_URL
         sync: false
       - key: RESTAURANT_APP_URL
@@ -64,8 +71,8 @@ envVarGroups:
       # default domain is predictable from the service name below, so this is a literal value,
       # not sync:false — update it if a custom domain is ever attached instead.
       - key: API_PUBLIC_URL
-        value: https://patheya-express-api-gateway-qa.onrender.com
-      # EXTRA_ALLOWED_ORIGINS (optional, comma-separated) — not needed in QA today; add via the
+        value: https://patheya-express-api-gateway-sg.onrender.com
+      # EXTRA_ALLOWED_ORIGINS (optional, comma-separated) — not needed in SG today; add via the
       # Render dashboard if a future need arises, no render.yaml change required.
 
       # --- SMTP ---
@@ -78,7 +85,7 @@ envVarGroups:
       - key: SMTP_PASS
         sync: false
       - key: SMTP_FROM
-        value: "Patheya Express QA <no-reply@patheyaexpress.com>"
+        value: "Patheya Express SG <no-reply@patheyaexpress.com>"
 
       # --- Super Admin bootstrap (AdminBootstrapService) — creates the first SUPER_ADMIN
       # automatically on startup if one doesn't exist yet; no API endpoint for this exists. All
@@ -104,17 +111,30 @@ envVarGroups:
       - key: SHUTDOWN_TIMEOUT_MS
         value: 10000
 
+      # --- Redis reconnect policy (Phase 0 remediation) — see redis-connection.config.ts. Bounds
+      # how long a dropped Redis connection keeps retrying before giving up, so a sustained outage
+      # (e.g. a suspended/rate-limited Upstash instance) can't drive an indefinite reconnect storm.
+      # Left unset here deliberately — the code-level default (60 attempts) is the vetted value;
+      # override only via the Render dashboard if SG's observed behavior calls for a different
+      # number.
+      # - key: REDIS_MAX_RECONNECT_ATTEMPTS
+      #   value: 60
+
 services:
-  # 1. api-gateway — Render Web Service. Serves HTTP/WebSocket traffic. Builds from the root
-  #    Dockerfile's default (final) stage, `runtime` — no dockerCommand override needed since the
-  #    image's own CMD (`node dist/src/main.js`) is already byte-for-byte identical to the
-  #    `start:prod` npm script.
+  # 1. api-gateway-sg — SG (Singapore) API Gateway. Render Web Service, serves HTTP/WebSocket
+  #    traffic. Builds from the root Dockerfile's default (final) stage, `runtime` — no
+  #    dockerCommand override needed since the image's own CMD (`node dist/src/main.js`) is
+  #    already byte-for-byte identical to the `start:prod` npm script.
   - type: web
-    name: patheya-express-api-gateway-qa
+    name: patheya-express-api-gateway-sg
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerContext: .
     plan: starter
+    region: singapore
+    # Explicit rather than inherited from the repo's default branch, which happens to be `develop`
+    # today — pinning it here is a precise match of that same actual behavior, not a change to it.
+    branch: develop
     # /api/v1/health/ready (not /api/v1/health) — Render's health check gates whether an instance
     # receives traffic, and only /health/ready returns a real non-200 (503) when database/Redis/
     # queues/storage are actually down. /health always returns 200 even when its `status` field
@@ -124,76 +144,30 @@ services:
     # Runs `prisma migrate deploy` in a separate, ephemeral instance of this same build, after the
     # build completes but before the new deploy receives traffic — Render blocks (and rolls back)
     # the entire deploy if this command exits non-zero, so a bad migration never reaches a live
-    # instance. This is what closes the gap `docs/deployment/render-blueprint.md`'s "No migration
-    # automation" limitation used to document: Render's preDeployCommand always runs against the
-    # exact image a service deploys (confirmed against Render's own docs — it cannot target a
-    # different Dockerfile stage, and neither can a one-off Job), so making this work required the
-    # Prisma CLI to actually be present in `runtime` — see `apps/api-gateway/package.json`'s
-    # `prisma` entry (moved from devDependencies to dependencies) and `docs/infrastructure/
-    # migrations.md` for the full reasoning and the measured image-size cost. Invoked as a direct
-    # binary (`node_modules/.bin/prisma`), not `pnpm exec` — `runtime` still has no pnpm/corepack.
+    # instance. Render's preDeployCommand always runs against the exact image a service deploys
+    # (confirmed against Render's own docs — it cannot target a different Dockerfile stage, and
+    # neither can a one-off Job), so making this work required the Prisma CLI to actually be
+    # present in `runtime` — see `apps/api-gateway/package.json`'s `prisma` entry (moved from
+    # devDependencies to dependencies) and `docs/infrastructure/migrations.md` for the full
+    # reasoning and the measured image-size cost. Invoked as a direct binary
+    # (`node_modules/.bin/prisma`), not `pnpm exec` — `runtime` still has no pnpm/corepack.
     # Only on this service, not the worker — migrations should run exactly once per deploy, and
     # Prisma's own migration-lock table makes a second concurrent `migrate deploy` safe (it waits,
     # then no-ops) if this were ever accidentally duplicated, but there is no need to.
     preDeployCommand: node_modules/.bin/prisma migrate deploy
     envVars:
-      - fromGroup: patheya-qa-shared
+      - fromGroup: patheya-sg-shared
       - key: APP_NAME
         value: api-gateway
     autoDeploy: true
 
-  # 2. worker — Render Background Worker. Processes BullMQ jobs only, no inbound traffic, no
-  #    health check (Render Background Workers don't support the Web Service health-check gate).
-  #    Same image as api-gateway; dockerCommand overrides only the container's CMD (tini stays PID
-  #    1, unaffected) to run worker-main.js instead — the exact command `start:worker` runs,
-  #    invoked directly rather than via `pnpm start:worker` because the `runtime` stage
-  #    deliberately has no pnpm/corepack installed (production-only, pruned node_modules).
-  - type: worker
-    name: patheya-express-worker-qa
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
-    dockerCommand: node dist/src/worker-main.js
-    plan: starter
-    envVars:
-      - fromGroup: patheya-qa-shared
-      - key: APP_NAME
-        value: worker
-    autoDeploy: true
-
-  # 3. api-gateway-sg — Singapore region migration. Byte-for-byte identical to api-gateway-qa
-  #    above except `name`/`region` (immutable after creation — confirmed against Render's own
-  #    Blueprint spec, which is why this is a new service rather than an in-place edit of #1) and
-  #    `API_PUBLIC_URL` (must be this service's own public URL for Swagger UI's CORS
-  #    self-reference to keep working — copying qa's value here would silently break it, since
-  #    the two services are on different hostnames). Region migration only: Oregon → Singapore,
-  #    to sit next to the already-Singapore Neon database and cut cross-region request latency.
-  #    `-qa` is untouched and keeps serving all real traffic until this is validated and Vercel
-  #    is repointed — see docs/deployment/render-blueprint.md's migration section.
-  - type: web
-    name: patheya-express-api-gateway-sg
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
-    plan: starter
-    region: singapore
-    # Explicit rather than inherited from the repo's default branch — #1/#2 above rely on that
-    # default (no `branch:` set), which happens to be `develop` today; pinning it here for a
-    # brand-new service is a more precise match of that same actual behavior, not a change to it.
-    branch: develop
-    healthCheckPath: /api/v1/health/ready
-    preDeployCommand: node_modules/.bin/prisma migrate deploy
-    envVars:
-      - fromGroup: patheya-qa-shared
-      - key: APP_NAME
-        value: api-gateway
-      - key: API_PUBLIC_URL
-        value: https://patheya-express-api-gateway-sg.onrender.com
-    autoDeploy: true
-
-  # 4. worker-sg — Singapore region migration. Byte-for-byte identical to worker-qa above except
-  #    `name`/`region` for the same reason as api-gateway-sg. No preDeployCommand here either,
-  #    same reasoning as worker-qa — migrations run exactly once, gated on api-gateway-sg only.
+  # 2. worker-sg — SG (Singapore) Worker. Render Background Worker. Processes BullMQ jobs only, no
+  #    inbound traffic, no health check (Render Background Workers don't support the Web Service
+  #    health-check gate). Same image as api-gateway-sg; dockerCommand overrides only the
+  #    container's CMD (tini stays PID 1, unaffected) to run worker-main.js instead — the exact
+  #    command `start:worker` runs, invoked directly rather than via `pnpm start:worker` because
+  #    the `runtime` stage deliberately has no pnpm/corepack installed (production-only, pruned
+  #    node_modules).
   - type: worker
     name: patheya-express-worker-sg
     runtime: docker
@@ -204,7 +178,7 @@ services:
     region: singapore
     branch: develop
     envVars:
-      - fromGroup: patheya-qa-shared
+      - fromGroup: patheya-sg-shared
       - key: APP_NAME
         value: worker
     autoDeploy: true

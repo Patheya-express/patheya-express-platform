@@ -28,6 +28,8 @@ import { SwaggerModule } from '@nestjs/swagger';
 
 import { buildSwaggerDocument } from './swagger.config';
 
+import { registerProcessLifecycleHandlers } from './bootstrap/process-lifecycle';
+
 /** Any localhost/127.0.0.1 origin, regardless of port — dev servers (`ng serve`) don't have a
  *  fixed port across the four apps, and this is local-machine-only convenience, not a security
  *  boundary. Never matches in production (NODE_ENV check happens at the call site). */
@@ -154,24 +156,15 @@ async function bootstrap() {
 
   const shutdownTimeoutMs = Number(process.env.SHUTDOWN_TIMEOUT_MS) || 10000;
 
-  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
-    process.on(signal, () => {
-      logger.log({ event: 'shutdown_signal_received', signal }, 'Bootstrap');
-
-      // Safety net: if a lifecycle hook hangs, force-exit within the orchestrator's grace
-      // period rather than waiting for a SIGKILL. unref()'d so a clean shutdown that finishes
-      // first isn't held open by this timer.
-      setTimeout(() => {
-        logger.error(
-          { event: 'shutdown_timeout', signal, shutdownTimeoutMs },
-          undefined,
-          'Bootstrap',
-        );
-
-        process.exit(1);
-      }, shutdownTimeoutMs).unref();
-    });
-  }
+  // Phase 0 remediation: SIGTERM/SIGINT (as before) plus unhandledRejection/uncaughtException
+  // (previously unhandled — see process-lifecycle.ts for the full rationale and shutdown
+  // sequence).
+  registerProcessLifecycleHandlers({
+    app,
+    logger,
+    context: 'Bootstrap',
+    shutdownTimeoutMs,
+  });
 
   const document = buildSwaggerDocument(app);
 

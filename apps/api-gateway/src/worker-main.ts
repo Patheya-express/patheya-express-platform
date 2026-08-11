@@ -16,6 +16,8 @@ import { AppLoggerService } from './infrastructure/logger/logger.service';
 
 import { MetricsService } from './modules/metrics/metrics.service';
 
+import { registerProcessLifecycleHandlers } from './bootstrap/process-lifecycle';
+
 /**
  * The standalone worker entrypoint (Section 1: "Worker Service (worker-main.ts)") —
  * `k8s/base/workers/deployment.yaml` runs this file, not `main.ts`, closing the gap
@@ -65,24 +67,15 @@ async function bootstrap() {
 
   const shutdownTimeoutMs = Number(process.env.SHUTDOWN_TIMEOUT_MS) || 10000;
 
-  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
-    process.on(signal, () => {
-      logger.log(
-        { event: 'shutdown_signal_received', signal },
-        'WorkerBootstrap',
-      );
-
-      setTimeout(() => {
-        logger.error(
-          { event: 'shutdown_timeout', signal, shutdownTimeoutMs },
-          undefined,
-          'WorkerBootstrap',
-        );
-
-        process.exit(1);
-      }, shutdownTimeoutMs).unref();
-    });
-  }
+  // Phase 0 remediation: SIGTERM/SIGINT (as before) plus unhandledRejection/uncaughtException
+  // (previously unhandled — see process-lifecycle.ts for the full rationale and shutdown
+  // sequence).
+  registerProcessLifecycleHandlers({
+    app,
+    logger,
+    context: 'WorkerBootstrap',
+    shutdownTimeoutMs,
+  });
 
   await app.listen(process.env.PORT || 3000);
 

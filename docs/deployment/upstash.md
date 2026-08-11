@@ -1,15 +1,25 @@
-# Upstash Redis (QA)
+# Upstash Redis (SG)
 
-Verifies Upstash Redis as a drop-in `REDIS_*` replacement for ElastiCache in the QA environment
-only. **AWS/ElastiCache production and staging are untouched by this document or this phase** —
-this is an additive review, not a migration of any real environment.
+Verifies Upstash Redis as a drop-in `REDIS_*` replacement for ElastiCache in the SG (Singapore)
+Dev/QA environment only. **AWS/ElastiCache production and staging are untouched by this document or
+this phase** — this is an additive review, not a migration of any real environment.
+
+**Phase 0 remediation note:** this environment was originally provisioned and validated under the
+name "QA." The Phase 0 audit found QA had never actually been decommissioned and was sharing this
+same Upstash instance/credentials with a separately-added `-sg` deployment pair; QA has since been
+removed from `render.yaml` and SG is now the only Dev/QA environment, with its own dedicated
+`patheya-sg-shared` env var group (see `docs/deployment/render-blueprint.md`). The "Validation
+performed" section below is left as a historical record of the original QA-named validation — the
+findings (connection options, TLS, BullMQ/Socket.IO compatibility) are architectural and still
+apply unchanged under the SG name; nothing in this document implies a runtime Redis
+measurement was performed as part of Phase 0 — none was (see the Phase 0 remediation report).
 
 ## Architecture
 
 ```
 Local development   →   docker-compose's redis:7-alpine container, plain TCP, no TLS, no AUTH
-QA                  →   Upstash Redis (standard Redis-protocol endpoint, TLS + AUTH mandatory)
-Staging/Production  →   ElastiCache (transit_encryption_enabled=true, AUTH token, replicated)
+SG (Dev/QA)         →   Upstash Redis (standard Redis-protocol endpoint, TLS + AUTH mandatory)
+Staging/Production  →   ElastiCache (transit_encryption_enabled=true, AUTH token, replicated) — not introduced yet
 ```
 
 Every consumer in the process — `RedisService`, BullMQ (`QueuesModule`'s `BullModule.forRoot`), and
@@ -76,9 +86,9 @@ against the adapter itself.
 
 **Caveat worth documenting**: the two dedicated pub/sub connections `afterInit()` opens are
 per-process (one pub + one sub client per running `api-gateway`/`worker` instance, not per
-WebSocket client) — for QA's expected single-instance-per-service scale this is negligible, but
+WebSocket client) — for SG's expected single-instance-per-service scale this is negligible, but
 Upstash's pricing/connection-limit model (below, under Performance) means this is worth being
-aware of before scaling QA to multiple replicas.
+aware of before scaling SG to multiple replicas.
 
 ## Health checks
 
@@ -133,23 +143,28 @@ any Redis/BullMQ/Socket.IO source file this phase.
   connection), and two dedicated ones for the Socket.IO adapter (pub + sub). ElastiCache has no
   per-connection cost; Upstash's pricing (below) does account for concurrent connections, so this
   is worth knowing exactly, not just approximately.
-- **Idle behavior**: ioredis's `retryStrategy` (exponential backoff capped at 2s) and
-  `reconnectOnError` already handle a dropped idle connection transparently — if Upstash closes an
-  idle TCP connection (a real possibility on lower-cost tiers, unlike ElastiCache's always-on
-  nodes), the next command triggers a reconnect rather than an application-visible error. No code
-  change needed to accommodate this; it already works this way for ElastiCache's own failover
-  scenarios.
+- **Idle behavior**: ioredis's `retryStrategy` (exponential backoff capped at 2s, and — as of the
+  Phase 0 remediation — capped at a maximum of `REDIS_MAX_RECONNECT_ATTEMPTS` attempts, ~81s of
+  ride-out by default, see `redis-retry-policy.ts`) and `reconnectOnError` handle a dropped idle
+  connection transparently for a transient blip — if Upstash closes an idle TCP connection (a real
+  possibility on lower-cost tiers, unlike ElastiCache's always-on nodes), the next command triggers
+  a reconnect rather than an application-visible error. Unlike before Phase 0, a *sustained* outage
+  (e.g. Upstash suspending the instance for exceeding its command budget) now causes the connection
+  to give up after the attempt ceiling instead of retrying indefinitely — each retry attempt is
+  itself billable command volume, which was the mechanism behind a prior Redis command-volume
+  incident on this Upstash instance.
 - **Connection limits**: Upstash plans (including some paid tiers) cap total concurrent
-  connections. Four fixed connections per running process instance is a hard floor — running
-  multiple `api-gateway`/`worker` replicas against the same Upstash instance multiplies this
-  (e.g. 3 replicas × 4 connections = 12), worth checking against the specific Upstash plan's limit
-  before scaling QA beyond a single instance of each service.
+  connections. This document's original "four fixed connections per process" figure predates the
+  BullMQ producer/worker split and the per-queue `QueueEvents` monitoring this codebase later
+  added, and is known to understate the real per-process count — left as a flagged inaccuracy
+  rather than silently corrected here, since re-deriving the current figure is outside Phase 0's
+  scope (tracked as a deferred documentation item in the Phase 0 remediation report).
 - **Cost considerations**: Upstash's pricing models are typically usage-based (per-command or
   per-request pricing on some tiers) rather than ElastiCache's fixed per-node-hour cost. BullMQ's
   `upsertJobScheduler`-based recurring jobs (`addPaymentReconciliationJob` every 5 min,
   `addTrendingSearchAggregationJob` every 15 min, `addTicketEscalationJob` every 30 min) plus the
   Socket.IO adapter's pub/sub traffic are recurring, predictable command volume worth estimating
-  against Upstash's specific pricing tier before committing QA to it long-term — not measured in
+  against Upstash's specific pricing tier before committing SG to it long-term — not measured in
   this review (would require a real Upstash account and real traffic).
 
 ## Known limitations
@@ -159,7 +174,7 @@ any Redis/BullMQ/Socket.IO source file this phase.
   and a real build, not a fabricated live-connection result.
 - Upstash's exact idle-connection-timeout and per-plan connection-limit values were not looked up
   against a specific real Upstash plan (would require picking one) — noted as "worth checking
-  before scaling QA" rather than given a specific number that would otherwise need to be assumed.
+  before scaling SG" rather than given a specific number that would otherwise need to be assumed.
 - The BullMQ/REST-API distinction (above) is important enough to flag even though it isn't a
   problem for this codebase today — a future contributor reaching for Upstash's REST API client
   (e.g. for a serverless/edge use case) would break BullMQ; this code should keep using the
@@ -167,7 +182,7 @@ any Redis/BullMQ/Socket.IO source file this phase.
 
 ## Comparison: Local Redis → Upstash → ElastiCache
 
-| | Local Redis | Upstash (QA) | ElastiCache (staging/production) |
+| | Local Redis | Upstash (SG) | ElastiCache (staging/production) |
 |---|---|---|---|
 | Hosting | `docker-compose`'s `redis:7-alpine` container | Upstash managed Redis | AWS ElastiCache (replicated, `transit_encryption_enabled=true`) |
 | TLS | None | Mandatory (`REDIS_TLS=true`) | Mandatory (`REDIS_TLS=true`) |

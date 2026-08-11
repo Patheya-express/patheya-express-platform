@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { Logger, OnApplicationShutdown } from '@nestjs/common';
 
 import { JwtService } from '@nestjs/jwt';
 
@@ -22,6 +22,8 @@ import { UserRole } from '@prisma/client';
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
 
 import { RedisConnectionFactory } from '../../../infrastructure/redis-infrastructure/redis-connection-factory.service';
+
+import { RedisLifecycleService } from '../../../infrastructure/redis-infrastructure/redis-lifecycle.service';
 
 import { RedisConnectionType } from '../../../infrastructure/redis-infrastructure/enums/redis-connection-type.enum';
 
@@ -98,7 +100,11 @@ function buildRealtimeCorsOrigin(
   },
 })
 export class RealtimeGateway
-  implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit
+  implements
+    OnGatewayConnection,
+    OnGatewayDisconnect,
+    OnGatewayInit,
+    OnApplicationShutdown
 {
   private readonly logger = new Logger(RealtimeGateway.name);
 
@@ -111,6 +117,8 @@ export class RealtimeGateway
     private readonly prisma: PrismaService,
 
     private readonly redisConnectionFactory: RedisConnectionFactory,
+
+    private readonly redisLifecycle: RedisLifecycleService,
 
     private readonly metrics: MetricsService,
   ) {}
@@ -159,6 +167,24 @@ export class RealtimeGateway
     this.logger.log(
       'Socket.IO Redis adapter attached — cross-pod fanout enabled',
     );
+  }
+
+  /**
+   * Phase 0 remediation — previously these two connections had no shutdown path at all; they
+   * closed only implicitly when the process itself exited. `RedisLifecycleService.close()` is
+   * used (not the broader `shutdownAll()`) because those two names are the only connections this
+   * gateway owns — `RedisService`'s general client, BullMQ's connections, and `MetricsService`'s
+   * `QueueEvents` listeners are each already closed by their own owner's shutdown hook, and
+   * closing them again here would just double-`.quit()` the same sockets. Safe even if
+   * `afterInit()` never ran (nothing registered under these names yet — `close()` is a no-op on a
+   * missing client) and safe to race with an in-flight reconnect, since `close()` only ever
+   * `.quit()`s whatever client is currently registered under the name.
+   */
+  async onApplicationShutdown(): Promise<void> {
+    await Promise.all([
+      this.redisLifecycle.close(RedisConnectionName.SOCKETIO_PUBLISHER),
+      this.redisLifecycle.close(RedisConnectionName.SOCKETIO_SUBSCRIBER),
+    ]);
   }
 
   /**
