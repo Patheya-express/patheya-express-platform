@@ -2,6 +2,8 @@ import * as crypto from 'crypto';
 
 import { RazorpayProvider } from './razorpay.provider';
 
+import { VerifyPaymentDto } from '../dto/verify-payment.dto';
+
 /**
  * Sprint 1.5 — the two HMAC comparisons that gate "was this payment/webhook actually signed by
  * Razorpay" are the single most security-critical checks in the whole payment pipeline. Verifies
@@ -24,7 +26,7 @@ describe('RazorpayProvider — signature verification', () => {
     return crypto.createHmac('sha256', secret).update(message).digest('hex');
   }
 
-  describe('verifySignature (client-driven verify)', () => {
+  describe('verifyPaymentSignature (client-driven verify)', () => {
     it('accepts a correctly-signed order_id|payment_id pair', () => {
       const payload = {
         razorpay_order_id: 'order_abc123',
@@ -32,7 +34,7 @@ describe('RazorpayProvider — signature verification', () => {
         razorpay_signature: sign(KEY_SECRET, 'order_abc123|pay_xyz789'),
       };
 
-      expect(provider.verifySignature(payload)).toBe(true);
+      expect(provider.verifyPaymentSignature(payload)).toBe(true);
     });
 
     it('rejects a signature computed with the wrong secret', () => {
@@ -45,14 +47,14 @@ describe('RazorpayProvider — signature verification', () => {
         ),
       };
 
-      expect(provider.verifySignature(payload)).toBe(false);
+      expect(provider.verifyPaymentSignature(payload)).toBe(false);
     });
 
     it('rejects a valid signature replayed against a different order_id/payment_id pair', () => {
       const genuineSignature = sign(KEY_SECRET, 'order_abc123|pay_xyz789');
 
       expect(
-        provider.verifySignature({
+        provider.verifyPaymentSignature({
           razorpay_order_id: 'order_DIFFERENT',
           razorpay_payment_id: 'pay_xyz789',
           razorpay_signature: genuineSignature,
@@ -62,7 +64,7 @@ describe('RazorpayProvider — signature verification', () => {
 
     it('rejects a forged signature of the wrong length rather than throwing', () => {
       expect(
-        provider.verifySignature({
+        provider.verifyPaymentSignature({
           razorpay_order_id: 'order_abc123',
           razorpay_payment_id: 'pay_xyz789',
           razorpay_signature: 'too-short',
@@ -72,10 +74,10 @@ describe('RazorpayProvider — signature verification', () => {
 
     it('rejects a missing signature rather than throwing', () => {
       expect(
-        provider.verifySignature({
+        provider.verifyPaymentSignature({
           razorpay_order_id: 'order_abc123',
           razorpay_payment_id: 'pay_xyz789',
-        }),
+        } as VerifyPaymentDto),
       ).toBe(false);
     });
   });
