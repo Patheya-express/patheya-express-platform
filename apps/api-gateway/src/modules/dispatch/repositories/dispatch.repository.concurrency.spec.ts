@@ -364,6 +364,7 @@ describe('DispatchRepository — dispatch/assignment concurrency (real database)
         deliveryPartnerId: partnerB.partnerId,
         expiresAt: new Date(Date.now() + 10 * 60 * 1000),
         dispatchableStatuses: [OrderStatus.READY_FOR_PICKUP],
+        cycle: 1,
       }),
     ]);
 
@@ -437,6 +438,7 @@ describe('DispatchRepository — dispatch/assignment concurrency (real database)
           deliveryPartnerId: partner.partnerId,
           expiresAt: new Date(Date.now() + 10 * 60 * 1000),
           dispatchableStatuses: [OrderStatus.READY_FOR_PICKUP],
+          cycle: 1,
         }),
       ),
     );
@@ -577,6 +579,7 @@ describe('DispatchRepository — dispatch/assignment concurrency (real database)
       deliveryPartnerId: partnerB.partnerId,
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
       dispatchableStatuses: [OrderStatus.READY_FOR_PICKUP],
+      cycle: 1,
     });
 
     expect(result.created).toBe(false);
@@ -600,6 +603,7 @@ describe('DispatchRepository — dispatch/assignment concurrency (real database)
       deliveryPartnerId: partner.partnerId,
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
       dispatchableStatuses: [OrderStatus.READY_FOR_PICKUP],
+      cycle: 1,
     });
 
     expect(result.created).toBe(false);

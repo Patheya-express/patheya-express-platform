@@ -107,6 +107,7 @@ export class DispatchRepository {
     deliveryPartnerId: string;
     expiresAt: Date;
     dispatchableStatuses: OrderStatus[];
+    cycle: number;
   }): Promise<CreateAssignmentResult> {
     return this.prisma.$transaction(async (tx: TransactionClient) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${params.orderId}))`;
@@ -150,6 +151,8 @@ export class DispatchRepository {
           deliveryPartnerId: params.deliveryPartnerId,
 
           expiresAt: params.expiresAt,
+
+          cycle: params.cycle,
         },
       });
 
@@ -388,13 +391,57 @@ export class DispatchRepository {
       select: {
         deliveryPartnerId: true,
         status: true,
+        cycle: true,
+        // Phase 3 (Change 6 — admin visibility). AdminDispatchService.getDispatchDebugInfo()'s
+        // lastAttemptAt reuses this same query rather than adding a new one.
+        assignedAt: true,
       },
     });
   }
+
+  /**
+   * Enterprise Dispatch Engine Enhancement — adds the pickup branch's coordinates (needed for the
+   * "nearest to restaurant" priority tiebreak) on top of the pre-existing return shape. Purely
+   * additive: every field `assignOrder()` already read off this result (`status`,
+   * `deliveryPartnerId`, `customerId`, etc.) is untouched, this only adds a populated `branch`
+   * relation that was previously left unfetched (Order.branchId is optional, so `branch` can
+   * legitimately be null for an order with no branch on record — callers must treat missing
+   * coordinates as "skip distance ranking for this order", not an error).
+   *
+   * Phase 3 (Change 4 — restaurant cancellation): also adds `branch.isActive`/`timezone`/
+   * `operatingHours` and `restaurant.status`, needed for DispatchService.assignOrder() to detect
+   * "the restaurant closed/became unavailable since this order was queued" on every call —
+   * including every delayed BullMQ retry, since every one of them re-enters through this same
+   * method. `operatingHours` reuses the exact shape `computeIsOpenNow` (restaurants module)
+   * already expects — no new open-hours logic, the existing one is called as-is.
+   */
   async findOrderById(orderId: string) {
     return this.prisma.order.findUnique({
       where: {
         id: orderId,
+      },
+
+      include: {
+        branch: {
+          select: {
+            latitude: true,
+            longitude: true,
+            isActive: true,
+            timezone: true,
+            operatingHours: {
+              select: {
+                dayOfWeek: true,
+                opensAt: true,
+                closesAt: true,
+                isClosed: true,
+              },
+            },
+          },
+        },
+
+        restaurant: {
+          select: { status: true },
+        },
       },
     });
   }

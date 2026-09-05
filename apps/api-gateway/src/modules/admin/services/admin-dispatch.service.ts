@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 
 import {
+  AssignmentStatus,
   AuditAction,
   DeliveryPartnerStatus,
   OrderStatus,
@@ -31,6 +32,7 @@ import { GetAvailableDeliveryPartnersQueryDto } from '../dto/get-available-deliv
 import { PaginatedAvailableDeliveryPartnersResponseDto } from '../dto/paginated-available-delivery-partners-response.dto';
 import { AvailableDeliveryPartnerResponseDto } from '../dto/available-delivery-partner-response.dto';
 import { AssignOrderToPartnerDto } from '../dto/assign-order-to-partner.dto';
+import { DispatchDebugInfoResponseDto } from '../dto/dispatch-debug-info-response.dto';
 
 const TERMINAL_ORDER_STATUSES: OrderStatus[] = [
   OrderStatus.DELIVERED,
@@ -240,6 +242,11 @@ export class AdminDispatchService {
         expiresAt: new Date(Date.now() + 10 * 60 * 1000),
 
         dispatchableStatuses: [OrderStatus.READY_FOR_PICKUP],
+
+        // Enterprise Dispatch Engine Enhancement — cycle is DispatchService.assignOrder()'s own
+        // automatic-redispatch bookkeeping; a manual admin assignment doesn't participate in that
+        // cycling at all, so it's simply recorded as cycle 1 rather than computed.
+        cycle: 1,
       });
 
       if (!result.created) {
@@ -336,5 +343,56 @@ export class AdminDispatchService {
 
       throw error;
     }
+  }
+
+  /**
+   * Enterprise Dispatch Engine Enhancement — Phase 3 (Change 6, admin visibility). Debugging/
+   * support-only: no frontend consumes this, no existing DTO/contract changes. Derived entirely
+   * from this order's own DeliveryAssignment history. `partnersSkipped` is a historical view
+   * (every partner who didn't accept, across every cycle), not a live re-evaluation of current
+   * eligibility — computing that would mean re-running the full presence/active-assignment
+   * pipeline just to render a debug page, which this deliberately avoids.
+   *
+   * Dispatch Simplification — no longer reports a `cooldownPartners` field: rejection cooldown
+   * was removed from the dispatch pipeline entirely, so there is nothing left for this endpoint
+   * to compute or report for it.
+   */
+  async getDispatchDebugInfo(
+    orderId: string,
+  ): Promise<DispatchDebugInfoResponseDto> {
+    const assignments =
+      await this.dispatchRepository.findAssignmentsForOrder(orderId);
+
+    const currentCycle = assignments.length
+      ? Math.max(...assignments.map((assignment) => assignment.cycle))
+      : 1;
+
+    const lastAttemptAt = assignments.length
+      ? new Date(
+          Math.max(
+            ...assignments.map((assignment) => assignment.assignedAt.getTime()),
+          ),
+        )
+      : null;
+
+    const partnersSkipped = [
+      ...new Set(
+        assignments
+          .filter(
+            (assignment) =>
+              assignment.status === AssignmentStatus.REJECTED ||
+              assignment.status === AssignmentStatus.EXPIRED,
+          )
+          .map((assignment) => assignment.deliveryPartnerId),
+      ),
+    ];
+
+    return {
+      orderId,
+      currentCycle,
+      attemptCount: assignments.length,
+      lastAttemptAt,
+      partnersSkipped,
+    };
   }
 }

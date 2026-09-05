@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
   ConflictException,
   ForbiddenException,
@@ -20,7 +21,9 @@ import { PrismaService } from '../../../infrastructure/database/prisma.service';
 
 import { PaymentsRepository } from '../repositories/payments.repository';
 
-import { RazorpayProvider } from '../providers/razorpay.provider';
+import { PAYMENT_PROVIDER } from '../constants/payment-provider.constants';
+
+import type { PaymentProvider } from '../providers/payment-provider.interface';
 
 import { EventBusService } from '../../../core/events/event-bus.service';
 
@@ -102,7 +105,8 @@ export class PaymentsService {
   constructor(
     private readonly paymentsRepository: PaymentsRepository,
 
-    private readonly razorpayProvider: RazorpayProvider,
+    @Inject(PAYMENT_PROVIDER)
+    private readonly paymentProvider: PaymentProvider,
 
     private readonly eventBus: EventBusService,
 
@@ -167,7 +171,7 @@ export class PaymentsService {
     // already exceeds that, so this keeps just enough of the order id to stay unique in practice.
     const receipt = `ord_${orderId.slice(0, 28)}_${attemptNumber}`;
 
-    const providerOrder = await this.razorpayProvider.createOrder(
+    const providerOrder = await this.paymentProvider.createOrder(
       amount,
       receipt,
     );
@@ -212,7 +216,12 @@ export class PaymentsService {
    * check below was already present or is new in the same sprint, noted inline.
    */
   async verifyPayment(payload: any, userId: string) {
-    const isValid = await this.razorpayProvider.verifySignature(payload);
+    // verifyPaymentSignature is synchronous (see payment-provider.interface.ts) — `await` here
+    // is harmless (it works on non-Promise values too) and keeps this call site indifferent to
+    // whether a given implementation happens to do the check synchronously or not.
+    const isValid = await this.paymentProvider.verifyPaymentSignature(
+      payload,
+    );
 
     if (!isValid) {
       this.logger.error(
@@ -313,9 +322,9 @@ export class PaymentsService {
     payment: { id: string; orderId: string; amount: any },
     providerPaymentId: string,
   ): Promise<void> {
-    const providerPayment = (await this.razorpayProvider.fetchPayment(
+    const providerPayment = await this.paymentProvider.fetchPayment(
       providerPaymentId,
-    )) as Partial<RazorpayPaymentEntity>;
+    );
     const expectedAmountPaise = Math.round(Number(payment.amount) * 100);
 
     const matches =
@@ -681,7 +690,7 @@ export class PaymentsService {
     let providerPaymentId: string | undefined;
 
     try {
-      const providerRefund = await this.razorpayProvider.refund(
+      const providerRefund = await this.paymentProvider.refund(
         payment.providerPaymentId!,
         amount,
       );
@@ -801,12 +810,9 @@ export class PaymentsService {
     }
 
     try {
-      const providerPayment = (await this.razorpayProvider.fetchPayment(
+      const providerPayment = await this.paymentProvider.fetchPayment(
         payment.providerPaymentId,
-      )) as {
-        refund_status?: string;
-        amount_refunded?: number;
-      };
+      );
 
       const expectedPaise = Math.round(expectedAmount * 100);
 
@@ -821,7 +827,7 @@ export class PaymentsService {
   }
 
   async processWebhook(payload: any, rawBody: string, signature: string) {
-    const isValid = this.razorpayProvider.verifyWebhookSignature(
+    const isValid = this.paymentProvider.verifyWebhookSignature(
       rawBody,
       signature,
     );

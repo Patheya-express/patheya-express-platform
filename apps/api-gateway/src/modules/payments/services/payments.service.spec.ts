@@ -27,7 +27,7 @@ describe('PaymentsService', () => {
     createWebhookEvent: jest.Mock;
   };
   let razorpayProvider: {
-    verifySignature: jest.Mock;
+    verifyPaymentSignature: jest.Mock;
     verifyWebhookSignature: jest.Mock;
     fetchPayment: jest.Mock;
   };
@@ -73,7 +73,7 @@ describe('PaymentsService', () => {
       createWebhookEvent: jest.fn().mockResolvedValue(undefined),
     };
     razorpayProvider = {
-      verifySignature: jest.fn().mockResolvedValue(true),
+      verifyPaymentSignature: jest.fn().mockResolvedValue(true),
       verifyWebhookSignature: jest.fn().mockReturnValue(true),
       fetchPayment: jest.fn().mockResolvedValue({
         amount: 50000,
@@ -133,7 +133,7 @@ describe('PaymentsService', () => {
     });
 
     it('rejects an invalid signature and never touches the database', async () => {
-      razorpayProvider.verifySignature.mockResolvedValue(false);
+      razorpayProvider.verifyPaymentSignature.mockResolvedValue(false);
 
       await expect(
         service.verifyPayment(VALID_PAYLOAD, CUSTOMER_ID),

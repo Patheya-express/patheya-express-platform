@@ -7,9 +7,13 @@ import { QueueService } from '../../../infrastructure/queues/queue.service';
 import { MetricsService } from '../../metrics/metrics.service';
 
 /** Orders older than this with no assignment are considered stranded — long enough that a normal
- *  in-flight `dispatch-assignment` job (including its BullMQ retries) has certainly finished one
- *  way or another, short enough that a genuinely stuck order gets re-attempted well within the
- *  10-minute assignment-expiry window it would otherwise be compared against. */
+ *  in-flight `dispatch-assignment` job (including its BullMQ retries, and, since the Enterprise
+ *  Dispatch Engine Enhancement, several full DISPATCH_ASSIGNMENT_TIMEOUT_SECONDS/
+ *  DISPATCH_CYCLE_RETRY_SECONDS cycles at their default 15s each) has certainly finished one way
+ *  or another, short enough that a genuinely stuck order still gets re-attempted promptly. Left
+ *  at its pre-existing value — still comfortably conservative against the new, much shorter
+ *  default cycle timescale, so no change was needed to the threshold itself, only this comment's
+ *  stale "10-minute assignment-expiry window" reasoning. */
 const STRANDED_THRESHOLD_MS = 3 * 60 * 1000;
 
 /**

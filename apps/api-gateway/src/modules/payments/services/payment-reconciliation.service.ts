@@ -1,8 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 
 import { PaymentsRepository } from '../repositories/payments.repository';
 
-import { RazorpayProvider } from '../providers/razorpay.provider';
+import { PAYMENT_PROVIDER } from '../constants/payment-provider.constants';
+
+import type { PaymentProvider } from '../providers/payment-provider.interface';
 
 import { PaymentsService } from './payments.service';
 
@@ -22,7 +24,8 @@ export class PaymentReconciliationService {
   constructor(
     private readonly paymentsRepository: PaymentsRepository,
 
-    private readonly razorpayProvider: RazorpayProvider,
+    @Inject(PAYMENT_PROVIDER)
+    private readonly paymentProvider: PaymentProvider,
 
     private readonly paymentsService: PaymentsService,
 
@@ -65,12 +68,12 @@ export class PaymentReconciliationService {
     providerOrderId: string | null;
   }): Promise<boolean> {
     try {
-      const paymentsResponse = await this.razorpayProvider.fetchOrderPayments(
+      const paymentsResponse = await this.paymentProvider.fetchOrderPayments(
         payment.providerOrderId!,
       );
 
       const capturedPayment = paymentsResponse.items.find(
-        (item: any) => item.status === 'captured',
+        (item) => item.status === 'captured',
       );
 
       if (!capturedPayment) {

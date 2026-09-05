@@ -33,7 +33,14 @@ export class QueueService {
       data,
     );
   }
-  async addAssignmentExpiryJob(assignmentId: string) {
+  /**
+   * Enterprise Dispatch Engine Enhancement — `delayMs` is now caller-supplied instead of a
+   * hardcoded 10 minutes, so DispatchService's DISPATCH_ASSIGNMENT_TIMEOUT_SECONDS (env-configurable,
+   * default 15s) actually controls how long an offer stays PENDING before this job expires it.
+   * Defaults to the old 10-minute value only as a safety net for any caller that omits it — the
+   * one real caller (DispatchService.assignOrder) always passes it explicitly today.
+   */
+  async addAssignmentExpiryJob(assignmentId: string, delayMs = 10 * 60 * 1000) {
     return this.dispatchQueue.add(
       'assignment-expiry',
 
@@ -42,7 +49,7 @@ export class QueueService {
       },
 
       {
-        delay: 10 * 60 * 1000,
+        delay: delayMs,
       },
     );
   }
@@ -62,11 +69,34 @@ export class QueueService {
    * call repeatedly for the same order — so retries (or this job racing the same order via a
    * different trigger) are safe by construction, not something this change had to add.
    */
-  async addDispatchAssignmentJob(orderId: string, sourceEvent: string) {
-    return this.dispatchQueue.add('dispatch-assignment', {
-      orderId,
-      sourceEvent,
-    });
+  /**
+   * Enterprise Dispatch Engine Enhancement — `delayMs` is new and optional. Every pre-existing
+   * caller (DispatchListener's three subscriptions, DispatchReconciliationService) calls this with
+   * two arguments and is unaffected — `delay` is only set on the options object when a delay is
+   * actually supplied, so an omitted third argument enqueues immediately exactly as before. Only
+   * DispatchService's new "cycle exhausted, schedule the next cycle" path passes it, reusing this
+   * same queue/job name rather than introducing a new one.
+   */
+  async addDispatchAssignmentJob(
+    orderId: string,
+    sourceEvent: string,
+    delayMs?: number,
+    // Enterprise Dispatch Engine Enhancement — carries the NEXT cycle number for the one caller
+    // that needs to force it (DispatchService's "this cycle is exhausted" retry path). This is
+    // load-bearing, not cosmetic: when a cycle exhausts with zero eligible partners, no new
+    // DeliveryAssignment row is ever written, so there is nothing in the DB for a future
+    // assignOrder() call to derive "we're now on cycle 2" from — the job payload is the only
+    // place that fact can survive until the delayed retry fires. Every pre-existing caller
+    // (DispatchListener's three subscriptions, DispatchReconciliationService) omits this and
+    // keeps deriving cycle from the DB exactly as before, which is correct for them: a real
+    // assignment row already exists in those cases.
+    cycle?: number,
+  ) {
+    return this.dispatchQueue.add(
+      'dispatch-assignment',
+      { orderId, sourceEvent, ...(cycle !== undefined ? { cycle } : {}) },
+      delayMs ? { delay: delayMs } : undefined,
+    );
   }
 
   /**

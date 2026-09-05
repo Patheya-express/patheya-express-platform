@@ -254,5 +254,8 @@ export const envValidationSchema = Joi.object({
     .valid('error', 'warn', 'info', 'http', 'verbose', 'debug', 'silly')
     .optional(),
   SHUTDOWN_TIMEOUT_MS: Joi.number().integer().positive().optional(),
+  // Phase 0 remediation — see redis-retry-policy.ts. Bounds how many times a dropped Redis
+  // connection retries before giving up; defaults to 60 (~81s ride-out window) if unset.
+  REDIS_MAX_RECONNECT_ATTEMPTS: Joi.number().integer().positive().optional(),
   APP_NAME: Joi.string().optional(),
 }).unknown(true);

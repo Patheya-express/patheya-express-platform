@@ -1,8 +1,19 @@
-# Render Blueprint (QA)
+# Render Blueprint (SG)
 
 Explains `render.yaml` (repo root) — a Render **Blueprint** that deploys both backend services for
-QA in one apply. This is Render's own native deploy mechanism (Blueprint sync / Git-connected
-builds), **not GitHub Actions** — no CI/CD workflow was added or modified by this phase.
+the SG (Singapore) Dev/QA environment in one apply. This is Render's own native deploy mechanism
+(Blueprint sync / Git-connected builds), **not GitHub Actions** — no CI/CD workflow was added or
+modified by this phase.
+
+**Phase 0 remediation note:** this environment was previously named "QA" and briefly ran alongside
+a since-removed Singapore-region migration pair (`-sg`). The Phase 0 audit found that the QA
+services (`patheya-express-api-gateway-qa`, `patheya-express-worker-qa`) had never actually been
+decommissioned and still shared one Redis instance/env-var group with the `-sg` pair. The QA
+services and the shared `patheya-qa-shared` env var group have been removed from `render.yaml`; `-sg`
+is now the only Dev/QA environment, with its own dedicated `patheya-sg-shared` env var group. This
+document has been updated to describe that current state — SG is the environment previously called
+QA, not a second environment layered on top of it. Future production infrastructure (separate
+API/workers/Postgres, AWS ElastiCache/Valkey) is not introduced by this document.
 
 ## What a Render Blueprint is
 
@@ -17,19 +28,19 @@ Kubernetes in any way; it only exists inside Render's own control plane.
 Both services build from the same repository and the same root `Dockerfile`, using its default
 (final) stage — `runtime` — with no Docker build target override on either:
 
-### `patheya-express-api-gateway-qa` (Web Service)
+### `patheya-express-api-gateway-sg` (Web Service)
 - **Build**: `dockerfilePath: ./Dockerfile`, `dockerContext: .` (repo root — required, since the
   Dockerfile's `pnpm install` needs the full workspace).
+- **Region**: `singapore`, alongside the already-Singapore Neon database, to keep request latency low.
 - **Start command**: none set — the image's own `CMD ["node", "dist/src/main.js"]` runs unmodified.
   This is **confirmed identical** to the `start:prod` npm script (`"start:prod": "node dist/src/main.js"`)
   — the API uses `start:prod`'s exact command, just via the Docker image's CMD rather than a
   separate Render "Start Command" field (Docker-runtime services on Render don't use that field;
   the Dockerfile's CMD is the start command).
-- **Health check**: `/api/v1/health` (see below for why this path specifically, and its
-  trade-off).
+- **Health check**: `/api/v1/health/ready` (see below for why this path specifically).
 - **Receives inbound traffic**: yes, this is the one service with a public URL.
 
-### `patheya-express-worker-qa` (Background Worker)
+### `patheya-express-worker-sg` (Background Worker)
 - **Build**: identical `dockerfilePath`/`dockerContext` — same image as the Web Service.
 - **Start command**: `dockerCommand: node dist/src/worker-main.js` — this **overrides only the
   image's CMD** (Render's `dockerCommand` field replaces CMD, not ENTRYPOINT — `tini` stays PID 1,
@@ -60,7 +71,7 @@ content are guaranteed identical since both point at the same file with no diver
 
 ## Required environment variables
 
-All backend env vars live in one shared `envVarGroups` entry (`patheya-qa-shared`), imported by
+All backend env vars live in one shared `envVarGroups` entry (`patheya-sg-shared`), imported by
 both services via `fromGroup` — avoiding declaring the same 28 variables twice. Each service adds
 exactly one variable of its own, `APP_NAME` (`api-gateway` vs. `worker`), since that's the one
 value that must differ between the two.
@@ -83,7 +94,7 @@ requires these to be human-chosen, only random and stable).
 | Razorpay | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | `sync: false` |
 | Logging | `LOG_TO_FILE`, `LOG_LEVEL` | literal (`false`, `info`) |
 | Application | `NODE_ENV`, `KAFKA_BROKER`, `STORAGE_DRIVER`, `SHUTDOWN_TIMEOUT_MS`, `APP_NAME` (per-service), `CUSTOMER_APP_URL`/`RESTAURANT_APP_URL`/`ADMIN_APP_URL`/`DELIVERY_APP_URL` | mixed — see `render.yaml`'s comments per variable |
-| CORS (Swagger self-origin) | `API_PUBLIC_URL` | literal — Render's default domain is predictable from the service name, so this is set directly (`https://patheya-express-api-gateway-qa.onrender.com`), not `sync: false`; update it if a custom domain is ever attached |
+| CORS (Swagger self-origin) | `API_PUBLIC_URL` | literal — Render's default domain is predictable from the service name, so this is set directly (`https://patheya-express-api-gateway-sg.onrender.com`), not `sync: false`; update it if a custom domain is ever attached |
 | CORS (future expansion) | `EXTRA_ALLOWED_ORIGINS` | not set — optional, comma-separated, add via the dashboard only if a future need arises |
 | Super Admin bootstrap | `SUPER_ADMIN_EMAIL`, `SUPER_ADMIN_PASSWORD`, `SUPER_ADMIN_FIRST_NAME`, `SUPER_ADMIN_LAST_NAME`, `SUPER_ADMIN_PHONE` | `sync: false` — all five required together for `AdminBootstrapService` to create the first SUPER_ADMIN on startup; missing any one skips bootstrap (logged, not thrown), it never blocks either service from starting |
 
@@ -131,8 +142,9 @@ called for.
 1. In the Render dashboard: **New → Blueprint**, connect this repository, Render detects
    `render.yaml` automatically.
 2. Render prompts for every `sync: false` variable (Neon `DATABASE_URL`, Upstash host/token,
-   Cloudinary/Razorpay/SMTP credentials, Vercel QA frontend URLs) — fill these in with real QA
-   values at this step; nothing here was pre-filled or committed.
+   Cloudinary/Razorpay/SMTP credentials, Vercel SG frontend URLs) — fill these in with real SG
+   values at this step; nothing here was pre-filled or committed. `REDIS_HOST`/`REDIS_AUTH_TOKEN`
+   must point at a Redis instance dedicated to SG, not one shared with any other environment.
 3. Render provisions both services from the one Blueprint apply — same commit, same Dockerfile,
    same env var group.
 4. Migrations run automatically as part of the Web Service's deploy — `render.yaml`'s
@@ -148,8 +160,8 @@ called for.
 
 ## Scaling
 
-- `plan: starter` is set for both services — Render's lowest paid tier, appropriate for QA's
-  expected traffic. Bump independently per service (the Web Service and worker have no reason to
+- `plan: starter` is set for both services — Render's lowest paid tier, appropriate for SG's
+  expected Dev/QA traffic. Bump independently per service (the Web Service and worker have no reason to
   share an instance size) via the Render dashboard or by editing `render.yaml`'s `plan:` field.
 - Both services can be scaled to multiple instances independently via Render's own scaling
   controls. If the worker is ever scaled beyond one instance, revisit Phase DEV-6's Upstash

@@ -6,6 +6,16 @@ import * as crypto from 'crypto';
 
 import { MetricsService } from '../../metrics/metrics.service';
 
+import { VerifyPaymentDto } from '../dto/verify-payment.dto';
+
+import type {
+  PaymentProvider,
+  ProviderOrder,
+  ProviderOrderPayments,
+  ProviderPayment,
+  ProviderRefund,
+} from './payment-provider.interface';
+
 /**
  * Constant-time signature comparison — a plain `===` leaks timing information proportional to
  * how many leading bytes match, which is a textbook (if hard-to-exploit-remotely) side channel
@@ -25,7 +35,7 @@ function timingSafeEqualStrings(a: string, b: string): boolean {
 }
 
 @Injectable()
-export class RazorpayProvider {
+export class RazorpayProvider implements PaymentProvider {
   private readonly razorpay: Razorpay;
 
   constructor(
@@ -73,8 +83,8 @@ export class RazorpayProvider {
     }
   }
 
-  async createOrder(amount: number, receipt: string) {
-    return this.timedCall('createOrder', () =>
+  async createOrder(amount: number, receipt: string): Promise<ProviderOrder> {
+    const order = await this.timedCall('createOrder', () =>
       this.razorpay.orders.create({
         amount: amount * 100,
 
@@ -83,9 +93,15 @@ export class RazorpayProvider {
         receipt,
       }),
     );
+
+    // Razorpay's SDK types `amount` as `number | string` on the request body and carries a few
+    // fields (description, token, ...) this interface doesn't need — the object returned at
+    // runtime is Razorpay's real order response either way, so this is a type-shape adapter, not
+    // a behavior change.
+    return order as unknown as ProviderOrder;
   }
 
-  verifySignature(payload: any): boolean {
+  verifyPaymentSignature(payload: VerifyPaymentDto): boolean {
     const generatedSignature = crypto
       .createHmac(
         'sha256',
@@ -103,7 +119,7 @@ export class RazorpayProvider {
     );
   }
 
-  verifyWebhookSignature(payload: string, signature: string): boolean {
+  verifyWebhookSignature(rawBody: string, signature: string): boolean {
     const generatedSignature = crypto
       .createHmac(
         'sha256',
@@ -111,28 +127,41 @@ export class RazorpayProvider {
         process.env.RAZORPAY_WEBHOOK_SECRET!,
       )
 
-      .update(payload)
+      .update(rawBody)
 
       .digest('hex');
 
     return timingSafeEqualStrings(generatedSignature, signature ?? '');
   }
 
-  async refund(paymentId: string, amount: number) {
-    return this.timedCall('refund', () =>
-      this.razorpay.payments.refund(paymentId, {
+  async refund(
+    providerPaymentId: string,
+    amount: number,
+  ): Promise<ProviderRefund> {
+    const refund = await this.timedCall('refund', () =>
+      this.razorpay.payments.refund(providerPaymentId, {
         amount: amount * 100,
       }),
     );
+
+    return refund as unknown as ProviderRefund;
   }
-  async fetchPayment(providerPaymentId: string) {
-    return this.timedCall('fetchPayment', () =>
+
+  async fetchPayment(providerPaymentId: string): Promise<ProviderPayment> {
+    const payment = await this.timedCall('fetchPayment', () =>
       this.razorpay.payments.fetch(providerPaymentId),
     );
+
+    return payment as unknown as ProviderPayment;
   }
-  async fetchOrderPayments(providerOrderId: string) {
-    return this.timedCall('fetchOrderPayments', () =>
+
+  async fetchOrderPayments(
+    providerOrderId: string,
+  ): Promise<ProviderOrderPayments> {
+    const payments = await this.timedCall('fetchOrderPayments', () =>
       this.razorpay.orders.fetchPayments(providerOrderId),
     );
+
+    return payments as unknown as ProviderOrderPayments;
   }
 }

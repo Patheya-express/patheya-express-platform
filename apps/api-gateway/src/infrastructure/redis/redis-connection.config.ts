@@ -1,5 +1,7 @@
 import { RedisOptions } from 'ioredis';
 
+import { computeRedisRetryDelay } from './redis-retry-policy';
+
 /**
  * Shared by `RedisService`, `QueueInfrastructureModule`'s `BullModule.forRoot`, and `RealtimeGateway`'s pub/sub
  * adapter clients — one place defining how every Redis connection in this process authenticates
@@ -24,10 +26,13 @@ export function getRedisConnectionOptions(): RedisOptions {
     // Amazon Trust Services, a publicly trusted CA Node's default store already recognizes.
     tls: tlsEnabled ? {} : undefined,
 
-    // Exponential backoff, capped at 2s — matches the platform's own BullMQ job-retry convention
-    // (docs/architecture/platform-standards.md Section 17: "exponential backoff, base 2 seconds")
-    // applied here to the connection itself, not a job.
-    retryStrategy: (times: number) => Math.min(times * 50, 2000),
+    // Exponential backoff, capped at 2s, bounded to a finite number of attempts (Phase 0
+    // remediation — see redis-retry-policy.ts for the full reasoning). Matches the platform's own
+    // BullMQ job-retry convention (docs/architecture/platform-standards.md Section 17:
+    // "exponential backoff, base 2 seconds") applied here to the connection itself, not a job,
+    // but no longer retries forever — a sustained outage gives up after ~81s instead of
+    // indefinitely, and an in-progress application shutdown stops retries immediately.
+    retryStrategy: (times: number) => computeRedisRetryDelay(times),
 
     // ElastiCache's own automatic failover (replicas_per_shard > 0) briefly returns READONLY to
     // a client still pointed at the old primary during promotion — reconnecting (which re-resolves

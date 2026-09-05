@@ -206,6 +206,127 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     registers: [this.registry],
   });
 
+  // Enterprise Dispatch Engine Enhancement — cycle-based redispatch, configurable acceptance
+  // window, and deterministic priority ordering. Each metric below has a single, unambiguous
+  // trigger point (documented on its recordX() method) so a dashboard built on these can
+  // distinguish "a normal reject/timeout redispatch within a cycle" (dispatchRedispatchTotal,
+  // pre-existing) from "every partner in a cycle was exhausted" (dispatchCycleRetryTotal) from
+  // "the order gave up entirely" (dispatchMaxCyclesTotal).
+
+  private readonly dispatchCycleTotal = new Counter({
+    name: 'patheya_dispatch_cycle_total',
+    help: 'Total dispatch cycles started (one per full pass through the eligible partner pool)',
+    registers: [this.registry],
+  });
+
+  private readonly dispatchCycleRetryTotal = new Counter({
+    name: 'patheya_dispatch_cycle_retry_total',
+    help: 'Total times a dispatch cycle was exhausted and a new cycle was scheduled',
+    registers: [this.registry],
+  });
+
+  private readonly dispatchAssignmentTimeoutTotal = new Counter({
+    name: 'patheya_dispatch_assignment_timeout_total',
+    help: 'Total delivery-assignment offers that expired unanswered (PENDING to EXPIRED)',
+    registers: [this.registry],
+  });
+
+  private readonly dispatchPartnerAcceptTotal = new Counter({
+    name: 'patheya_dispatch_partner_accept_total',
+    help: 'Total delivery-assignment offers accepted by a partner',
+    registers: [this.registry],
+  });
+
+  private readonly dispatchPartnerRejectTotal = new Counter({
+    name: 'patheya_dispatch_partner_reject_total',
+    help: 'Total delivery-assignment offers explicitly rejected by a partner',
+    registers: [this.registry],
+  });
+
+  private readonly dispatchCompletedTotal = new Counter({
+    name: 'patheya_dispatch_completed_total',
+    help: 'Total orders that reached a successful delivery-partner assignment (accepted)',
+    registers: [this.registry],
+  });
+
+  private readonly dispatchMaxCyclesTotal = new Counter({
+    name: 'patheya_dispatch_max_cycles_total',
+    help: 'Total orders that exhausted DISPATCH_MAX_CYCLES without any partner accepting',
+    registers: [this.registry],
+  });
+
+  // Enterprise Dispatch Engine Enhancement — Phase 2 (unlimited mode, round-robin fairness).
+  // Same "one Registry, additive counters" pattern as Phase 1's dispatch metrics above.
+  // (The Phase 2 rejection-cooldown counter that used to live here was removed by the Dispatch
+  // Simplification pass — cooldown no longer exists anywhere in the dispatch pipeline.)
+
+  private readonly dispatchUnlimitedCycleTotal = new Counter({
+    name: 'patheya_dispatch_unlimited_cycle_total',
+    help: 'Total cycle retries scheduled under DISPATCH_MAX_CYCLES=0 (unlimited mode)',
+    registers: [this.registry],
+  });
+
+  private readonly dispatchCycleRotationTotal = new Counter({
+    name: 'patheya_dispatch_cycle_rotation_total',
+    help: 'Total times round-robin rotation actually changed which partner started a cycle',
+    registers: [this.registry],
+  });
+
+  /** Histogram, not a hand-maintained running average — Prometheus best practice is sum/count via
+   *  PromQL rather than a service computing its own average, and a Histogram additionally exposes
+   *  percentiles the literal metric name alone wouldn't. Observed once per successful accept, as
+   *  `respondedAt - assignedAt` on that one PENDING-to-ACCEPTED assignment (the offer's own
+   *  acceptance latency) — not cross-cycle total dispatch time from order-ready, which would need
+   *  a new join to OrderStatusHistory this phase doesn't otherwise require. */
+  private readonly dispatchAverageAssignmentSeconds = new Histogram({
+    name: 'patheya_dispatch_average_assignment_seconds',
+    help: 'Duration in seconds between an assignment being offered and accepted',
+    buckets: [1, 2, 5, 10, 15, 30, 60, 120],
+    registers: [this.registry],
+  });
+
+  /** Same reasoning as above — a Histogram of the accepted assignment's own `cycle` value, so
+   *  average/percentile cycle count to a successful acceptance is queryable, without this service
+   *  maintaining a running mean itself. */
+  private readonly dispatchAverageCycles = new Histogram({
+    name: 'patheya_dispatch_average_cycles',
+    help: 'Cycle number at which an assignment was successfully accepted',
+    buckets: [1, 2, 3, 5, 10, 20, 50],
+    registers: [this.registry],
+  });
+
+  private readonly dispatchPartnerSkippedOfflineTotal = new Counter({
+    name: 'patheya_dispatch_partner_skipped_offline_total',
+    help: 'Total times a partner was excluded from an offer because their Redis presence check found them offline',
+    registers: [this.registry],
+  });
+
+  private readonly dispatchPartnerSkippedActiveAssignmentTotal = new Counter({
+    name: 'patheya_dispatch_partner_skipped_active_assignment_total',
+    help: 'Total times a partner was excluded from an offer because they already hold a PENDING/ACCEPTED assignment elsewhere',
+    registers: [this.registry],
+  });
+
+  /** Dispatch Simplification — the one exclusion reason that existed in code since Phase 1 but
+   *  was never independently observable before (unlike offline/active-assignment above, which
+   *  already had metrics). Maps to the canonical ATTEMPTED_THIS_CYCLE diagnostic reason. */
+  private readonly dispatchPartnerSkippedAttemptedThisCycleTotal = new Counter({
+    name: 'patheya_dispatch_partner_skipped_attempted_this_cycle_total',
+    help: 'Total times a partner was excluded from an offer because they were already offered this order earlier in the current dispatch cycle',
+    registers: [this.registry],
+  });
+
+  /** Not an exclusion — distance is a ranking criterion, never a filter. Incremented when a
+   *  candidate reaching the priority ranking is missing the coordinates (its own, or the order's
+   *  pickup branch's) needed to compute a real distance, so it was ranked blind on that criterion
+   *  instead of by actual proximity — an observability signal for "how often is location data
+   *  missing," not a skip/exclusion in the same sense as the counters above. */
+  private readonly dispatchPartnerSkippedDistanceTotal = new Counter({
+    name: 'patheya_dispatch_partner_skipped_distance_total',
+    help: 'Total times a candidate partner was ranked without a real distance value due to missing coordinates',
+    registers: [this.registry],
+  });
+
   // ---------------------------------------------------------------------------------------------
   // Orders
   // ---------------------------------------------------------------------------------------------
@@ -778,6 +899,78 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
   recordDispatchReconciliationRun(ordersFound: number): void {
     this.dispatchReconciliationRunsTotal.inc();
     this.dispatchOrdersAwaitingAssignment.set(ordersFound);
+  }
+
+  /** Called once per cycle, at the moment the first partner of that cycle is offered. */
+  recordDispatchCycleStarted(): void {
+    this.dispatchCycleTotal.inc();
+  }
+
+  /** Called when a cycle's entire eligible-partner pool has been offered with no acceptance,
+   *  immediately before scheduling the next cycle's delayed retry job. */
+  recordDispatchCycleRetry(): void {
+    this.dispatchCycleRetryTotal.inc();
+  }
+
+  /** Called by AssignmentExpiryProcessor when a PENDING assignment's 15s (configurable) window
+   *  lapses unanswered and it successfully claims the PENDING to EXPIRED transition. */
+  recordDispatchAssignmentTimeout(): void {
+    this.dispatchAssignmentTimeoutTotal.inc();
+  }
+
+  /** Called by DispatchService.acceptAssignment() on a successful accept. */
+  recordDispatchPartnerAccept(): void {
+    this.dispatchPartnerAcceptTotal.inc();
+    this.dispatchCompletedTotal.inc();
+  }
+
+  /** Called by DispatchService.rejectAssignment() on a successful reject. */
+  recordDispatchPartnerReject(): void {
+    this.dispatchPartnerRejectTotal.inc();
+  }
+
+  /** Called when an order's cycle count reaches DISPATCH_MAX_CYCLES with no acceptance — the
+   *  terminal "give up automatically, fall back to reconciliation/manual assignment" case. */
+  recordDispatchMaxCyclesReached(): void {
+    this.dispatchMaxCyclesTotal.inc();
+  }
+
+  /** Called each time a cycle-exhausted retry is scheduled while DISPATCH_MAX_CYCLES=0. */
+  recordDispatchUnlimitedCycle(): void {
+    this.dispatchUnlimitedCycleTotal.inc();
+  }
+
+  /** Called only when round-robin rotation actually altered the starting candidate (cycle > 1
+   *  and the rotation offset was non-zero) — not on every cycle regardless of effect. */
+  recordDispatchCycleRotation(): void {
+    this.dispatchCycleRotationTotal.inc();
+  }
+
+  /** Called once per successful acceptAssignment(), with that assignment's own
+   *  respondedAt - assignedAt duration in seconds. */
+  observeDispatchAssignmentAcceptanceLatency(seconds: number): void {
+    this.dispatchAverageAssignmentSeconds.observe(seconds);
+  }
+
+  /** Called once per successful acceptAssignment(), with that assignment's own cycle number. */
+  observeDispatchCyclesToAcceptance(cycle: number): void {
+    this.dispatchAverageCycles.observe(cycle);
+  }
+
+  recordDispatchPartnerSkippedOffline(): void {
+    this.dispatchPartnerSkippedOfflineTotal.inc();
+  }
+
+  recordDispatchPartnerSkippedActiveAssignment(): void {
+    this.dispatchPartnerSkippedActiveAssignmentTotal.inc();
+  }
+
+  recordDispatchPartnerSkippedAttemptedThisCycle(): void {
+    this.dispatchPartnerSkippedAttemptedThisCycleTotal.inc();
+  }
+
+  recordDispatchPartnerSkippedDistance(): void {
+    this.dispatchPartnerSkippedDistanceTotal.inc();
   }
 
   recordOrderCreated(): void {

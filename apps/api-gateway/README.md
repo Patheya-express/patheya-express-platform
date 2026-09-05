@@ -25,15 +25,36 @@
 
 [Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
 
-## Project setup
+## Canonical full-stack development
+
+For normal day-to-day development (this app plus the frontend, Postgres, Redis, etc.), don't run
+anything on this page directly — use the frontend repo's canonical commands instead:
+
+```bash
+cd frontend
+pnpm run setup   # first time
+pnpm run dev     # daily
+```
+
+Those commands start this app inside Docker Compose (`infrastructure/docker/docker-compose.yml`),
+which builds and runs it, publishing it on `:3000` — see `docs/infrastructure/docker.md`. **Do not
+also run `pnpm run start:dev` below while that container is up** — both would try to bind `:3000`
+and the second one to start fails with `EADDRINUSE`.
+
+## Deliberate host-mode backend development
+
+Only when you're intentionally iterating on this app's own code outside a container (faster
+rebuild loop) and have excluded it from Compose yourself:
+
+```bash
+docker compose -f ../../infrastructure/docker/docker-compose.yml up -d postgres redis kafka zookeeper
+```
+
+Then, from this directory:
 
 ```bash
 $ pnpm install
-```
 
-## Compile and run the project
-
-```bash
 # development
 $ pnpm run start
 

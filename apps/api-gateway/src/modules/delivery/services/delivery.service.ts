@@ -229,9 +229,19 @@ export class DeliveryService {
    *  terminal state (DELIVERED, or an admin cancel/force-complete of an order already out for
    *  delivery) — the other end of the ON_DELIVERY transition acceptAssignmentAtomic makes on
    *  accept. Without this, a partner who accepted an order would remain ON_DELIVERY (and
-   *  therefore invisible to findAvailablePartners) forever after finishing it. */
-  async releasePartnerFromDelivery(userId: string): Promise<void> {
-    const result = await this.deliveryRepository.releaseFromDelivery(userId);
+   *  therefore invisible to findAvailablePartners) forever after finishing it.
+   *
+   *  `orderId` also closes out that order's DeliveryAssignment row to COMPLETED — see
+   *  DeliveryRepository.releaseFromDelivery for why that's required, not just the partner-status
+   *  flip. Optional to keep this call backward compatible with any caller that only has a userId. */
+  async releasePartnerFromDelivery(
+    userId: string,
+    orderId?: string,
+  ): Promise<void> {
+    const result = await this.deliveryRepository.releaseFromDelivery(
+      userId,
+      orderId,
+    );
 
     if (result.count > 0) {
       this.logger.log(

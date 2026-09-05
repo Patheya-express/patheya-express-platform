@@ -554,6 +554,14 @@ enum AssignmentStatus {
   REJECTED
 
   EXPIRED
+
+  /**
+   * Terminal state once the underlying order reaches DELIVERED (or is cancelled/force-completed
+   * by an admin after acceptance). Without this, an accepted assignment stayed ACCEPTED forever —
+   * findPartnerIdsWithActiveAssignment() treats PENDING/ACCEPTED as "still busy", so a partner who
+   * had ever completed a single delivery became permanently excluded from all future dispatch.
+   */
+  COMPLETED
 }
 
 enum WalletTransactionType {
@@ -2734,6 +2742,17 @@ model DeliveryAssignment {
   deliveryPartnerId String
 
   status AssignmentStatus @default(PENDING)
+
+  /**
+   * Enterprise Dispatch Engine Enhancement — which dispatch cycle this assignment belongs to.
+   * A cycle is one full pass through every eligible partner; once all of them have been offered
+   * and none accepted, DispatchService starts a fresh cycle (after DISPATCH_CYCLE_RETRY_SECONDS)
+   * rather than leaving the order permanently stuck. attemptedPartnerIds in
+   * DispatchService.assignOrder() is scoped to the current cycle only — a partner who was
+   * offered and declined in cycle 1 becomes eligible again in cycle 2. Defaults to 1 so every
+   * pre-existing row (created before this column existed) is correctly treated as cycle 1.
+   */
+  cycle Int @default(1)
 
   assignedAt DateTime @default(now())
 

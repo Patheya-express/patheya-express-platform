@@ -100,7 +100,7 @@ describe('PaymentsService.verifyPayment — concurrency (real database)', () => 
 
   function buildService(razorpayOverrides: Record<string, unknown> = {}) {
     const razorpayProvider = {
-      verifySignature: jest.fn().mockResolvedValue(true),
+      verifyPaymentSignature: jest.fn().mockResolvedValue(true),
       verifyWebhookSignature: jest.fn().mockReturnValue(true),
       fetchPayment: jest.fn().mockResolvedValue({
         amount: 50000,

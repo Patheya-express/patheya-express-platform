@@ -59,12 +59,19 @@ surfaced and were fixed/documented — see `docs/infrastructure/README.md`'s aud
 (a Joi empty-string validation crash from how optional Cloudinary vars were defaulted, and a
 pre-existing Razorpay-provider bug that requires real-looking keys to boot in *any* environment).
 
-Prefer the native workflow (`scripts/start-dev.ps1`, faster inner loop)? Just start the
-dependency containers and skip `api-gateway`:
+Prefer the native workflow (faster inner loop)? Just start the dependency containers and skip
+`api-gateway`:
 
 ```bash
 docker compose -f infrastructure/docker/docker-compose.yml up postgres redis kafka zookeeper
 ```
+
+`scripts/start-dev.ps1` automates this native path (native Postgres + `pnpm start:dev`) and now
+refuses to run if something is already listening on :3000, so it won't collide with a
+Docker-managed api-gateway — but it's still the advanced/manual path, assuming a native Windows
+Postgres install. The canonical, cross-platform local setup — for a new developer, or anyone not
+specifically doing native-Postgres backend work — is documented once, in the frontend repo's
+`tools/dev/DEVELOPMENT.md`, which drives this file via Docker Compose exactly as shown above.
 
 ### `docker-compose.prod.yml` — production-shaped local rehearsal
 

@@ -36,6 +36,7 @@ import { GetAvailableDeliveryPartnersQueryDto } from '../dto/get-available-deliv
 import { PaginatedAvailableDeliveryPartnersResponseDto } from '../dto/paginated-available-delivery-partners-response.dto';
 import { AssignOrderToPartnerDto } from '../dto/assign-order-to-partner.dto';
 import { DeliveryAssignmentResponseDto } from '../../dispatch/dto/delivery-assignment-response.dto';
+import { DispatchDebugInfoResponseDto } from '../dto/dispatch-debug-info-response.dto';
 
 /**
  * Manual dispatch-assignment admin API (Phase 9) — a dedicated controller rather than adding to
@@ -106,5 +107,27 @@ export class AdminDispatchController {
 
       user.userId,
     );
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.DISPATCH_MANAGER)
+  @Get('orders/:orderId/dispatch-debug')
+  @ApiOperation({
+    summary: "Debug an order's dispatch state (support/debugging only)",
+    description:
+      "Enterprise Dispatch Engine Enhancement — a read-only snapshot of an order's dispatch history: current cycle, total attempts, last attempt time, and partners who did not accept. Not consumed by any frontend; exists for support engineers.",
+  })
+  @ApiParam({ name: 'orderId' })
+  @ApiOkResponse({
+    description: 'Dispatch debug info fetched successfully',
+    type: DispatchDebugInfoResponseDto,
+  })
+  @ApiUnauthorizedResponse({ description: 'Unauthorized' })
+  @ApiForbiddenResponse({ description: 'Forbidden' })
+  getDispatchDebugInfo(
+    @Param('orderId')
+    orderId: string,
+  ): Promise<DispatchDebugInfoResponseDto> {
+    return this.adminDispatchService.getDispatchDebugInfo(orderId);
   }
 }
