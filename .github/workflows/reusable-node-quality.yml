@@ -21,6 +21,14 @@ on:
       typecheck-command:
         type: string
         default: ""
+      setup-command:
+        description: >
+          Optional shell command run once, after `pnpm install` and before lint/typecheck/test —
+          e.g. a caller-specific codegen or migration step. Empty (default) is a no-op, so callers
+          that don't need one (frontend, or any future caller of this reusable workflow) are
+          completely unaffected.
+        type: string
+        default: ""
       database-url:
         description: Only meaningful when needs-services is true.
         type: string
@@ -80,6 +88,11 @@ jobs:
           node-version: ${{ inputs.node-version }}
           pnpm-version: ${{ inputs.pnpm-version }}
           working-directory: ${{ inputs.working-directory }}
+
+      - name: Setup
+        if: inputs.setup-command != ''
+        working-directory: ${{ inputs.working-directory }}
+        run: ${{ inputs.setup-command }}
 
       - name: Lint
         working-directory: ${{ inputs.working-directory }}

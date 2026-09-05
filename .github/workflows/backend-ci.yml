@@ -36,6 +36,17 @@ jobs:
     with:
       pnpm-version: "11.4.0"
       node-version: "24"
+      # Generates the Prisma client (required for lint/typecheck/test to even resolve
+      # `@prisma/client`'s generated types), applies migrations to this job's own ephemeral
+      # Postgres service container, then seeds it — all needed by the *.concurrency.spec.ts files,
+      # which deliberately run real queries against a real, migrated, seeded database to prove
+      # locking/transaction behavior a mocked Prisma client can't (see e.g.
+      # coupons.repository.concurrency.spec.ts's own doc comment). Two of these specs
+      # (refund-integrity, dispatch) specifically require a pre-existing restaurant row, which only
+      # `db:seed` provides — confirmed locally: both fail with "No restaurant row found..." against
+      # a migrated-but-unseeded database. `migrate deploy`, never `migrate dev`/`reset` — this is
+      # CI, not local dev; `db:seed` only adds fixture rows to this job's own disposable database.
+      setup-command: "pnpm --filter api-gateway run db:generate && pnpm --filter api-gateway run db:migrate:deploy && pnpm --filter api-gateway run db:seed"
       lint-command: "pnpm --filter api-gateway run lint:ci"
       typecheck-command: "pnpm --filter api-gateway run typecheck"
       test-command: "pnpm --filter api-gateway run test:cov"
@@ -43,6 +54,11 @@ jobs:
   prisma-validate:
     name: Prisma validation
     runs-on: ubuntu-latest
+    # `prisma validate`/`db:generate` never open a database connection — this is a syntactically
+    # valid, disposable placeholder so `env("DATABASE_URL")` in schema.prisma resolves to
+    # *something*, not a real connection target. No Postgres service container needed here.
+    env:
+      DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/patheya_ci"
     steps:
       - uses: actions/checkout@v4
       - uses: Patheya-express/patheya-express-platform/.github/actions/setup-pnpm-node@main
@@ -90,6 +106,15 @@ jobs:
       KAFKA_BROKER: unused-kafka-broker.example:9092
       JWT_ACCESS_SECRET: ci-only-placeholder-access-secret
       JWT_REFRESH_SECRET: ci-only-placeholder-refresh-secret
+      # RazorpayProvider (apps/api-gateway/src/modules/payments/providers/razorpay.provider.ts)
+      # constructs the Razorpay SDK client unconditionally in its constructor, which NestFactory
+      # invokes just building the DI graph here — with no key_id/key_secret the SDK itself throws
+      # ("`key_id` or `oauthToken` is mandatory"), crashing `docs:export` before it can produce a
+      # document. Same dev-mode-placeholder convention docker-compose.yml already uses locally
+      # (see its own comment there) — never a real secret, and never used for a real API call.
+      RAZORPAY_KEY_ID: dev-razorpay-key-id
+      RAZORPAY_KEY_SECRET: dev-razorpay-key-secret
+      RAZORPAY_WEBHOOK_SECRET: dev-razorpay-webhook-secret
     steps:
       - uses: actions/checkout@v4
       - uses: Patheya-express/patheya-express-platform/.github/actions/setup-pnpm-node@main
@@ -97,9 +122,16 @@ jobs:
           pnpm-version: "11.4.0"
       - run: pnpm --filter api-gateway run db:generate
       - run: pnpm --filter api-gateway run db:migrate:deploy
+      # `docs:export` (`tsx scripts/export-openapi.ts`) boots the app via esbuild's transform, not
+      # tsc — confirmed locally that this breaks Nest's constructor-parameter metadata for
+      # OrdersService ("Nest can't resolve dependencies... may be due to a circular import"), even
+      # with every env var correctly set. The identical code boots cleanly from a real build (same
+      # path Docker/production uses), so build first and run the compiled script instead of the
+      # raw-TypeScript one.
+      - run: pnpm --filter api-gateway run build
       - name: Export OpenAPI document
         working-directory: apps/api-gateway
-        run: pnpm run docs:export
+        run: node dist/scripts/export-openapi.js
       - name: Validate OpenAPI document
         working-directory: apps/api-gateway
         run: npx --yes @redocly/cli@latest lint openapi.json
