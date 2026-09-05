@@ -52,6 +52,11 @@ Redis healthchecks), and an opt-in `worker` service (`docker compose --profile w
 same image, a second BullMQ-processing replica, for exercising the workers topology locally (see
 [`workers.md`](./workers.md)).
 
+`postgres` publishes on host port **15432** (container port 5432 is unchanged) — not 5432 — so it
+doesn't race a native PostgreSQL install that already owns 5432 on your machine; `api-gateway`
+still reaches it at `postgres:5432` on the Compose network regardless. Host-side tools (Prisma
+CLI, `psql`, GUI clients) should connect via `localhost:15432`.
+
 **Live-validated**: built the image, ran this stack, confirmed `/api/v1/health/live`,
 `/health/ready`, and `/health` all return `200` with the expected fields, and that `SIGTERM`
 (`docker compose stop`) triggers the graceful-shutdown log line. Along the way, two real bugs
@@ -69,7 +74,10 @@ docker compose -f infrastructure/docker/docker-compose.yml up postgres redis kaf
 `scripts/start-dev.ps1` automates this native path (native Postgres + `pnpm start:dev`) and now
 refuses to run if something is already listening on :3000, so it won't collide with a
 Docker-managed api-gateway — but it's still the advanced/manual path, assuming a native Windows
-Postgres install. The canonical, cross-platform local setup — for a new developer, or anyone not
+Postgres install on the standard port 5432. That path reads the same `apps/api-gateway/.env` as
+the Docker Compose workflow; since that file's checked-in default now points at Docker's port
+(`localhost:15432`), a developer using this native path needs `DATABASE_URL` in their own `.env`
+to say `localhost:5432` instead. The canonical, cross-platform local setup — for a new developer, or anyone not
 specifically doing native-Postgres backend work — is documented once, in the frontend repo's
 `tools/dev/DEVELOPMENT.md`, which drives this file via Docker Compose exactly as shown above.
 

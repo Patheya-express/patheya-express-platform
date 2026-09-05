@@ -3,6 +3,12 @@
 # file (copy `.env.compose.example` -> `.env`) — Compose loads that automatically for ${VAR}
 # substitution below; every variable has a working default so `docker compose up` runs with none.
 #
+# PostgreSQL is published on host port 15432 (container port 5432, unchanged) — not 5432 — because
+# a native PostgreSQL install commonly already owns 5432 on a developer's machine, and Docker
+# binding the same host port either fails outright or non-deterministically races the native
+# server for it. api-gateway itself always talks to `postgres:5432` on the Compose network, never
+# through the host-published port, so this only affects host-side tools (Prisma CLI, psql, etc).
+#
 #   cp infrastructure/docker/.env.compose.example infrastructure/docker/.env
 #   docker compose -f infrastructure/docker/docker-compose.yml up
 #
@@ -26,7 +32,11 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-patheya_express_db}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      # Host default is 15432, not 5432: a native/Windows PostgreSQL install commonly already owns
+      # 5432, and host and container binding to the same port number non-deterministically race for
+      # it (see tools/dev/DEVELOPMENT.md's "Why 15432, not 5432?"). Container-internal traffic
+      # (api-gateway -> postgres, below) is unaffected — it always uses the service name on 5432.
+      - "${POSTGRES_PORT:-15432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
