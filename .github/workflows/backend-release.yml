@@ -92,7 +92,7 @@ jobs:
       # backend-ci.yml's `openapi` job uploaded this artifact in the run this workflow was
       # triggered from — pulled by run-id since it's a different workflow run, not this one.
       - name: Download OpenAPI artifact from backend-ci
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: openapi-spec
           run-id: ${{ github.event.workflow_run.id }}
