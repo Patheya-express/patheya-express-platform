@@ -16,13 +16,23 @@ all AWS infrastructure lives in `patheya-express-terraform`; all cluster state i
 
 ## Local setup
 
+Full-stack (this repo + the `frontend` repo together)? The canonical, documented setup lives in the
+frontend repo — see its `tools/dev/DEVELOPMENT.md` — and drives everything below for you.
+
+Backend-only:
+
 ```bash
 pnpm install
 cp apps/api-gateway/.env.example apps/api-gateway/.env   # fill in local values
-docker compose -f infrastructure/docker/docker-compose.yml up -d   # Postgres, Redis, Kafka (unused)
-pnpm --filter api-gateway run db:migrate
-pnpm --filter api-gateway run start:dev
+docker compose -f infrastructure/docker/docker-compose.yml up -d   # Postgres, Redis, Kafka (unused), AND api-gateway
+pnpm --filter api-gateway run db:migrate                            # from the host, against the container's published port
 ```
+
+That single `docker compose up -d` already starts `api-gateway` itself (see
+`docs/infrastructure/docker.md`) — there is no separate `pnpm --filter api-gateway run start:dev`
+step to run on top of it; doing so races the container for port 3000. Only run `start:dev`
+yourself if you deliberately exclude `api-gateway` from Compose (`docker compose ... up postgres
+redis kafka zookeeper`) to iterate on it natively instead.
 
 ## Running tests
 
