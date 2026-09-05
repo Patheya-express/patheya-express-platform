@@ -495,15 +495,17 @@ Do not modify production data through Prisma Studio.
 
 # 17. Seed Data
 
-If the repository contains a Prisma seed configuration, run the project's configured seed command.
-
-For example:
+The canonical developer seed command is:
 
 ```bash
-pnpm prisma db seed
+pnpm --filter api-gateway run db:seed
 ```
 
-Only use this if a valid seed script exists.
+This populates development-only baseline data (seeded users/roles, restaurants, menus, delivery
+partners, orders, coupons, offers, FAQs) — deterministic and idempotent, safe to run repeatedly,
+and never representative of production data. See `apps/api-gateway/README.md`'s "Database seed"
+section for the full account list and details. `frontend`'s `pnpm run setup` runs this
+automatically on first-time setup.
 
 ---
 
