@@ -278,4 +278,37 @@ describe('envValidationSchema', () => {
       expect(error?.message).toMatch(/DATABASE_URL/);
     });
   });
+
+  describe('LOG_TO_FILE (local Docker Compose value)', () => {
+    // Regression coverage for the fresh-machine failure where a corrupted infrastructure/docker/
+    // .env.compose (see frontend repo's tools/dev/lib/env-file.mjs CRLF-safety fix) let a mangled,
+    // multi-line value reach this validator instead of the literal `true`/`false` this schema
+    // actually expects. This documents the exact contract the local Docker Compose value must
+    // satisfy: infrastructure/docker/.env.compose.example ships `LOG_TO_FILE=true`, and
+    // docker-compose.yml's `${LOG_TO_FILE:-true}` interpolation passes that string through
+    // unchanged — this must keep validating successfully without weakening the schema itself.
+    it('accepts the exact string "true" shipped by infrastructure/docker/.env.compose.example', () => {
+      const { error } = validate({ ...VALID_DEVELOPMENT_ENV, LOG_TO_FILE: 'true' });
+      expect(error).toBeUndefined();
+    });
+
+    it('accepts the exact string "false"', () => {
+      const { error } = validate({ ...VALID_DEVELOPMENT_ENV, LOG_TO_FILE: 'false' });
+      expect(error).toBeUndefined();
+    });
+
+    it('is optional — a config with no LOG_TO_FILE set at all still passes', () => {
+      const { error } = validate(VALID_DEVELOPMENT_ENV);
+      expect(error).toBeUndefined();
+    });
+
+    it('rejects a corrupted/garbled value (the exact fresh-machine failure symptom)', () => {
+      const env = {
+        ...VALID_DEVELOPMENT_ENV,
+        LOG_TO_FILE: 'true\nJWT_ACCESS_SECRET=some-other-value',
+      };
+      const { error } = validate(env);
+      expect(error?.message).toMatch(/LOG_TO_FILE/);
+    });
+  });
 });
