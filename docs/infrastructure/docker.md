@@ -40,9 +40,17 @@ Two files, both under `infrastructure/docker/`:
 ### `docker-compose.yml` — local development
 
 ```bash
-cp infrastructure/docker/.env.compose.example infrastructure/docker/.env   # first time only
-docker compose -f infrastructure/docker/docker-compose.yml up
+cp infrastructure/docker/.env.compose.example infrastructure/docker/.env.compose   # first time only
+docker compose -f infrastructure/docker/docker-compose.yml --env-file infrastructure/docker/.env.compose up
 ```
+
+`--env-file` is explicit and required — this file is deliberately named `.env.compose`, not `.env`,
+so nothing depends on Compose's own same-directory `.env` auto-discovery (a bare `docker compose up`
+here would silently fall back to this file's own placeholder JWT-secret defaults, which
+`env.validation.ts` rejects at boot in every environment, `api-gateway` included). The frontend
+repo's `pnpm run setup`/`pnpm run dev` do this for you automatically — scaffolding this file,
+generating real local JWT secrets, and always passing `--env-file` — see the frontend repo's
+`tools/dev/DEVELOPMENT.md`'s "Local secrets (JWT)" section.
 
 Named project `patheya-express`. Services: `postgres` and `redis` (both with real healthchecks —
 `pg_isready` / `redis-cli ping`), `kafka` + `zookeeper` (present only because `KAFKA_BROKER` is a
@@ -74,11 +82,12 @@ docker compose -f infrastructure/docker/docker-compose.yml up postgres redis kaf
 `scripts/start-dev.ps1` automates this native path (native Postgres + `pnpm start:dev`) and now
 refuses to run if something is already listening on :3000, so it won't collide with a
 Docker-managed api-gateway — but it's still the advanced/manual path, assuming a native Windows
-Postgres install on the standard port 5432. That path reads the same `apps/api-gateway/.env` as
-the Docker Compose workflow; since that file's checked-in default now points at Docker's port
-(`localhost:15432`), a developer using this native path needs `DATABASE_URL` in their own `.env`
-to say `localhost:5432` instead. The canonical, cross-platform local setup — for a new developer, or anyone not
-specifically doing native-Postgres backend work — is documented once, in the frontend repo's
+Postgres install on the standard port 5432. That path reads `apps/api-gateway/.env` — a separate
+file from this section's `infrastructure/docker/.env.compose` (see that file's own top comment) —
+and since that file's checked-in default now points at Docker's port (`localhost:15432`), a
+developer using this native path needs `DATABASE_URL` in their own `apps/api-gateway/.env` to say
+`localhost:5432` instead. The canonical, cross-platform local setup — for a new developer, or anyone
+not specifically doing native-Postgres backend work — is documented once, in the frontend repo's
 `tools/dev/DEVELOPMENT.md`, which drives this file via Docker Compose exactly as shown above.
 
 ### `docker-compose.prod.yml` — production-shaped local rehearsal

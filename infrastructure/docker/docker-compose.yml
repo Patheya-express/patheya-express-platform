@@ -1,16 +1,19 @@
 # Local development stack: Postgres, Redis, Kafka/Zookeeper, and the api-gateway app itself,
-# built from the repo-root Dockerfile. Values are sourced from a `.env` file next to this compose
-# file (copy `.env.compose.example` -> `.env`) — Compose loads that automatically for ${VAR}
-# substitution below; every variable has a working default so `docker compose up` runs with none.
+# built from the repo-root Dockerfile. Values are sourced from a `.env.compose` file next to this
+# compose file (copy `.env.compose.example` -> `.env.compose`) — every variable has a working
+# default below so `docker compose up` runs with none, EXCEPT JWT_ACCESS_SECRET/JWT_REFRESH_SECRET,
+# whose defaults are literal placeholder text that api-gateway's own startup validation
+# (env.validation.ts) rejects in every environment — a real `.env.compose` with generated secrets
+# is not optional. Deliberately named `.env.compose`, not `.env`, so nothing relies on Compose's
+# own same-directory `.env` auto-discovery — every invocation must pass `--env-file` explicitly:
 #
-# PostgreSQL is published on host port 15432 (container port 5432, unchanged) — not 5432 — because
-# a native PostgreSQL install commonly already owns 5432 on a developer's machine, and Docker
-# binding the same host port either fails outright or non-deterministically races the native
-# server for it. api-gateway itself always talks to `postgres:5432` on the Compose network, never
-# through the host-published port, so this only affects host-side tools (Prisma CLI, psql, etc).
+#   cp infrastructure/docker/.env.compose.example infrastructure/docker/.env.compose
+#   docker compose -f infrastructure/docker/docker-compose.yml --env-file infrastructure/docker/.env.compose up
 #
-#   cp infrastructure/docker/.env.compose.example infrastructure/docker/.env
-#   docker compose -f infrastructure/docker/docker-compose.yml up
+# The frontend repo's `pnpm run setup`/`pnpm run dev` do all of the above automatically —
+# scaffolding this file, generating real local JWT secrets (idempotent, never printed, never
+# rotating an already-valid one), and always passing `--env-file` — see the frontend repo's
+# `tools/dev/DEVELOPMENT.md`'s "Local secrets (JWT)" section.
 #
 # Prefer running the app natively against these containers instead (faster inner loop, see
 # scripts/start-dev.ps1 and docs/deployment.md)? Just omit the `api-gateway` service:
