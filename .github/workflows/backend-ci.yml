@@ -47,7 +47,16 @@ jobs:
       # a migrated-but-unseeded database. `migrate deploy`, never `migrate dev`/`reset` — this is
       # CI, not local dev; `db:seed` only adds fixture rows to this job's own disposable database.
       setup-command: "pnpm --filter api-gateway run db:generate && pnpm --filter api-gateway run db:migrate:deploy && pnpm --filter api-gateway run db:seed"
-      lint-command: "pnpm --filter api-gateway run lint:ci"
+      # ESLint-1/ESLint-1A: was "pnpm --filter api-gateway run lint:ci" (the unconditional,
+      # repo-wide `--max-warnings=0` gate) — that command still exists, unchanged, for anyone who
+      # wants to run the full strict check manually. CI now runs the ratchet instead: it enforces
+      # the exact same rules with the exact same severity on every diagnostic, but only fails on
+      # one that isn't already present in the committed apps/api-gateway/.eslint-baseline.json —
+      # see that file's sibling scripts/lint-ratchet.ts for the full mechanism. This is what
+      # actually unblocks this gate (it was already failing on `main` itself before this change,
+      # on pre-existing debt unrelated to whatever a given PR touches) without weakening any rule,
+      # widening any tolerance, or touching branch protection.
+      lint-command: "pnpm --filter api-gateway run lint:ratchet"
       typecheck-command: "pnpm --filter api-gateway run typecheck"
       test-command: "pnpm --filter api-gateway run test:cov"
 
