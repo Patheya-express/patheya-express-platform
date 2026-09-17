@@ -425,6 +425,23 @@ enum NotificationType {
   DELIVERY_VERIFIED
 
   /**
+   * Delivery Proof & Trust extension — no longer triggered anywhere. The customer
+   * parcel-confirmation step this powered (DeliveryParcelConfirmation, ProofService.confirmParcel/
+   * assertParcelConfirmed) was removed by the 2026-09-16 business-workflow revision (photo is now
+   * reference-only, does not gate the delivery OTP). Left in the enum rather than dropped: Postgres
+   * enum-value removal requires rebuilding the whole type, which is disproportionate risk for a
+   * value with no remaining references and no production history.
+   */
+  PARCEL_CONFIRMED
+
+  /**
+   * 2026-09-16 business-workflow revision — sent to the customer when the assigned delivery
+   * partner marks arrival at the restaurant (DeliveryAssignment.arrivedAtRestaurantAt), gated
+   * server-side by the 100m geofence (see ProofService.markRestaurantArrival).
+   */
+  RIDER_ARRIVED_AT_RESTAURANT
+
+  /**
    * Sprint 1.8 — sent to the customer once a refund (full or partial, wallet and/or Razorpay
    * leg) actually completes, via OrdersService.refundOrder's order-level refund-completed event.
    * No customer-facing refund notification existed before this (only a WalletTransaction ledger
@@ -2015,6 +2032,8 @@ model Order {
 
   proofOtps DeliveryProofOtp[]
 
+  proofPhotos DeliveryProofPhoto[]
+
   walletTransactions WalletTransaction[]
 
   supportTickets SupportTicket[]
@@ -2760,6 +2779,15 @@ model DeliveryAssignment {
 
   expiresAt DateTime?
 
+  /**
+   * 2026-09-16 business-workflow revision — set once the assigned rider is confirmed (by the
+   * 100m geofence check, see ProofService.markRestaurantArrival) to be physically at the
+   * restaurant pickup location. Per-assignment (not per-order) since it's a fact about this
+   * specific delivery leg. Nullable/settable-once rather than a boolean: the timestamp itself is
+   * the audit record of when arrival happened, so no separate history table is needed for it.
+   */
+  arrivedAtRestaurantAt DateTime?
+
   createdAt DateTime @default(now())
 
   updatedAt DateTime @updatedAt
@@ -2820,6 +2848,46 @@ model DeliveryProofOtp {
 
   @@unique([orderId, type])
   @@map("delivery_proof_otps")
+}
+
+/**
+ * Delivery Proof & Trust extension — the mandatory pickup-parcel photo a delivery partner must
+ * upload before OrdersService will allow the order to advance to OUT_FOR_DELIVERY (see
+ * OrdersService.assertPhotoVerifiedForStatus). One immutable row per (orderId, type): unlike
+ * DeliveryProofOtp there is no upsert/regenerate path — ProofService.uploadPickupPhoto rejects a
+ * second upload for the same (orderId, type) with a ConflictException, so this row is
+ * write-once evidence. Only the storage reference/metadata is persisted (see StorageService) —
+ * never raw image bytes. `type` reuses DeliveryProofType for symmetry with DeliveryProofOtp,
+ * though only PICKUP is populated by the current workflow.
+ *
+ * Reference/audit evidence only — business revision (2026-09-16) removed the customer
+ * parcel-confirmation step this photo previously fed (see the removed DeliveryParcelConfirmation
+ * model); it no longer gates anything on the customer side, only the pickup-completion gate on
+ * the delivery-partner side (assertPhotoVerifiedForStatus) remains.
+ */
+model DeliveryProofPhoto {
+  id String @id @default(uuid())
+
+  orderId String
+
+  type DeliveryProofType
+
+  storageUrl String
+
+  fileName String
+
+  mimeType String
+
+  sizeBytes Int
+
+  uploadedById String
+
+  createdAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([orderId, type])
+  @@map("delivery_proof_photos")
 }
 
 // ---------------------------------------------------------------------------

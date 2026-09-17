@@ -1,8 +1,8 @@
 import { Controller, Get, Param } from '@nestjs/common';
 
 import { RedisService } from '../../../infrastructure/redis/redis.service';
-import { QueueService } from 'src/infrastructure/queues/queue.service';
-import { PresenceService } from 'src/modules/presence/services/presence.service';
+import { QueueService } from '../../../infrastructure/queues/queue.service';
+import { PresenceService } from '../../presence/services/presence.service';
 
 @Controller('system')
 export class SystemController {

@@ -29,7 +29,16 @@ function buildOrder(overrides: Record<string, unknown> = {}) {
       timezone: null,
       operatingHours: [],
     },
-    restaurant: { status: RestaurantStatus.APPROVED },
+    // Radius dispatch revision — restaurant.branches is the fallback pickup location
+    // findOrderById now fetches alongside restaurant.status, mirroring the same
+    // Order.branchId-frequently-null fallback used elsewhere in this module. Defaulted here
+    // (same coordinates as the default `branch` above) so tests that override only `branch`
+    // (e.g. to null, to simulate an unresolved FK) still resolve a usable pickup location, just
+    // like a real restaurant whose primary branch has GPS on file.
+    restaurant: {
+      status: RestaurantStatus.APPROVED,
+      branches: [{ latitude: 12.9, longitude: 77.6 }],
+    },
     ...overrides,
   };
 }
@@ -54,6 +63,7 @@ describe('DispatchService', () => {
     findAssignmentsForOrder: jest.Mock;
     findAvailablePartners: jest.Mock;
     findPartnerIdsWithActiveAssignment: jest.Mock;
+    findLastAssignmentActivityForPartners: jest.Mock;
     createAssignmentForOrder: jest.Mock;
     findPartnerByUserId: jest.Mock;
     findAssignmentById: jest.Mock;
@@ -98,6 +108,12 @@ describe('DispatchService', () => {
       findPartnerIdsWithActiveAssignment: jest
         .fn()
         .mockResolvedValue(new Set()),
+      // Default: nobody has assignment history in scope, so everyone ties at maximally-idle
+      // (Infinity) and the pre-existing distance/rotation/id tiebreak tests below are unaffected
+      // unless a test explicitly overrides this to exercise the idle-time priority itself.
+      findLastAssignmentActivityForPartners: jest
+        .fn()
+        .mockResolvedValue(new Map()),
       createAssignmentForOrder: jest.fn().mockResolvedValue({
         created: true,
         assignment: {
@@ -157,20 +173,20 @@ describe('DispatchService', () => {
     jest.useRealTimers();
   });
 
-  describe('15 second acceptance window (Change 1)', () => {
-    it('sets expiresAt DISPATCH_ASSIGNMENT_TIMEOUT_SECONDS (default 15s) in the future', async () => {
+  describe('30 second acceptance window (radius dispatch revision, 2026-09-16)', () => {
+    it('sets expiresAt DISPATCH_ASSIGNMENT_TIMEOUT_SECONDS (default 30s) in the future', async () => {
       await service.assignOrder('order-1');
 
       const call = repository.createAssignmentForOrder.mock.calls[0][0];
-      expect(call.expiresAt.getTime() - NOW.getTime()).toBe(15_000);
+      expect(call.expiresAt.getTime() - NOW.getTime()).toBe(30_000);
     });
 
-    it('schedules the assignment-expiry job with a matching 15s delay', async () => {
+    it('schedules the assignment-expiry job with a matching 30s delay', async () => {
       await service.assignOrder('order-1');
 
       expect(queueService.addAssignmentExpiryJob).toHaveBeenCalledWith(
         'assignment-1',
-        15_000,
+        30_000,
       );
     });
   });
@@ -283,7 +299,7 @@ describe('DispatchService', () => {
     });
   });
 
-  describe('deterministic priority ordering — distance only, then rotation (Dispatch Simplification)', () => {
+  describe('deterministic priority ordering — radius + idle + distance, then rotation', () => {
     it('prefers the nearer partner over a farther one', async () => {
       const near = buildPartner({
         id: 'partner-near',
@@ -314,17 +330,21 @@ describe('DispatchService', () => {
     });
 
     it('is deterministic — repeated calls with identical input pick the same partner, never random', async () => {
+      // Same coordinates for both — tied on distance (and, by the default mock, tied on idle
+      // time too), so this isolates the id tiebreaker rather than testing distance itself. Real,
+      // in-radius coordinates are required now that missing/out-of-radius coordinates are a hard
+      // eligibility exclusion, not just a ranking tie (see the radius dispatch revision).
       const a = buildPartner({
         id: 'partner-a',
         userId: 'user-a',
-        currentLatitude: null,
-        currentLongitude: null,
+        currentLatitude: 12.905,
+        currentLongitude: 77.605,
       });
       const b = buildPartner({
         id: 'partner-b',
         userId: 'user-b',
-        currentLatitude: null,
-        currentLongitude: null,
+        currentLatitude: 12.905,
+        currentLongitude: 77.605,
       });
 
       repository.findAvailablePartners.mockResolvedValue([a, b]);
@@ -350,29 +370,30 @@ describe('DispatchService', () => {
 
     it('a tie on distance resolves identically no matter what order the repository returns partners in — never depends on Postgres row order', async () => {
       // Pre-merge review finding: findAvailablePartners() has no ORDER BY, so Postgres gives no
-      // row-order guarantee. All three partners here tie on distance (all missing coordinates,
-      // all score Infinity) — the only real-world case this matters, since equal real coordinates
-      // are rare but "no location reported at all" is common in QA/early rollout. Feeding the
-      // repository mock every permutation of the same three partners and asserting one single
-      // winner directly proves the id tiebreaker, not just that repeated calls with the same input
-      // order agree with each other (the pre-existing test above only proved that weaker property).
+      // row-order guarantee. All three partners here tie on distance (identical, in-radius
+      // coordinates — see the radius dispatch revision doc comment on why missing/out-of-radius
+      // coordinates are no longer usable for this: they're now a hard exclusion, not a tie).
+      // Feeding the repository mock every permutation of the same three partners and asserting
+      // one single winner directly proves the id tiebreaker, not just that repeated calls with
+      // the same input order agree with each other (the pre-existing test above only proved that
+      // weaker property).
       const a = buildPartner({
         id: 'partner-a',
         userId: 'user-a',
-        currentLatitude: null,
-        currentLongitude: null,
+        currentLatitude: 12.905,
+        currentLongitude: 77.605,
       });
       const b = buildPartner({
         id: 'partner-b',
         userId: 'user-b',
-        currentLatitude: null,
-        currentLongitude: null,
+        currentLatitude: 12.905,
+        currentLongitude: 77.605,
       });
       const c = buildPartner({
         id: 'partner-c',
         userId: 'user-c',
-        currentLatitude: null,
-        currentLongitude: null,
+        currentLatitude: 12.905,
+        currentLongitude: 77.605,
       });
 
       presenceService.isOnlineBatch.mockResolvedValue(
@@ -408,7 +429,7 @@ describe('DispatchService', () => {
       expect([...picks][0]).toBe('partner-a');
     });
 
-    it('does not crash when the order has no branch on record', async () => {
+    it('falls back to the restaurant primary branch when Order.branchId never resolved, and does not crash', async () => {
       repository.findOrderById.mockResolvedValue(buildOrder({ branch: null }));
       repository.findAvailablePartners.mockResolvedValue([
         buildPartner({ id: 'partner-1', userId: 'user-1' }),
@@ -422,6 +443,365 @@ describe('DispatchService', () => {
       );
 
       await expect(service.assignOrder('order-1')).resolves.not.toBeNull();
+    });
+
+    it('excludes every partner (and never crashes) when neither the order branch nor a restaurant fallback branch has coordinates', async () => {
+      repository.findOrderById.mockResolvedValue(
+        buildOrder({
+          branch: null,
+          restaurant: { status: RestaurantStatus.APPROVED },
+        }),
+      );
+      repository.findAvailablePartners.mockResolvedValue([
+        buildPartner({ id: 'partner-1', userId: 'user-1' }),
+      ]);
+
+      await expect(service.assignOrder('order-1')).resolves.toBeNull();
+      expect(repository.createAssignmentForOrder).not.toHaveBeenCalled();
+      expect(
+        metrics.recordDispatchPartnerSkippedDistance,
+      ).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('5km dispatch radius (business rule, 2026-09-16)', () => {
+    it('excludes a partner more than 5km from the restaurant even when they are the only candidate', async () => {
+      // ~11km from the default branch (12.9, 77.6) — nowhere close to the 5000m boundary, so this
+      // is unambiguous regardless of Haversine's exact rounding.
+      repository.findAvailablePartners.mockResolvedValue([
+        buildPartner({
+          id: 'partner-far',
+          userId: 'user-far',
+          currentLatitude: 13.0,
+          currentLongitude: 77.6,
+        }),
+      ]);
+      presenceService.isOnlineBatch.mockResolvedValue(
+        new Map([['user-far', true]]),
+      );
+
+      await expect(service.assignOrder('order-1')).resolves.toBeNull();
+      expect(repository.createAssignmentForOrder).not.toHaveBeenCalled();
+      expect(
+        metrics.recordDispatchPartnerSkippedDistance,
+      ).toHaveBeenCalledTimes(1);
+    });
+
+    it('includes a partner just inside 5km and excludes one just outside it, choosing the in-radius partner', async () => {
+      const inRadius = buildPartner({
+        id: 'partner-in',
+        userId: 'user-in',
+        // ~4km from the branch — comfortably inside 5000m.
+        currentLatitude: 12.936,
+        currentLongitude: 77.6,
+      });
+      const outOfRadius = buildPartner({
+        id: 'partner-out',
+        userId: 'user-out',
+        // ~11km from the branch — comfortably outside 5000m.
+        currentLatitude: 13.0,
+        currentLongitude: 77.6,
+      });
+
+      repository.findAvailablePartners.mockResolvedValue([
+        outOfRadius,
+        inRadius,
+      ]);
+      presenceService.isOnlineBatch.mockResolvedValue(
+        new Map([
+          ['user-in', true],
+          ['user-out', true],
+        ]),
+      );
+
+      await service.assignOrder('order-1');
+
+      expect(repository.createAssignmentForOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ deliveryPartnerId: 'partner-in' }),
+      );
+      expect(
+        metrics.recordDispatchPartnerSkippedDistance,
+      ).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('progressive radius dispatch — 5km/7km/9km/10km tiers (2026-09-16 follow-up)', () => {
+    it('expands to the 7km tier when nobody is within 5km', async () => {
+      const partner = buildPartner({
+        id: 'partner-6km',
+        userId: 'user-6km',
+        // ~6km from the branch — outside 5km, inside 7km.
+        currentLatitude: 12.9541,
+        currentLongitude: 77.6,
+      });
+
+      repository.findAvailablePartners.mockResolvedValue([partner]);
+      presenceService.isOnlineBatch.mockResolvedValue(
+        new Map([['user-6km', true]]),
+      );
+
+      await service.assignOrder('order-1');
+
+      expect(repository.createAssignmentForOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ deliveryPartnerId: 'partner-6km' }),
+      );
+      expect(
+        logger.log.mock.calls.some(
+          ([payload]: any) =>
+            payload.event === 'dispatch_radius_expanded' &&
+            payload.radiusMetersUsed === 7000,
+        ),
+      ).toBe(true);
+    });
+
+    it('expands to the 9km tier when nobody is within 5km or 7km', async () => {
+      const partner = buildPartner({
+        id: 'partner-8km',
+        userId: 'user-8km',
+        // ~8km from the branch — outside 7km, inside 9km.
+        currentLatitude: 12.9721,
+        currentLongitude: 77.6,
+      });
+
+      repository.findAvailablePartners.mockResolvedValue([partner]);
+      presenceService.isOnlineBatch.mockResolvedValue(
+        new Map([['user-8km', true]]),
+      );
+
+      await service.assignOrder('order-1');
+
+      expect(repository.createAssignmentForOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ deliveryPartnerId: 'partner-8km' }),
+      );
+      expect(
+        logger.log.mock.calls.some(
+          ([payload]: any) =>
+            payload.event === 'dispatch_radius_expanded' &&
+            payload.radiusMetersUsed === 9000,
+        ),
+      ).toBe(true);
+    });
+
+    it('expands all the way to the 10km tier as the last resort', async () => {
+      const partner = buildPartner({
+        id: 'partner-9-5km',
+        userId: 'user-9-5km',
+        // ~9.5km from the branch — outside 9km, inside 10km.
+        currentLatitude: 12.9856,
+        currentLongitude: 77.6,
+      });
+
+      repository.findAvailablePartners.mockResolvedValue([partner]);
+      presenceService.isOnlineBatch.mockResolvedValue(
+        new Map([['user-9-5km', true]]),
+      );
+
+      await service.assignOrder('order-1');
+
+      expect(repository.createAssignmentForOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ deliveryPartnerId: 'partner-9-5km' }),
+      );
+      expect(
+        logger.log.mock.calls.some(
+          ([payload]: any) =>
+            payload.event === 'dispatch_radius_expanded' &&
+            payload.radiusMetersUsed === 10000,
+        ),
+      ).toBe(true);
+    });
+
+    it('still fails (no assignment) when even the 10km tier has nobody in range', async () => {
+      // Reuses the >5km-only fixture from the 5km-radius describe block above, but this proves
+      // the tiered search itself was exhausted (all four tiers), not just the original single
+      // 5km check.
+      repository.findAvailablePartners.mockResolvedValue([
+        buildPartner({
+          id: 'partner-far',
+          userId: 'user-far',
+          currentLatitude: 13.0, // ~11km — outside every tier
+          currentLongitude: 77.6,
+        }),
+      ]);
+      presenceService.isOnlineBatch.mockResolvedValue(
+        new Map([['user-far', true]]),
+      );
+
+      await expect(service.assignOrder('order-1')).resolves.toBeNull();
+      expect(repository.createAssignmentForOrder).not.toHaveBeenCalled();
+    });
+
+    it('never widens past the narrowest tier that already has a candidate — a 6km partner does not pull in a 9.5km one too', async () => {
+      const near = buildPartner({
+        id: 'partner-6km',
+        userId: 'user-6km',
+        currentLatitude: 12.9541, // ~6km — inside the 7km tier
+        currentLongitude: 77.6,
+      });
+      const far = buildPartner({
+        id: 'partner-9-5km',
+        userId: 'user-9-5km',
+        currentLatitude: 12.9856, // ~9.5km — inside only the 10km tier
+        currentLongitude: 77.6,
+      });
+
+      repository.findAvailablePartners.mockResolvedValue([far, near]);
+      presenceService.isOnlineBatch.mockResolvedValue(
+        new Map([
+          ['user-6km', true],
+          ['user-9-5km', true],
+        ]),
+      );
+
+      await service.assignOrder('order-1');
+
+      // The far (9.5km) partner was never a candidate at all once the 7km tier already had a
+      // match — proven by the winner being the only tier-7km-eligible partner, and by the
+      // dispatch_radius_expanded log reporting 7000, not 10000.
+      expect(repository.createAssignmentForOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ deliveryPartnerId: 'partner-6km' }),
+      );
+      expect(
+        logger.log.mock.calls.some(
+          ([payload]: any) =>
+            payload.event === 'dispatch_radius_expanded' &&
+            payload.radiusMetersUsed === 7000,
+        ),
+      ).toBe(true);
+    });
+
+    it('does not log dispatch_radius_expanded when the narrowest (5km) tier already succeeds', async () => {
+      repository.findAvailablePartners.mockResolvedValue([buildPartner()]); // default coords, ~1.5km
+
+      await service.assignOrder('order-1');
+
+      expect(
+        logger.log.mock.calls.some(
+          ([payload]: any) => payload.event === 'dispatch_radius_expanded',
+        ),
+      ).toBe(false);
+    });
+  });
+
+  describe('idle-time priority (business rule, 2026-09-16)', () => {
+    it('prefers a partner with no assignment history at all over a nearer partner who was recently offered work', async () => {
+      const recentlyActive = buildPartner({
+        id: 'partner-recent',
+        userId: 'user-recent',
+        // Nearer to the branch than idle-partner below.
+        currentLatitude: 12.901,
+        currentLongitude: 77.601,
+      });
+      const neverAssigned = buildPartner({
+        id: 'partner-idle',
+        userId: 'user-idle',
+        currentLatitude: 12.92,
+        currentLongitude: 77.62,
+      });
+
+      repository.findAvailablePartners.mockResolvedValue([
+        recentlyActive,
+        neverAssigned,
+      ]);
+      presenceService.isOnlineBatch.mockResolvedValue(
+        new Map([
+          ['user-recent', true],
+          ['user-idle', true],
+        ]),
+      );
+      // recentlyActive was offered an assignment 1 minute ago; neverAssigned has no rows at all
+      // (absent from the map => treated as maximally idle).
+      repository.findLastAssignmentActivityForPartners.mockResolvedValue(
+        new Map([['partner-recent', new Date(NOW.getTime() - 60_000)]]),
+      );
+
+      await service.assignOrder('order-1');
+
+      expect(repository.createAssignmentForOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ deliveryPartnerId: 'partner-idle' }),
+      );
+    });
+
+    it('prefers whichever partner has been idle longer when both have assignment history', async () => {
+      const idleLonger = buildPartner({
+        id: 'partner-idle-longer',
+        userId: 'user-idle-longer',
+        currentLatitude: 12.901,
+        currentLongitude: 77.601,
+      });
+      const idleShorter = buildPartner({
+        id: 'partner-idle-shorter',
+        userId: 'user-idle-shorter',
+        currentLatitude: 12.901,
+        currentLongitude: 77.601,
+      });
+
+      repository.findAvailablePartners.mockResolvedValue([
+        idleShorter,
+        idleLonger,
+      ]);
+      presenceService.isOnlineBatch.mockResolvedValue(
+        new Map([
+          ['user-idle-longer', true],
+          ['user-idle-shorter', true],
+        ]),
+      );
+      repository.findLastAssignmentActivityForPartners.mockResolvedValue(
+        new Map([
+          ['partner-idle-longer', new Date(NOW.getTime() - 3_600_000)], // 1 hour ago
+          ['partner-idle-shorter', new Date(NOW.getTime() - 60_000)], // 1 minute ago
+        ]),
+      );
+
+      await service.assignOrder('order-1');
+
+      expect(repository.createAssignmentForOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ deliveryPartnerId: 'partner-idle-longer' }),
+      );
+    });
+
+    it('falls back to distance when two partners are tied on idle time', async () => {
+      const near = buildPartner({
+        id: 'partner-near',
+        userId: 'user-near',
+        currentLatitude: 12.901,
+        currentLongitude: 77.601,
+      });
+      const farther = buildPartner({
+        id: 'partner-farther',
+        userId: 'user-farther',
+        currentLatitude: 12.93,
+        currentLongitude: 77.63,
+      });
+
+      repository.findAvailablePartners.mockResolvedValue([farther, near]);
+      presenceService.isOnlineBatch.mockResolvedValue(
+        new Map([
+          ['user-near', true],
+          ['user-farther', true],
+        ]),
+      );
+      repository.findLastAssignmentActivityForPartners.mockResolvedValue(
+        new Map([
+          ['partner-near', new Date(NOW.getTime() - 60_000)],
+          ['partner-farther', new Date(NOW.getTime() - 60_000)],
+        ]),
+      );
+
+      await service.assignOrder('order-1');
+
+      expect(repository.createAssignmentForOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ deliveryPartnerId: 'partner-near' }),
+      );
+    });
+
+    it('only queries assignment history when there is an actual choice to make (single candidate short-circuits)', async () => {
+      repository.findAvailablePartners.mockResolvedValue([buildPartner()]);
+
+      await service.assignOrder('order-1');
+
+      expect(
+        repository.findLastAssignmentActivityForPartners,
+      ).not.toHaveBeenCalled();
     });
   });
 
@@ -607,23 +987,25 @@ describe('DispatchService', () => {
 
   describe('round-robin cycle start (Phase 2, Change 2)', () => {
     it('rotates the starting partner by one position each successive cycle, deterministically', async () => {
+      // Identical, in-radius coordinates — tied on distance (and, by the default mock, on idle
+      // time), isolating rotation/id-tiebreak behavior from the radius/distance rules themselves.
       const a = buildPartner({
         id: 'partner-a',
         userId: 'user-a',
-        currentLatitude: null,
-        currentLongitude: null,
+        currentLatitude: 12.905,
+        currentLongitude: 77.605,
       });
       const b = buildPartner({
         id: 'partner-b',
         userId: 'user-b',
-        currentLatitude: null,
-        currentLongitude: null,
+        currentLatitude: 12.905,
+        currentLongitude: 77.605,
       });
       const c = buildPartner({
         id: 'partner-c',
         userId: 'user-c',
-        currentLatitude: null,
-        currentLongitude: null,
+        currentLatitude: 12.905,
+        currentLongitude: 77.605,
       });
 
       repository.findAvailablePartners.mockResolvedValue([a, b, c]);
@@ -719,14 +1101,14 @@ describe('DispatchService', () => {
       const a = buildPartner({
         id: 'partner-a',
         userId: 'user-a',
-        currentLatitude: null,
-        currentLongitude: null,
+        currentLatitude: 12.905,
+        currentLongitude: 77.605,
       });
       const b = buildPartner({
         id: 'partner-b',
         userId: 'user-b',
-        currentLatitude: null,
-        currentLongitude: null,
+        currentLatitude: 12.905,
+        currentLongitude: 77.605,
       });
 
       repository.findAvailablePartners.mockResolvedValue([a, b]);
@@ -755,20 +1137,20 @@ describe('DispatchService', () => {
       const a = buildPartner({
         id: 'partner-a',
         userId: 'user-a',
-        currentLatitude: null,
-        currentLongitude: null,
+        currentLatitude: 12.905,
+        currentLongitude: 77.605,
       });
       const b = buildPartner({
         id: 'partner-b',
         userId: 'user-b',
-        currentLatitude: null,
-        currentLongitude: null,
+        currentLatitude: 12.905,
+        currentLongitude: 77.605,
       });
       const c = buildPartner({
         id: 'partner-c',
         userId: 'user-c',
-        currentLatitude: null,
-        currentLongitude: null,
+        currentLatitude: 12.905,
+        currentLongitude: 77.605,
       });
 
       repository.findAvailablePartners.mockResolvedValue([a, b, c]);
@@ -990,14 +1372,14 @@ describe('DispatchService', () => {
       const a = buildPartner({
         id: 'partner-a',
         userId: 'user-a',
-        currentLatitude: null,
-        currentLongitude: null,
+        currentLatitude: 12.905,
+        currentLongitude: 77.605,
       });
       const b = buildPartner({
         id: 'partner-b',
         userId: 'user-b',
-        currentLatitude: null,
-        currentLongitude: null,
+        currentLatitude: 12.905,
+        currentLongitude: 77.605,
       });
 
       repository.findAvailablePartners.mockResolvedValue([a, b]);
@@ -1126,14 +1508,16 @@ describe('DispatchService', () => {
 
   describe('Phase 3: Haversine distance in meters (Change 1)', () => {
     it('produces a real, positive meter-scale distance for two known coordinates, not kilometers', async () => {
-      // Bengaluru MG Road (~12.9758, 77.6045) to Koramangala (~12.9352, 77.6245) — roughly 4.7km
-      // apart in reality, i.e. ~4700m: asserts the value is in the thousands (meters), not single
+      // ~0.97km apart in reality (well inside the 5km dispatch radius, unlike the old ~4.7km
+      // fixture this replaced, which sat close enough to the boundary that Haversine's exact
+      // value — as opposed to the "roughly 4.7km" real-world approximation — could land either
+      // side of 5000m): asserts the value is in the hundreds/thousands (meters), not single
       // digits (which a leftover km-scale implementation would produce).
       const near = buildPartner({
         id: 'partner-near',
         userId: 'user-near',
-        currentLatitude: 12.9352,
-        currentLongitude: 77.6245,
+        currentLatitude: 12.967,
+        currentLongitude: 77.6045,
       });
 
       repository.findOrderById.mockResolvedValue(
@@ -1162,7 +1546,7 @@ describe('DispatchService', () => {
       );
     });
 
-    it('still picks the nearer of two partners — distance is now the only ranking signal before rotation', async () => {
+    it('still picks the nearer of two partners — the farther one is now excluded by the radius filter rather than merely ranked second', async () => {
       const near = buildPartner({
         id: 'partner-near',
         userId: 'user-near',
@@ -1191,7 +1575,11 @@ describe('DispatchService', () => {
       );
     });
 
-    it('records dispatch_partner_skipped_distance when coordinates are missing, without throwing', async () => {
+    it('excludes partners with missing coordinates (records skipped_distance), never crashes', async () => {
+      // Radius dispatch revision: a partner with no reported location can't be confirmed within
+      // the 5km radius, so both are now excluded outright — a genuine "no eligible partner"
+      // cycle-retry (schedules a fresh cycle since partners.length > 0), not the old "still
+      // dispatched, just deprioritized" behavior.
       const a = buildPartner({
         id: 'partner-a',
         userId: 'user-a',
@@ -1213,8 +1601,9 @@ describe('DispatchService', () => {
         ]),
       );
 
-      await expect(service.assignOrder('order-1')).resolves.not.toBeNull();
+      await expect(service.assignOrder('order-1')).resolves.toBeNull();
 
+      expect(repository.createAssignmentForOrder).not.toHaveBeenCalled();
       expect(
         metrics.recordDispatchPartnerSkippedDistance,
       ).toHaveBeenCalledTimes(2);

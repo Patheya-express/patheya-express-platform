@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   forwardRef,
   Get,
@@ -13,6 +14,7 @@ import {
   ApiBearerAuth,
   ApiOperation,
   ApiParam,
+  ApiBody,
   ApiOkResponse,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
@@ -29,6 +31,8 @@ import { PresenceService } from '../services/presence.service';
 
 import { DeliveryService } from '../../delivery/services/delivery.service';
 
+import { MarkOnlineDto } from '../dto/mark-online.dto';
+
 @ApiTags('Presence')
 @ApiBearerAuth('JWT-auth')
 @Controller('presence')
@@ -44,7 +48,11 @@ export class PresenceController {
   @ApiOperation({
     summary: 'Mark delivery partner online',
     description:
-      'Marks the authenticated delivery partner as online and available for realtime presence tracking. Rejected until onboarding/verification is complete and the account is active (EDPH-1 online protection).',
+      "Marks the authenticated delivery partner as online and available for realtime presence tracking. Rejected until onboarding/verification is complete and the account is active (EDPH-1 online protection). Also the always-on presence heartbeat: the client calls this every ~60s while online, and an optional location on each call keeps dispatch's radius filter fresh for the whole online session (see MarkOnlineDto).",
+  })
+  @ApiBody({
+    type: MarkOnlineDto,
+    required: false,
   })
   @ApiOkResponse({
     description: 'Partner marked online successfully',
@@ -55,10 +63,22 @@ export class PresenceController {
   async markOnline(
     @CurrentUser()
     user: any,
+
+    @Body()
+    dto: MarkOnlineDto,
   ) {
     await this.deliveryService.assertOnlineEligible(user.userId);
 
-    return this.presenceService.markOnline(user.userId);
+    const result = await this.presenceService.markOnline(user.userId);
+
+    if (dto?.latitude != null && dto?.longitude != null) {
+      await this.deliveryService.reportLocation(user.userId, {
+        latitude: dto.latitude,
+        longitude: dto.longitude,
+      });
+    }
+
+    return result;
   }
 
   @UseGuards(JwtAuthGuard)

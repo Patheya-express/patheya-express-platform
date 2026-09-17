@@ -38,6 +38,8 @@ import { CreateDeliveryPartnerDto } from '../dto/create-delivery-partner.dto';
 
 import { UpdateDeliveryStatusDto } from '../dto/update-delivery-status.dto';
 
+import { GoAvailableDto } from '../dto/go-available.dto';
+
 import { DeliveryPartnerResponseDto } from '../dto/delivery-partner-response.dto';
 
 import { GetAdminDeliveryPartnersQueryDto } from '../dto/get-admin-delivery-partners-query.dto';
@@ -178,6 +180,12 @@ export class DeliveryController {
   @Patch('available')
   @ApiOperation({
     summary: 'Set delivery partner available',
+    description:
+      "Optionally report the partner's current location alongside going available — dispatch's 5km radius filter can only offer this partner orders once a location is on file (see GoAvailableDto).",
+  })
+  @ApiBody({
+    type: GoAvailableDto,
+    required: false,
   })
   @ApiOkResponse({
     description: 'Partner is now available',
@@ -189,8 +197,16 @@ export class DeliveryController {
   goAvailable(
     @CurrentUser()
     user: any,
+
+    @Body()
+    dto: GoAvailableDto,
   ) {
-    return this.deliveryService.goAvailable(user.userId);
+    const location =
+      dto?.latitude != null && dto?.longitude != null
+        ? { latitude: dto.latitude, longitude: dto.longitude }
+        : undefined;
+
+    return this.deliveryService.goAvailable(user.userId, location);
   }
 
   @UseGuards(JwtAuthGuard)

@@ -25,11 +25,15 @@ describe('PaymentsService', () => {
     deactivateOrderAttempts: jest.Mock;
     claimStatusTransition: jest.Mock;
     createWebhookEvent: jest.Mock;
+    findActivePaymentForOrder: jest.Mock;
+    findLatestAttempt: jest.Mock;
+    createPayment: jest.Mock;
   };
   let razorpayProvider: {
     verifyPaymentSignature: jest.Mock;
     verifyWebhookSignature: jest.Mock;
     fetchPayment: jest.Mock;
+    createOrder: jest.Mock;
   };
   let eventBus: { publish: jest.Mock };
   let queueService: { addNotificationJob: jest.Mock };
@@ -71,6 +75,11 @@ describe('PaymentsService', () => {
       deactivateOrderAttempts: jest.fn().mockResolvedValue({ count: 1 }),
       claimStatusTransition: jest.fn(),
       createWebhookEvent: jest.fn().mockResolvedValue(undefined),
+      findActivePaymentForOrder: jest.fn().mockResolvedValue(null),
+      findLatestAttempt: jest.fn().mockResolvedValue(null),
+      createPayment: jest.fn().mockImplementation((data) =>
+        Promise.resolve({ id: 'payment-1', ...data }),
+      ),
     };
     razorpayProvider = {
       verifyPaymentSignature: jest.fn().mockResolvedValue(true),
@@ -79,6 +88,11 @@ describe('PaymentsService', () => {
         amount: 50000,
         currency: 'INR',
         status: 'captured',
+      }),
+      createOrder: jest.fn().mockResolvedValue({
+        id: 'order_rzp_1',
+        amount: 22000,
+        currency: 'INR',
       }),
     };
     eventBus = { publish: jest.fn().mockResolvedValue(undefined) };
@@ -97,6 +111,87 @@ describe('PaymentsService', () => {
       logger as any,
       auditService as any,
     );
+  });
+
+  /**
+   * Payment/order lifecycle "Payment Eligibility" — regression coverage for
+   * PAYABLE_ORDER_STATUSES enforcement in createPayment: PENDING/CONFIRMED/PREPARING/
+   * READY_FOR_PICKUP/OUT_FOR_DELIVERY orders may still be paid for (covers both the initial
+   * ONLINE checkout payment and, for a COD order, the "Complete Payment" online top-up);
+   * DELIVERED/CANCELLED may not. Uses a local `prisma.order.findUnique` mock + a separately
+   * constructed service instance (the outer `beforeEach` above deliberately stubs prisma as
+   * unused, since none of the pre-existing suites below call createPayment).
+   */
+  describe('createPayment', () => {
+    let prisma: { order: { findUnique: jest.Mock } };
+    let localService: PaymentsService;
+
+    function buildOrder(overrides: Partial<Record<string, unknown>> = {}) {
+      return {
+        customerId: CUSTOMER_ID,
+        status: 'PENDING',
+        paymentStatus: 'PENDING',
+        totalAmount: 220,
+        walletAmountUsed: 0,
+        ...overrides,
+      };
+    }
+
+    beforeEach(() => {
+      prisma = { order: { findUnique: jest.fn() } };
+      localService = new PaymentsService(
+        paymentsRepository as any,
+        razorpayProvider as any,
+        eventBus as any,
+        queueService as any,
+        prisma as any,
+        logger as any,
+        auditService as any,
+      );
+    });
+
+    it.each(['PENDING', 'CONFIRMED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY'])(
+      'allows initiating payment for an order in %s status',
+      async (status) => {
+        prisma.order.findUnique.mockResolvedValue(buildOrder({ status }));
+
+        await expect(
+          localService.createPayment('order-1', 220, CUSTOMER_ID),
+        ).resolves.toMatchObject({ payment: expect.anything() });
+      },
+    );
+
+    it.each(['DELIVERED', 'CANCELLED'])(
+      'rejects initiating payment for an order in %s status',
+      async (status) => {
+        prisma.order.findUnique.mockResolvedValue(buildOrder({ status }));
+
+        await expect(
+          localService.createPayment('order-1', 220, CUSTOMER_ID),
+        ).rejects.toThrow(ConflictException);
+      },
+    );
+
+    it('is payment-mode-agnostic — a COD order in a payable status can still initiate an online payment (Rule 6, "Complete Payment")', async () => {
+      // paymentMode isn't selected/read by createPayment at all — this just documents that a COD
+      // order (status already advanced by restaurant acceptance, exactly like Rule 6's example
+      // flow) goes through the identical, unmodified eligibility check as an ONLINE order.
+      prisma.order.findUnique.mockResolvedValue(buildOrder({ status: 'OUT_FOR_DELIVERY' }));
+
+      await expect(
+        localService.createPayment('order-1', 220, CUSTOMER_ID),
+      ).resolves.toMatchObject({ payment: expect.anything() });
+    });
+
+    it('still rejects an already-paid order regardless of status', async () => {
+      prisma.order.findUnique.mockResolvedValue(
+        buildOrder({ status: 'PREPARING', paymentStatus: 'PAID' }),
+      );
+
+      await expect(
+        localService.createPayment('order-1', 220, CUSTOMER_ID),
+      ).rejects.toThrow(ConflictException);
+    });
   });
 
   describe('verifyPayment', () => {

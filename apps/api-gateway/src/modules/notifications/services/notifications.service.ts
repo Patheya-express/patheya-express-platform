@@ -114,6 +114,12 @@ const PUSH_PREFERENCE_BY_TYPE: Record<NotificationType, PushPreferenceKey> = {
   DELIVERY_OTP_GENERATED: 'orderUpdatesPush',
   PICKUP_VERIFIED: 'orderUpdatesPush',
   DELIVERY_VERIFIED: 'orderUpdatesPush',
+  // Delivery Proof & Trust extension — retained in the enum but no longer triggered anywhere
+  // (see its schema.prisma doc comment); still mapped so this Record stays exhaustive.
+  PARCEL_CONFIRMED: 'orderUpdatesPush',
+  // 2026-09-16 business-workflow revision — sent to the customer on rider arrival; same
+  // order-lifecycle category as the OTP/verification events above.
+  RIDER_ARRIVED_AT_RESTAURANT: 'orderUpdatesPush',
 };
 
 /**

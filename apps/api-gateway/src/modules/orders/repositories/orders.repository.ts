@@ -3,7 +3,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
 
 import { BaseRepository } from '../../../infrastructure/database/repositories/base.repository';
-import { OrderStatus, PaymentStatus } from '@prisma/client';
+import { OrderStatus, PaymentMode, PaymentStatus } from '@prisma/client';
 
 const ORDER_ITEM_INCLUDE = {
   menuItem: {
@@ -64,6 +64,15 @@ export class OrdersRepository extends BaseRepository {
         items: {
           include: ORDER_ITEM_INCLUDE,
         },
+
+        // Just the name — OrdersService.toPlacedOrderResponse() maps this into the same
+        // `restaurantName` field findCustomerOrders' `restaurant: true` already populates, so the
+        // customer-facing Live Orders tracker has it immediately from the POST /orders response
+        // instead of waiting on the next GET /orders/me. Deliberately narrower than
+        // findCustomerOrders' `restaurant: true` (this path only ever needs the name).
+        restaurant: {
+          select: { name: true },
+        },
       },
     });
   }
@@ -80,6 +89,10 @@ export class OrdersRepository extends BaseRepository {
       include: {
         items: {
           include: ORDER_ITEM_INCLUDE,
+        },
+
+        restaurant: {
+          select: { name: true },
         },
       },
     });
@@ -166,6 +179,43 @@ export class OrdersRepository extends BaseRepository {
     });
   }
 
+  /**
+   * Resolves the pickup coordinates for an order the same way DispatchRepository/DispatchService
+   * do for the rider-facing assignment view (order.branch if the order has one, else the
+   * restaurant's isPrimary+isActive branch — Order.branchId is frequently unset, see
+   * DispatchRepository.findPartnerAssignments' doc comment). Kept as its own lean coords-only
+   * query (not a shared query builder with dispatch's bulk assignments-list query) since the two
+   * call sites need different result shapes and dispatch's is a `findMany` that can't easily
+   * factor out a per-order sub-query.
+   */
+  async findPickupLocation(
+    orderId: string,
+  ): Promise<{ latitude: number; longitude: number } | null> {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        branch: { select: { latitude: true, longitude: true } },
+        restaurant: {
+          select: {
+            branches: {
+              where: { isPrimary: true, isActive: true },
+              take: 1,
+              select: { latitude: true, longitude: true },
+            },
+          },
+        },
+      },
+    });
+
+    const branch = order?.branch ?? order?.restaurant?.branches?.[0];
+
+    if (branch?.latitude == null || branch.longitude == null) {
+      return null;
+    }
+
+    return { latitude: branch.latitude, longitude: branch.longitude };
+  }
+
   async findRestaurantOrders(restaurantId: string) {
     return this.prisma.order.findMany({
       where: {
@@ -227,6 +277,33 @@ export class OrdersRepository extends BaseRepository {
 
       data: {
         status,
+      },
+    });
+
+    if (result.count === 0) {
+      return null;
+    }
+
+    return this.findOrderById(orderId);
+  }
+
+  /**
+   * Atomic compare-and-swap for "Continue with COD" (payment/order lifecycle Rule 4): only
+   * succeeds if the order is still PENDING and not already PAID at the moment of the update —
+   * closes the race where a Razorpay payment succeeds (webhook/client-verify/reconciliation) at
+   * the same moment the customer taps "Continue with COD". Mirrors transitionIfPending's
+   * compare-and-swap shape above.
+   */
+  async switchPaymentModeIfEligible(orderId: string, paymentMode: PaymentMode) {
+    const result = await this.prisma.order.updateMany({
+      where: {
+        id: orderId,
+        status: OrderStatus.PENDING,
+        paymentStatus: { not: PaymentStatus.PAID },
+      },
+
+      data: {
+        paymentMode,
       },
     });
 

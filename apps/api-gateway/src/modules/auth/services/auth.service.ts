@@ -27,7 +27,7 @@ import { TokenService } from './token.service';
 
 import { UserRole, AuditAction } from '@prisma/client';
 
-import { AuditService } from 'src/modules/audit/services/audit.service';
+import { AuditService } from '../../audit/services/audit.service';
 
 import { EmailService } from '../../email/services/email.service';
 

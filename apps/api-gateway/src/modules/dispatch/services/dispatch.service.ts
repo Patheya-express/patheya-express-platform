@@ -15,12 +15,13 @@ import {
 } from '@prisma/client';
 
 import { computeIsOpenNow } from '../../restaurants/utils/operating-hours.util';
+import { haversineDistanceKm } from '../../restaurants/utils/geo.util';
 
 import { DispatchRepository } from '../repositories/dispatch.repository';
 
 import { RealtimeService } from '../../realtime/services/realtime.service';
 
-import { QueueService } from 'src/infrastructure/queues/queue.service';
+import { QueueService } from '../../../infrastructure/queues/queue.service';
 
 import { PresenceService } from '../../presence/services/presence.service';
 import { EventBusService } from '../../../core/events/event-bus.service';
@@ -46,11 +47,43 @@ const DISPATCHABLE_ORDER_STATUSES: OrderStatus[] = [
  * redis-connection.config.ts). Read once at module load.
  */
 const DISPATCH_ASSIGNMENT_TIMEOUT_SECONDS = Number(
-  process.env.DISPATCH_ASSIGNMENT_TIMEOUT_SECONDS ?? 15,
+  // Radius dispatch revision (2026-09-16) — raised from 15s to 30s: 15s left no realistic margin
+  // for a push notification to render plus a human to notice and tap Accept, which was causing
+  // every offer to expire before it could be accepted (confirmed live — see the order stuck
+  // re-cycling through the same rider six times in a row, ~15s apart, none ever landing an
+  // accept in time).
+  process.env.DISPATCH_ASSIGNMENT_TIMEOUT_SECONDS ?? 30,
 );
 const DISPATCH_CYCLE_RETRY_SECONDS = Number(
   process.env.DISPATCH_CYCLE_RETRY_SECONDS ?? 15,
 );
+/**
+ * Progressive radius dispatch (2026-09-16 follow-up) — business rule: a rider is only offered an
+ * order if they're within one of these radii of the restaurant's pickup location, tried narrowest
+ * first. `assignOrder()` below tries 5km; if literally nobody online/eligible is within 5km, it
+ * widens to 7km within the SAME attempt (no extra wait), then 9km, then 10km, before falling back
+ * to the pre-existing cycle-retry mechanism if even 10km finds nobody. This is still a hard
+ * geofence, not a soft ranking preference — a rider outside the widest configured tier is never
+ * offered the order, no matter how few other candidates exist. See that filter's own comment for
+ * what happens when a coordinate is missing (never counts as "within range").
+ *
+ * Configured as one ordered, ascending list (not four separate env vars) because the tiers are a
+ * single business ladder, not four independently meaningful knobs — `DISPATCH_MAX_CYCLES`-style
+ * per-stage envs would let someone configure a non-monotonic or nonsensical ladder by accident.
+ * Non-finite/non-positive entries are dropped; an empty/unset override falls back to the default
+ * ladder entirely rather than dispatching with zero tiers.
+ */
+const DISPATCH_RADIUS_TIERS_METERS = (
+  process.env.DISPATCH_RADIUS_TIERS_METERS ?? '5000,7000,9000,10000'
+)
+  .split(',')
+  .map((value) => Number(value.trim()))
+  .filter((value) => Number.isFinite(value) && value > 0);
+
+const EFFECTIVE_DISPATCH_RADIUS_TIERS_METERS =
+  DISPATCH_RADIUS_TIERS_METERS.length > 0
+    ? DISPATCH_RADIUS_TIERS_METERS
+    : [5000, 7000, 9000, 10000];
 
 /**
  * Enterprise Dispatch Engine Enhancement — Phase 2 (unlimited dispatch mode). `0` means "never
@@ -73,25 +106,57 @@ const DISPATCH_UNLIMITED_MODE = DISPATCH_MAX_CYCLES_CONFIGURED === 0;
  * Haversine great-circle distance (already the formula used here since Phase 1 — Phase 3's audit
  * confirmed this was never a naive Euclidean lat/lng subtraction) — deterministic, no external
  * API/Maps SDK/network call. Phase 3 changed the unit from kilometers to meters (the literal
- * requirement) by switching the earth-radius constant; the algorithm itself is unchanged.
+ * requirement).
+ *
+ * 2026-09-16: delegates to the shared `haversineDistanceKm` (restaurants/utils/geo.util.ts) —
+ * already the single source of truth reused by TrackingService's ETA calculation — instead of a
+ * second private reimplementation of the same formula. Only the km→m unit conversion is local to
+ * this call site's own needs (its distance-based dispatch priority is expressed in meters).
  */
 function distanceMeters(
   from: { latitude: number; longitude: number },
   to: { latitude: number; longitude: number },
 ): number {
-  const EARTH_RADIUS_METERS = 6_371_000;
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  return (
+    haversineDistanceKm(
+      from.latitude,
+      from.longitude,
+      to.latitude,
+      to.longitude,
+    ) * 1000
+  );
+}
 
-  const dLat = toRad(to.latitude - from.latitude);
-  const dLon = toRad(to.longitude - from.longitude);
+/**
+ * Radius dispatch revision (2026-09-16) — resolves the one pickup location assignOrder() needs
+ * for both the 5km eligibility filter and priority ranking. Prefers the order's own branch
+ * (Order.branchId); falls back to the restaurant's primary/active branch (now fetched alongside
+ * it by DispatchRepository.findOrderById) for the same reason DispatchRepository.
+ * findPartnerAssignments already falls back the same way for the rider-facing pickup address —
+ * Order.branchId is frequently unresolved (~1 in 4 orders in practice), and without this fallback
+ * every one of those orders would have no confirmable pickup location and therefore, under the
+ * new hard radius rule, no eligible partner at all. Returns null only when neither source has
+ * coordinates.
+ */
+function resolveBranchCoordinates(order: {
+  branch: { latitude: number | null; longitude: number | null } | null;
+  restaurant?: {
+    branches?: Array<{ latitude: number | null; longitude: number | null }>;
+  } | null;
+}): { latitude: number; longitude: number } | null {
+  const direct = order.branch;
 
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(from.latitude)) *
-      Math.cos(toRad(to.latitude)) *
-      Math.sin(dLon / 2) ** 2;
+  if (direct?.latitude != null && direct?.longitude != null) {
+    return { latitude: direct.latitude, longitude: direct.longitude };
+  }
 
-  return EARTH_RADIUS_METERS * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  const fallback = order.restaurant?.branches?.[0];
+
+  if (fallback?.latitude != null && fallback?.longitude != null) {
+    return { latitude: fallback.latitude, longitude: fallback.longitude };
+  }
+
+  return null;
 }
 
 @Injectable()
@@ -284,9 +349,10 @@ export class DispatchService {
     // isVerified==true (both already enforced by findAvailablePartners()'s own WHERE clause,
     // reflected here in eligible_partner_count above), Redis presence==online, no ACTIVE
     // assignment (PENDING/ACCEPTED), and not already offered this order in the current cycle.
-    // Nothing else — no rejection cooldown, no per-minute notification cap, no recent-completion
-    // penalty. A partner with zero active assignments is immediately eligible for the next order.
-    const onlinePartners = partners.filter((partner) => {
+    // No rejection cooldown, no per-minute notification cap, no recent-completion penalty — a
+    // partner with zero active assignments is immediately eligible for the next order, full stop.
+    // Radius is deliberately NOT checked in this pass — see the tiered filter below.
+    const radiusEligibleCandidates = partners.filter((partner) => {
       if (onlineMap.get(partner.userId) !== true) {
         this.metrics.recordDispatchPartnerSkippedOffline();
         return false;
@@ -305,12 +371,76 @@ export class DispatchService {
       return true;
     });
 
+    // Progressive radius dispatch (2026-09-16 follow-up) — business rule: a rider must be within
+    // radius to be offered this order, replacing the old "missing/far coordinates just rank last"
+    // behavior with a hard geofence. Tried narrowest tier first (EFFECTIVE_DISPATCH_RADIUS_TIERS_METERS,
+    // default 5/7/9/10km); the first tier with at least one candidate wins, all within this same
+    // attempt — no separate wait between tiers, since widening the search isn't "give it time",
+    // it's "nobody nearby, look further". In correctly configured operation both sides always have
+    // coordinates (branch GPS set at onboarding, with the fallback above covering an unresolved
+    // Order.branchId; a rider is expected to report location while AVAILABLE) — either side still
+    // missing is a data gap this treats as "can't confirm in range" at every tier, not "give the
+    // benefit of the doubt".
+    const branchLocation = resolveBranchCoordinates(order);
+
+    let onlinePartners: typeof radiusEligibleCandidates = [];
+    let radiusMetersUsed: number | null = null;
+
+    for (const tierMeters of EFFECTIVE_DISPATCH_RADIUS_TIERS_METERS) {
+      const withinTier = radiusEligibleCandidates.filter((partner) => {
+        if (
+          !branchLocation ||
+          partner.currentLatitude == null ||
+          partner.currentLongitude == null
+        ) {
+          return false;
+        }
+
+        return (
+          distanceMeters(branchLocation, {
+            latitude: partner.currentLatitude,
+            longitude: partner.currentLongitude,
+          }) <= tierMeters
+        );
+      });
+
+      if (withinTier.length > 0) {
+        onlinePartners = withinTier;
+        radiusMetersUsed = tierMeters;
+        break;
+      }
+    }
+
+    if (radiusEligibleCandidates.length > 0) {
+      const excludedByDistance =
+        radiusEligibleCandidates.length - onlinePartners.length;
+
+      for (let i = 0; i < excludedByDistance; i += 1) {
+        this.metrics.recordDispatchPartnerSkippedDistance();
+      }
+
+      if (
+        radiusMetersUsed !== null &&
+        radiusMetersUsed > EFFECTIVE_DISPATCH_RADIUS_TIERS_METERS[0]
+      ) {
+        this.logger.log(
+          {
+            event: 'dispatch_radius_expanded',
+            orderId,
+            radiusMetersUsed,
+          },
+          'DispatchService',
+        );
+      }
+    }
+
     this.logger.log(
       {
         event: 'eligible_delivery_partners_filtered',
         orderId,
         eligible_partner_count: partners.length,
         filtered_partner_count: onlinePartners.length,
+        radiusMetersUsed,
         cycle: currentCycle,
       },
       'DispatchService',
@@ -428,12 +558,23 @@ export class DispatchService {
     // Enterprise Dispatch Engine Enhancement — Change 3 (deterministic priority ordering).
     // Replaces the previous onlinePartners[0] (implicit Postgres row order — findAvailablePartners()
     // has no ORDER BY) with an explicit, reproducible ranking. See selectPartnerByPriority's own
-    // doc comment for the exact criteria and tie-break order. Synchronous since Dispatch
-    // Simplification removed the last of its async data lookups (active workload, recent
-    // completions, idle time) — distance and rotation are both pure, in-memory computations.
+    // doc comment for the exact criteria and tie-break order.
+    //
+    // Radius dispatch revision (2026-09-16) reintroduces one async lookup — idle time — that
+    // Dispatch Simplification had previously removed; only queried when there's an actual choice
+    // to make (onlinePartners.length > 1 — selectPartnerByPriority short-circuits a single
+    // candidate without looking at either idle time or distance).
+    const lastAssignmentActivity =
+      onlinePartners.length > 1
+        ? await this.dispatchRepository.findLastAssignmentActivityForPartners(
+            onlinePartners.map((partner) => partner.id),
+          )
+        : new Map<string, Date>();
+
     const partner = this.selectPartnerByPriority(
-      order,
+      branchLocation,
       onlinePartners,
+      lastAssignmentActivity,
       orderId,
       currentCycle,
     );
@@ -550,39 +691,45 @@ export class DispatchService {
   }
 
   /**
-   * Dispatch Simplification — deterministic priority ordering, reduced to exactly what the
-   * business rule calls for and nothing else. `onlinePartners` has already passed every filter
-   * (online, verified, available, not attempted this cycle, no active assignment elsewhere) —
-   * this only decides which ONE of the survivors goes first:
-   *   1. Active assignment count — already guaranteed zero for everyone here by the
-   *      `findPartnerIdsWithActiveAssignment` filter above; there is nothing left to sort by for
-   *      this criterion, so no additional query/field exists for it (it would be a no-op tie every
-   *      time). Documented as satisfied by the filter, not as a redundant sort key.
-   *   2. Nearest to the order's pickup branch, in meters (missing coordinates on either side sort
-   *      last, never throw — an order with no branch on record, or a partner who's never reported
-   *      a location, still gets dispatched, just without a distance advantage).
-   *   3. Round-robin cycle rotation (unchanged from Phase 2 — see below).
-   * No lifetime/recent assignment counts, no idle time, no last-assignment timestamp — a rider
-   * with zero active assignments is immediately eligible for the next order, full stop.
+   * Radius dispatch revision (2026-09-16) — deterministic priority ordering among partners who
+   * have already passed every eligibility filter (online, verified, available, not attempted
+   * this cycle, no active assignment elsewhere, AND confirmed within whichever
+   * EFFECTIVE_DISPATCH_RADIUS_TIERS_METERS tier assignOrder() settled on — the progressive radius
+   * filter runs upstream, not here, so every `onlinePartners` entry reaching this method already
+   * has both coordinates and is within that tier). This only decides which ONE of the survivors
+   * goes first:
+   *   1. Longest idle first — the partner whose most recent DeliveryAssignment (any order, any
+   *      cycle, any status — findLastAssignmentActivityForPartners is unscoped to this order) is
+   *      furthest in the past. A partner with no assignment history at all has no entry in
+   *      `lastAssignmentActivity` and is treated as maximally idle (Infinity), ranked ahead of
+   *      anyone with real history — this is the explicit business requirement: prefer whoever has
+   *      gone longest without being offered work.
+   *   2. Nearest to the pickup location, in meters, as the tiebreaker for equal idle time (in
+   *      practice: two-or-more partners who have never had an assignment, all Infinity idle).
+   *   3. Partner id (ordinal, deterministic) — final tiebreaker, see below.
+   *   4. Round-robin cycle rotation (unchanged from Phase 2 — see below).
+   * No lifetime/recent assignment *counts*, no per-minute notification cap, no rejection cooldown
+   * — Dispatch Simplification's "zero active assignments == immediately eligible" rule is
+   * unchanged; idle time is a ranking signal among already-eligible partners, not a new
+   * eligibility gate (that's what the radius/online/active-assignment filters upstream are for).
    *
-   * Pre-merge review finding: `findAvailablePartners()` has no `ORDER BY`, so Postgres gives no
-   * ordering guarantee for its result — two partners genuinely tied on distance (the common case:
-   * both missing coordinates, both scoring `Infinity`) would otherwise fall back to whatever row
-   * order the query planner happened to produce, which can differ across deployments, replicas, or
-   * even repeated runs against the same data. `Array.sort` is stable, so a tie preserves *input*
-   * order — but that input order was never guaranteed in the first place. Partner `id` (a UUID,
-   * unique, with no behavioral/historical meaning of its own) is added as the final tiebreaker
-   * specifically to close that gap: it turns the sort into a true total order, independent of
-   * whatever order the database returned partners in. This is deliberately NOT a reintroduction of
-   * any removed business criterion — it carries no preference for any partner, only determinism.
+   * Pre-merge review finding (still applies): `findAvailablePartners()` has no `ORDER BY`, so
+   * Postgres gives no ordering guarantee for its result — two partners genuinely tied on both
+   * idle time and distance would otherwise fall back to whatever row order the query planner
+   * happened to produce, which can differ across deployments, replicas, or even repeated runs
+   * against the same data. `Array.sort` is stable, so a tie preserves *input* order — but that
+   * input order was never guaranteed in the first place. Partner `id` (a UUID, unique, with no
+   * behavioral/historical meaning of its own) is added as the final tiebreaker specifically to
+   * close that gap: it turns the sort into a true total order, independent of whatever order the
+   * database returned partners in. This carries no preference for any partner, only determinism.
    * Compared with plain `<`/`>` (safe but reads oddly for strings) rather than `localeCompare`
    * (ICU-dependent, and therefore not guaranteed identical across Node builds/environments) — the
    * one thing this must never do is vary by locale.
    *
-   * Round-robin cycle start (Phase 2, unchanged): after the distance+id ranking above, the ranked
-   * list is rotated by `(cycle - 1) % length` before picking index 0 — cycle 1 starts at the
-   * nearest partner exactly as before, cycle 2 starts one position further round the same ranked
-   * list, cycle 3 two positions further, and so on, wrapping around. Never randomized: the
+   * Round-robin cycle start (Phase 2, unchanged): after the idle+distance+id ranking above, the
+   * ranked list is rotated by `(cycle - 1) % length` before picking index 0 — cycle 1 starts at
+   * the top of the ranking exactly as before, cycle 2 starts one position further round the same
+   * ranked list, cycle 3 two positions further, and so on, wrapping around. Never randomized: the
    * rotation offset is a pure function of `cycle`, and `cycle` is itself already persisted on
    * `DeliveryAssignment` — so a worker restart mid-dispatch recomputes the exact same rotation
    * from the DB, no additional state needed. Rotation's own fairness guarantee ("cycle 2 starts
@@ -590,15 +737,14 @@ export class DispatchService {
    * deterministic — which is exactly what the id tiebreaker above now guarantees.
    */
   private selectPartnerByPriority(
-    order: {
-      branch: { latitude: number | null; longitude: number | null } | null;
-    },
+    branchLocation: { latitude: number; longitude: number } | null,
     onlinePartners: Array<{
       id: string;
       userId: string;
       currentLatitude: number | null;
       currentLongitude: number | null;
     }>,
+    lastAssignmentActivity: Map<string, Date>,
     orderId: string,
     cycle: number,
   ) {
@@ -606,33 +752,36 @@ export class DispatchService {
       return onlinePartners[0];
     }
 
-    const branchLat = order.branch?.latitude;
-    const branchLon = order.branch?.longitude;
-    const hasBranchLocation = branchLat != null && branchLon != null;
+    const now = Date.now();
 
     const scored = onlinePartners.map((partner) => {
-      const hasPartnerLocation =
-        partner.currentLatitude != null && partner.currentLongitude != null;
+      // Guaranteed non-null by the radius filter upstream in assignOrder() — every candidate
+      // reaching this method already has both coordinates and is within range. The Infinity
+      // fallback is defense-in-depth only, never expected to trigger.
+      const distance =
+        branchLocation &&
+        partner.currentLatitude != null &&
+        partner.currentLongitude != null
+          ? distanceMeters(branchLocation, {
+              latitude: partner.currentLatitude,
+              longitude: partner.currentLongitude,
+            })
+          : Number.POSITIVE_INFINITY;
 
-      let distance: number;
+      const lastActivity = lastAssignmentActivity.get(partner.id);
+      const idleMs = lastActivity
+        ? now - lastActivity.getTime()
+        : Number.POSITIVE_INFINITY;
 
-      if (hasBranchLocation && hasPartnerLocation) {
-        distance = distanceMeters(
-          { latitude: branchLat, longitude: branchLon },
-          {
-            latitude: partner.currentLatitude as number,
-            longitude: partner.currentLongitude as number,
-          },
-        );
-      } else {
-        distance = Number.POSITIVE_INFINITY;
-        this.metrics.recordDispatchPartnerSkippedDistance();
-      }
-
-      return { partner, distance };
+      return { partner, distance, idleMs };
     });
 
     scored.sort((a, b) => {
+      // Longest idle first — largest idleMs wins.
+      if (a.idleMs !== b.idleMs) {
+        return b.idleMs - a.idleMs;
+      }
+
       if (a.distance !== b.distance) {
         return a.distance - b.distance;
       }
@@ -926,6 +1075,25 @@ export class DispatchService {
 
           menuItem: undefined,
         })),
+
+        // Delivery Proof & Trust extension — derived boolean so the delivery app can resume the
+        // correct pickup-photo step purely from this response after a refresh/relogin, instead
+        // of trusting client-side memory. Raw relation array is not exposed on the DTO
+        // (AssignmentOrderSummaryDto only declares the boolean below).
+        pickupPhotoUploaded: (assignment.order.proofPhotos?.length ?? 0) > 0,
+
+        proofPhotos: undefined,
+
+        // Live-bug fix — order.branch is frequently unset (see
+        // DispatchRepository.findPartnerAssignments' doc comment); fall back to the restaurant's
+        // primary/active branch so the rider always has a pickup address/navigation target.
+        branch:
+          assignment.order.branch ?? assignment.order.restaurant?.branches?.[0],
+
+        restaurant: assignment.order.restaurant && {
+          ...assignment.order.restaurant,
+          branches: undefined,
+        },
       },
     }));
   }

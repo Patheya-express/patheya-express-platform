@@ -40,6 +40,13 @@ export class DeliveryAssignmentResponseDto {
   })
   expiresAt?: Date;
 
+  @ApiPropertyOptional({
+    example: '2026-05-29T10:05:00.000Z',
+    description:
+      'Set once the rider is confirmed (100m geofence, see ProofService.markRestaurantArrival) to be at the restaurant pickup location.',
+  })
+  arrivedAtRestaurantAt?: Date;
+
   @ApiProperty({
     example: '2026-05-29T10:00:00.000Z',
   })

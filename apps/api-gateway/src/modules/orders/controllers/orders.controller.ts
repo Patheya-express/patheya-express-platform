@@ -43,6 +43,7 @@ import {
   ApiOperation,
   ApiParam,
   ApiQuery,
+  ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
 
@@ -365,6 +366,34 @@ export class OrdersController {
       user,
     );
   }
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({
+    summary: 'Switch an unpaid ONLINE order to COD',
+    description:
+      "Payment/order lifecycle Rule 4 (\"Continue with COD\"). Only the order's own customer (or an admin) may call this, and only while the order is still PENDING and not already paid — the existing order is reused, never duplicated.",
+  })
+  @ApiParam({
+    name: 'id',
+  })
+  @ApiOkResponse({
+    description: 'Order switched to COD',
+    type: OrderResponseDto,
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'Order already paid, or no longer awaiting acceptance',
+  })
+  @Post(':id/switch-to-cod')
+  switchToCod(
+    @CurrentUser()
+    user: any,
+
+    @Param('id')
+    orderId: string,
+  ) {
+    return this.ordersService.switchToCod(orderId, user);
+  }
+
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: 'Start preparing order',

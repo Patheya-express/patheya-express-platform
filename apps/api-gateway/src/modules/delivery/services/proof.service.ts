@@ -14,6 +14,7 @@ import {
   DeliveryProofType,
   NotificationType,
   OrderStatus,
+  Prisma,
   UserRole,
 } from '@prisma/client';
 
@@ -24,11 +25,32 @@ import { RealtimeService } from '../../realtime/services/realtime.service';
 import { AuditService } from '../../audit/services/audit.service';
 import { NotificationsService } from '../../notifications/services/notifications.service';
 import { PasswordService } from '../../auth/services/password.service';
+import { StorageService } from '../../storage/services/storage.service';
+import { haversineDistanceKm } from '../../restaurants/utils/geo.util';
 
-import { AuthenticatedUser } from '../../../shared/authorization/order-access.util';
+import { PrismaService } from '../../../infrastructure/database/prisma.service';
+
+import type { UploadFile } from '../../../shared/types/upload-file.type';
+
+import {
+  AuthenticatedUser,
+  canAccessOrder,
+} from '../../../shared/authorization/order-access.util';
+
+/** Folder the pickup-parcel photo is uploaded under — mirrors the `<feature>/<subfolder>`
+ *  convention StorageService's other callers use (e.g. 'delivery-partners/documents'). */
+const PICKUP_PHOTO_FOLDER = 'delivery-proof/pickup';
 
 const OTP_EXPIRY_MINUTES = 10;
 const MAX_ATTEMPTS = 5;
+
+/**
+ * 2026-09-16 business-workflow revision — the single source of truth for the restaurant-arrival
+ * geofence radius (business requirement: rider must be within ~100m of the pickup location
+ * before "I've Arrived" is accepted). Centralized here rather than scattered across the
+ * controller/DTO/frontend as a bare literal.
+ */
+const ARRIVAL_RADIUS_METERS = 100;
 
 /** The order status each proof type must find the order in before an OTP can be generated for it — reuses the existing order-status state machine as the guard instead of tracking a separate "already verified" flag. */
 const REQUIRED_ORDER_STATUS: Record<DeliveryProofType, OrderStatus> = {
@@ -75,6 +97,8 @@ export class ProofService {
     private readonly auditService: AuditService,
     private readonly notificationsService: NotificationsService,
     private readonly passwordService: PasswordService,
+    private readonly storageService: StorageService,
+    private readonly prisma: PrismaService,
   ) {}
 
   async generatePickupOtp(orderId: string, user: AuthenticatedUser) {
@@ -119,6 +143,236 @@ export class ProofService {
     }
 
     return this.toStatusResponse(otp, order.status);
+  }
+
+  /**
+   * Mandatory pickup-parcel evidence (business requirement: pickup photo before pickup can
+   * complete). Write-once: a second call for the same order is rejected rather than replacing the
+   * evidence (see ProofRepository.createPhoto's doc comment) — a rider who wants to retake the
+   * photo does so client-side, before submitting. This row is what
+   * OrdersService.assertPhotoVerifiedForStatus checks before allowing OUT_FOR_DELIVERY, so it is
+   * the authoritative pickup-completion gate, not merely advisory.
+   */
+  async uploadPickupPhoto(
+    orderId: string,
+    file: UploadFile,
+    user: AuthenticatedUser,
+  ) {
+    const order = await this.ordersService.getOrderOwnership(orderId);
+
+    this.assertAssignedPartner(order, user);
+
+    if (order.status !== REQUIRED_ORDER_STATUS[DeliveryProofType.PICKUP]) {
+      throw new BadRequestException(
+        `A pickup photo can only be uploaded while the order is ${REQUIRED_ORDER_STATUS[DeliveryProofType.PICKUP]} (currently ${order.status})`,
+      );
+    }
+
+    const existing = await this.proofRepository.findPhoto(
+      orderId,
+      DeliveryProofType.PICKUP,
+    );
+
+    if (existing) {
+      throw new ConflictException(
+        'A pickup photo has already been submitted for this order',
+      );
+    }
+
+    const uploadResult = await this.storageService.uploadWithMetadata(
+      file,
+      PICKUP_PHOTO_FOLDER,
+    );
+
+    let photo;
+
+    try {
+      photo = await this.proofRepository.createPhoto({
+        orderId,
+        type: DeliveryProofType.PICKUP,
+        storageUrl: uploadResult.secureUrl ?? uploadResult.url,
+        fileName: file.originalname,
+        mimeType: file.mimetype,
+        sizeBytes: file.size,
+        uploadedById: user.userId,
+      });
+    } catch (error) {
+      if (this.isUniqueConstraintError(error)) {
+        throw new ConflictException(
+          'A pickup photo has already been submitted for this order',
+        );
+      }
+
+      throw error;
+    }
+
+    await this.auditService.log(
+      user.userId,
+      'DeliveryProofPhoto',
+      photo.id,
+      AuditAction.CREATE,
+      undefined,
+      { orderId, type: DeliveryProofType.PICKUP },
+    );
+
+    this.realtimeService.emitToOrder(orderId, 'pickup.photo.uploaded', {
+      orderId,
+      type: DeliveryProofType.PICKUP,
+      uploadedAt: photo.createdAt,
+    });
+
+    return this.toPhotoResponse(photo);
+  }
+
+  /** Readable by the order's customer, its assigned delivery partner, its restaurant staff, or an
+   *  admin — the same access rule Socket.IO room joins already use (canAccessOrder). */
+  async getPickupPhoto(orderId: string, user: AuthenticatedUser) {
+    const order = await this.ordersService.getOrderOwnership(orderId);
+
+    const allowed = await canAccessOrder(this.prisma, order, user);
+
+    if (!allowed) {
+      throw new ForbiddenException('You do not have access to this order');
+    }
+
+    const photo = await this.proofRepository.findPhoto(
+      orderId,
+      DeliveryProofType.PICKUP,
+    );
+
+    if (!photo) {
+      throw new NotFoundException(
+        'No pickup photo has been uploaded for this order',
+      );
+    }
+
+    return this.toPhotoResponse(photo);
+  }
+
+  /**
+   * 2026-09-16 business-workflow revision — the rider-facing "I've Arrived" action. The backend
+   * is authoritative: the rider's client-reported coordinates (the same trust model
+   * TrackingService.updateLocation already uses — this codebase has no independent
+   * location-attestation mechanism to layer on top) are validated server-side against the
+   * order's actual pickup coordinates (OrdersService.getPickupLocation) before the arrival is
+   * accepted, so a client cannot simply claim `arrived: true`. Idempotent: a rider who taps this
+   * twice (or whose request retries) gets the same success response back rather than an error —
+   * see ProofRepository.markArrival's conditional-update doc comment.
+   */
+  async markRestaurantArrival(
+    orderId: string,
+    latitude: number,
+    longitude: number,
+    user: AuthenticatedUser,
+  ) {
+    const order = await this.ordersService.getOrderOwnership(orderId);
+
+    this.assertAssignedPartner(order, user);
+
+    if (order.status !== OrderStatus.READY_FOR_PICKUP) {
+      throw new BadRequestException(
+        `Restaurant arrival can only be marked while the order is ${OrderStatus.READY_FOR_PICKUP} (currently ${order.status})`,
+      );
+    }
+
+    const assignment = await this.proofRepository.findActiveAssignmentForOrder(
+      orderId,
+      user.userId,
+    );
+
+    if (!assignment) {
+      throw new ForbiddenException(
+        'No active assignment for this order belongs to you',
+      );
+    }
+
+    if (!assignment.arrivedAtRestaurantAt) {
+      const pickupLocation =
+        await this.ordersService.getPickupLocation(orderId);
+
+      if (!pickupLocation) {
+        throw new BadRequestException(
+          'This order has no pickup location on record',
+        );
+      }
+
+      const distanceMeters =
+        haversineDistanceKm(
+          latitude,
+          longitude,
+          pickupLocation.latitude,
+          pickupLocation.longitude,
+        ) * 1000;
+
+      if (distanceMeters > ARRIVAL_RADIUS_METERS) {
+        throw new BadRequestException(
+          `You are ${Math.round(distanceMeters)}m from the restaurant — move within ${ARRIVAL_RADIUS_METERS}m to mark arrival`,
+        );
+      }
+    }
+
+    const updatedAssignment = await this.proofRepository.markArrival(
+      assignment.id,
+    );
+
+    await this.auditService.log(
+      user.userId,
+      'DeliveryAssignment',
+      updatedAssignment.id,
+      AuditAction.UPDATE,
+      undefined,
+      {
+        orderId,
+        arrivedAtRestaurantAt: updatedAssignment.arrivedAtRestaurantAt,
+      },
+    );
+
+    await this.notificationsService.createNotification(
+      order.customerId,
+      NotificationType.RIDER_ARRIVED_AT_RESTAURANT,
+      'Delivery partner arrived',
+      'Your delivery partner has arrived at the restaurant and will pick up your order shortly.',
+      { referenceType: 'ORDER', referenceId: orderId },
+    );
+
+    this.realtimeService.emitToOrder(
+      orderId,
+      'delivery.arrived_at_restaurant',
+      {
+        orderId,
+        arrivedAt: updatedAssignment.arrivedAtRestaurantAt,
+      },
+    );
+
+    return {
+      orderId,
+      arrivedAtRestaurantAt: updatedAssignment.arrivedAtRestaurantAt,
+    };
+  }
+
+  /** Lets the customer/restaurant/admin (or the rider themselves) check current arrival state —
+   *  mirrors getProofStatus's shape/authorization for the same reason: resumable after refresh
+   *  without relying on having caught the realtime event live. */
+  async getArrivalStatus(orderId: string, user: AuthenticatedUser) {
+    const order = await this.ordersService.getOrderOwnership(orderId);
+
+    const allowed = await canAccessOrder(this.prisma, order, user);
+
+    if (!allowed) {
+      throw new ForbiddenException('You do not have access to this order');
+    }
+
+    const assignment = order.deliveryPartnerId
+      ? await this.proofRepository.findAssignmentForOrder(
+          orderId,
+          order.deliveryPartnerId,
+        )
+      : null;
+
+    return {
+      orderId,
+      arrivedAtRestaurantAt: assignment?.arrivedAtRestaurantAt ?? null,
+    };
   }
 
   /** Generate also serves as regenerate — calling it again always overwrites the existing OTP and resets the attempt count. */
@@ -185,6 +439,26 @@ export class ProofService {
     const order = await this.ordersService.getOrderOwnership(orderId);
 
     this.assertAssignedPartner(order, user);
+
+    // Correctness/atomicity fix — must run before markVerified() below, not after. verify()'s
+    // OTP-verified write and the order-status transition it triggers are two separate steps (see
+    // this method's tail); OrdersService.assertPhotoVerifiedForStatus (the actual authoritative
+    // gate, checked again inside updateOrderStatus) would otherwise let the OTP get marked
+    // VERIFIED first and only then discover the missing photo, leaving the OTP permanently
+    // "already verified" while the order never advanced — a real bug found during live testing of
+    // this exact sequence, not a hypothetical.
+    if (type === DeliveryProofType.PICKUP) {
+      const photo = await this.proofRepository.findPhoto(
+        orderId,
+        DeliveryProofType.PICKUP,
+      );
+
+      if (!photo) {
+        throw new ForbiddenException(
+          `A pickup photo is required before this order can advance to ${OrderStatus.OUT_FOR_DELIVERY}`,
+        );
+      }
+    }
 
     const otp = await this.proofRepository.findOtp(orderId, type);
 
@@ -312,6 +586,37 @@ export class ProofService {
         "Only the order's assigned delivery partner can manage its proof OTPs",
       );
     }
+  }
+
+  private isUniqueConstraintError(error: unknown): boolean {
+    return (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === 'P2002'
+    );
+  }
+
+  private toPhotoResponse(photo: {
+    id: string;
+    orderId: string;
+    type: DeliveryProofType;
+    storageUrl: string;
+    fileName: string;
+    mimeType: string;
+    sizeBytes: number;
+    uploadedById: string;
+    createdAt: Date;
+  }) {
+    return {
+      id: photo.id,
+      orderId: photo.orderId,
+      type: photo.type,
+      storageUrl: photo.storageUrl,
+      fileName: photo.fileName,
+      mimeType: photo.mimeType,
+      sizeBytes: photo.sizeBytes,
+      uploadedById: photo.uploadedById,
+      createdAt: photo.createdAt,
+    };
   }
 
   private toStatusResponse(

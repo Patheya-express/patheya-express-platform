@@ -406,4 +406,324 @@ describe('OrdersService.placeOrder — idempotency', () => {
     expect(ordersRepository.createOrder).not.toHaveBeenCalled();
     expect(couponsService.releaseRedemption).not.toHaveBeenCalled();
   });
+
+  /**
+   * Regression coverage for the "tracker shows 'Your order' immediately after checkout" defect:
+   * OrdersRepository.createOrder/findOrderByIdempotencyKey now include `restaurant: { select: {
+   * name: true } }` (see their own doc comments), so every placeOrder() response path must expose
+   * `restaurantName` — the same field GET /orders/me already populates — without ever leaking the
+   * raw joined `restaurant` object itself.
+   */
+  describe('restaurant name in the response', () => {
+    it('exposes restaurantName (and only the name, not the raw restaurant object) for a freshly created order', async () => {
+      ordersRepository.createOrder.mockResolvedValue(
+        buildOrder({ restaurant: { name: 'Paradise Biryani' } }),
+      );
+
+      const order = await service.placeOrder('customer-1', buildDto());
+
+      expect(order.restaurantName).toBe('Paradise Biryani');
+      expect((order as any).restaurant).toBeUndefined();
+    });
+
+    it('exposes restaurantName on the fast-path idempotent replay', async () => {
+      ordersRepository.findOrderByIdempotencyKey.mockResolvedValue(
+        buildOrder({ id: 'order-existing', restaurant: { name: 'Paradise Biryani' } }),
+      );
+
+      const order = await service.placeOrder('customer-1', buildDto());
+
+      expect(order.restaurantName).toBe('Paradise Biryani');
+      expect((order as any).restaurant).toBeUndefined();
+    });
+
+    it('exposes restaurantName for the winner of a lost idempotency race', async () => {
+      const winner = buildOrder({
+        id: 'order-winner',
+        restaurant: { name: 'Paradise Biryani' },
+      });
+      ordersRepository.createOrder.mockRejectedValueOnce(buildUniqueConstraintError());
+      ordersRepository.findOrderByIdempotencyKey
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(winner);
+
+      const order = await service.placeOrder('customer-1', buildDto());
+
+      expect(order.restaurantName).toBe('Paradise Biryani');
+      expect((order as any).restaurant).toBeUndefined();
+    });
+
+    it('leaves restaurantName undefined rather than fabricating one when the order has no restaurant relation loaded', async () => {
+      ordersRepository.createOrder.mockResolvedValue(buildOrder());
+
+      const order = await service.placeOrder('customer-1', buildDto());
+
+      expect(order.restaurantName).toBeUndefined();
+    });
+  });
+});
+
+/**
+ * Payment/order lifecycle Rule 5 ("restaurant acceptance guard") — regression coverage for
+ * OrdersService.updateOrderStatus's assertPaymentEligibleForAcceptance: an ONLINE order must not
+ * reach CONFIRMED (the restaurant-acceptance transition) unless paymentStatus is PAID; COD never
+ * requires pre-payment. Tests use an ADMIN actor so assertOrderAccess/assertActorAllowedForStatus
+ * (identity/role checks, already covered elsewhere) pass trivially, isolating the payment check
+ * as the one thing under test — matching assertProofVerifiedForStatus's own admin-bypass design.
+ */
+describe('OrdersService.updateOrderStatus — payment eligibility for restaurant acceptance', () => {
+  let service: OrdersService;
+  let ordersRepository: {
+    findOrderById: jest.Mock;
+    updateOrderStatus: jest.Mock;
+    createStatusHistory: jest.Mock;
+  };
+  let eventBus: { publish: jest.Mock };
+  let realtimeService: { emitToOrder: jest.Mock };
+  const adminUser = { userId: 'admin-1', role: 'ADMIN' } as any;
+
+  function buildPendingOrder(overrides: Partial<any> = {}) {
+    return {
+      id: 'order-1',
+      customerId: 'customer-1',
+      restaurantId: 'restaurant-1',
+      deliveryPartnerId: null,
+      status: 'PENDING',
+      paymentMode: 'ONLINE',
+      paymentStatus: 'PENDING',
+      totalAmount: 220,
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    ordersRepository = {
+      findOrderById: jest.fn(),
+      updateOrderStatus: jest.fn().mockImplementation((_id, status) =>
+        Promise.resolve({ ...buildPendingOrder(), status }),
+      ),
+      createStatusHistory: jest.fn().mockResolvedValue(undefined),
+    };
+    eventBus = { publish: jest.fn().mockResolvedValue(undefined) };
+    realtimeService = { emitToOrder: jest.fn() };
+
+    service = new OrdersService(
+      {} as any, // prisma
+      ordersRepository as any,
+      eventBus as any,
+      {} as any, // deliveryService
+      {} as any, // paymentsService
+      {} as any, // restaurantsService
+      {} as any, // addressesService
+      realtimeService as any,
+      {} as any, // queueService
+      {} as any, // redisService
+      {} as any, // auditService
+      {} as any, // logger
+      {} as any, // pricingEngineService
+      {} as any, // couponsService
+    );
+  });
+
+  it('ONLINE + PENDING payment → acceptance is blocked', async () => {
+    ordersRepository.findOrderById.mockResolvedValue(
+      buildPendingOrder({ paymentMode: 'ONLINE', paymentStatus: 'PENDING' }),
+    );
+
+    await expect(
+      service.updateOrderStatus('order-1', { status: 'CONFIRMED' } as any, adminUser),
+    ).rejects.toThrow(ConflictException);
+
+    expect(ordersRepository.updateOrderStatus).not.toHaveBeenCalled();
+  });
+
+  it('ONLINE + FAILED payment → acceptance is blocked', async () => {
+    ordersRepository.findOrderById.mockResolvedValue(
+      buildPendingOrder({ paymentMode: 'ONLINE', paymentStatus: 'FAILED' }),
+    );
+
+    await expect(
+      service.updateOrderStatus('order-1', { status: 'CONFIRMED' } as any, adminUser),
+    ).rejects.toThrow(ConflictException);
+
+    expect(ordersRepository.updateOrderStatus).not.toHaveBeenCalled();
+  });
+
+  it('ONLINE + PAID → acceptance is allowed', async () => {
+    ordersRepository.findOrderById.mockResolvedValue(
+      buildPendingOrder({ paymentMode: 'ONLINE', paymentStatus: 'PAID' }),
+    );
+
+    const result = await service.updateOrderStatus(
+      'order-1',
+      { status: 'CONFIRMED' } as any,
+      adminUser,
+    );
+
+    expect(result.status).toBe('CONFIRMED');
+    expect(ordersRepository.updateOrderStatus).toHaveBeenCalledWith('order-1', 'CONFIRMED');
+  });
+
+  it('COD + PENDING payment → acceptance is allowed (COD never requires pre-payment)', async () => {
+    ordersRepository.findOrderById.mockResolvedValue(
+      buildPendingOrder({ paymentMode: 'COD', paymentStatus: 'PENDING' }),
+    );
+
+    const result = await service.updateOrderStatus(
+      'order-1',
+      { status: 'CONFIRMED' } as any,
+      adminUser,
+    );
+
+    expect(result.status).toBe('CONFIRMED');
+    expect(ordersRepository.updateOrderStatus).toHaveBeenCalledWith('order-1', 'CONFIRMED');
+  });
+
+  it('does not re-check payment eligibility for transitions other than CONFIRMED (e.g. PREPARING)', async () => {
+    ordersRepository.findOrderById.mockResolvedValue(
+      buildPendingOrder({ status: 'CONFIRMED', paymentMode: 'ONLINE', paymentStatus: 'PENDING' }),
+    );
+
+    const result = await service.updateOrderStatus(
+      'order-1',
+      { status: 'PREPARING' } as any,
+      adminUser,
+    );
+
+    expect(result.status).toBe('PREPARING');
+  });
+});
+
+/**
+ * Payment/order lifecycle Rule 4 ("Continue with COD") — regression coverage for
+ * OrdersService.switchToCod.
+ */
+describe('OrdersService.switchToCod', () => {
+  let service: OrdersService;
+  let ordersRepository: {
+    findOrderById: jest.Mock;
+    switchPaymentModeIfEligible: jest.Mock;
+  };
+  const owningCustomer = { userId: 'customer-1', role: 'CUSTOMER' } as any;
+  const otherCustomer = { userId: 'customer-2', role: 'CUSTOMER' } as any;
+  const admin = { userId: 'admin-1', role: 'ADMIN' } as any;
+
+  function buildPendingOnlineOrder(overrides: Partial<any> = {}) {
+    return {
+      id: 'order-1',
+      customerId: 'customer-1',
+      restaurantId: 'restaurant-1',
+      status: 'PENDING',
+      paymentMode: 'ONLINE',
+      paymentStatus: 'PENDING',
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    ordersRepository = {
+      findOrderById: jest.fn(),
+      switchPaymentModeIfEligible: jest.fn(),
+    };
+
+    service = new OrdersService(
+      {} as any,
+      ordersRepository as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+  });
+
+  it("switches the customer's own unpaid, still-PENDING ONLINE order to COD", async () => {
+    ordersRepository.findOrderById.mockResolvedValue(buildPendingOnlineOrder());
+    ordersRepository.switchPaymentModeIfEligible.mockResolvedValue(
+      buildPendingOnlineOrder({ paymentMode: 'COD' }),
+    );
+
+    const result = await service.switchToCod('order-1', owningCustomer);
+
+    expect(result.paymentMode).toBe('COD');
+    expect(ordersRepository.switchPaymentModeIfEligible).toHaveBeenCalledWith('order-1', 'COD');
+  });
+
+  it('reuses the same order — never creates a second one', async () => {
+    ordersRepository.findOrderById.mockResolvedValue(buildPendingOnlineOrder());
+    ordersRepository.switchPaymentModeIfEligible.mockResolvedValue(
+      buildPendingOnlineOrder({ paymentMode: 'COD' }),
+    );
+
+    const result = await service.switchToCod('order-1', owningCustomer);
+
+    expect(result.id).toBe('order-1');
+  });
+
+  it("rejects switching another customer's order", async () => {
+    ordersRepository.findOrderById.mockResolvedValue(buildPendingOnlineOrder());
+
+    await expect(service.switchToCod('order-1', otherCustomer)).rejects.toThrow();
+    expect(ordersRepository.switchPaymentModeIfEligible).not.toHaveBeenCalled();
+  });
+
+  it('allows an admin to switch a customer\'s order on their behalf', async () => {
+    ordersRepository.findOrderById.mockResolvedValue(buildPendingOnlineOrder());
+    ordersRepository.switchPaymentModeIfEligible.mockResolvedValue(
+      buildPendingOnlineOrder({ paymentMode: 'COD' }),
+    );
+
+    await expect(service.switchToCod('order-1', admin)).resolves.toBeDefined();
+  });
+
+  it('rejects switching an order that has already been paid online', async () => {
+    ordersRepository.findOrderById.mockResolvedValue(
+      buildPendingOnlineOrder({ paymentStatus: 'PAID' }),
+    );
+
+    await expect(service.switchToCod('order-1', owningCustomer)).rejects.toThrow(
+      ConflictException,
+    );
+    expect(ordersRepository.switchPaymentModeIfEligible).not.toHaveBeenCalled();
+  });
+
+  it('rejects switching an order that is no longer PENDING (already accepted)', async () => {
+    ordersRepository.findOrderById.mockResolvedValue(
+      buildPendingOnlineOrder({ status: 'CONFIRMED' }),
+    );
+
+    await expect(service.switchToCod('order-1', owningCustomer)).rejects.toThrow(
+      ConflictException,
+    );
+    expect(ordersRepository.switchPaymentModeIfEligible).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op (idempotent) when the order is already COD', async () => {
+    ordersRepository.findOrderById.mockResolvedValue(
+      buildPendingOnlineOrder({ paymentMode: 'COD' }),
+    );
+
+    const result = await service.switchToCod('order-1', owningCustomer);
+
+    expect(result.paymentMode).toBe('COD');
+    expect(ordersRepository.switchPaymentModeIfEligible).not.toHaveBeenCalled();
+  });
+
+  it('race safety: payment succeeds concurrently — the atomic write loses the race and the call is rejected rather than silently overwriting a now-paid order', async () => {
+    ordersRepository.findOrderById.mockResolvedValue(buildPendingOnlineOrder());
+    // Simulates OrdersRepository.switchPaymentModeIfEligible's compare-and-swap finding the order
+    // no longer eligible (e.g. markOrderPaid won the race) by the time the write actually runs.
+    ordersRepository.switchPaymentModeIfEligible.mockResolvedValue(null);
+
+    await expect(service.switchToCod('order-1', owningCustomer)).rejects.toThrow(
+      ConflictException,
+    );
+  });
 });

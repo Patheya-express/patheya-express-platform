@@ -4,16 +4,19 @@
 # default below so `docker compose up` runs with none, EXCEPT JWT_ACCESS_SECRET/JWT_REFRESH_SECRET,
 # whose defaults are literal placeholder text that api-gateway's own startup validation
 # (env.validation.ts) rejects in every environment — a real `.env.compose` with generated secrets
-# is not optional. Deliberately named `.env.compose`, not `.env`, so nothing relies on Compose's
-# own same-directory `.env` auto-discovery — every invocation must pass `--env-file` explicitly:
+# is not optional. BANK_ACCOUNT_ENCRYPTION_KEY's default is the same kind of placeholder, but it
+# only blocks the restaurant bank-account save/read endpoints, not boot, in development — see
+# env.validation.ts's own comment on that field. Deliberately named `.env.compose`, not `.env`, so
+# nothing relies on Compose's own same-directory `.env` auto-discovery — every invocation must pass
+# `--env-file` explicitly:
 #
 #   cp infrastructure/docker/.env.compose.example infrastructure/docker/.env.compose
 #   docker compose -f infrastructure/docker/docker-compose.yml --env-file infrastructure/docker/.env.compose up
 #
 # The frontend repo's `pnpm run setup`/`pnpm run dev` do all of the above automatically —
-# scaffolding this file, generating real local JWT secrets (idempotent, never printed, never
-# rotating an already-valid one), and always passing `--env-file` — see the frontend repo's
-# `tools/dev/DEVELOPMENT.md`'s "Local secrets (JWT)" section.
+# scaffolding this file, generating real local secrets (JWT + BANK_ACCOUNT_ENCRYPTION_KEY;
+# idempotent, never printed, never rotating an already-valid one), and always passing `--env-file`
+# — see the frontend repo's `tools/dev/DEVELOPMENT.md`'s "Local secrets" section.
 #
 # Prefer running the app natively against these containers instead (faster inner loop, see
 # scripts/start-dev.ps1 and docs/deployment.md)? Just omit the `api-gateway` service:
@@ -104,6 +107,7 @@ services:
       KAFKA_BROKER: kafka:9092
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev-access-secret-change-me}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-dev-refresh-secret-change-me}
+      BANK_ACCOUNT_ENCRYPTION_KEY: ${BANK_ACCOUNT_ENCRYPTION_KEY:-dev-bank-account-key-change-me}
       STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
       CUSTOMER_APP_URL: ${CUSTOMER_APP_URL:-http://localhost:4200}
       RESTAURANT_APP_URL: ${RESTAURANT_APP_URL:-http://localhost:4201}
@@ -161,7 +165,19 @@ services:
       KAFKA_BROKER: kafka:9092
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev-access-secret-change-me}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-dev-refresh-secret-change-me}
+      BANK_ACCOUNT_ENCRYPTION_KEY: ${BANK_ACCOUNT_ENCRYPTION_KEY:-dev-bank-account-key-change-me}
       STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
+      # RazorpayProvider (apps/api-gateway/src/modules/payments/providers/razorpay.provider.ts)
+      # constructs the Razorpay SDK client unconditionally in its constructor, so it's required at
+      # boot in every environment — see the api-gateway service's own comment on this above. The
+      # worker process pulls in PaymentsWorkerModule (payment-reconciliation.processor.ts), which
+      # transitively instantiates the same provider, so it needs the same dev-mode placeholders;
+      # without them the worker container crash-looped on every boot and never consumed any queue
+      # (dispatch-assignment jobs included), which is what left delivery partners with no
+      # assignments even though eligible READY_FOR_PICKUP orders existed.
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-dev-razorpay-key-id}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-dev-razorpay-key-secret}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-dev-razorpay-webhook-secret}
     depends_on:
       postgres:
         condition: service_healthy
