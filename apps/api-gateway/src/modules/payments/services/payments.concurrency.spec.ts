@@ -44,7 +44,12 @@ describe('PaymentsService.verifyPayment — concurrency (real database)', () => 
 
   afterAll(async () => {
     if (createdOrderIds.length > 0) {
-      // Payment rows cascade-delete with their Order (schema.prisma: onDelete: Cascade).
+      // P0-CASCADE-3: Order.payment is now onDelete: Restrict, so Payment rows must be deleted
+      // explicitly before their Order (this file creates Payment rows via createTestPayment but
+      // never a Refund, so no separate refund cleanup is needed here).
+      await prisma.payment.deleteMany({
+        where: { orderId: { in: createdOrderIds } },
+      });
       await prisma.order.deleteMany({ where: { id: { in: createdOrderIds } } });
     }
     if (createdUserIds.length > 0) {

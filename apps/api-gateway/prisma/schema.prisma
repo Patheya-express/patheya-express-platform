@@ -2010,9 +2010,9 @@ model Order {
 
   updatedAt DateTime @updatedAt
 
-  customer User @relation("CustomerOrders", fields: [customerId], references: [id], onDelete: Cascade)
+  customer User @relation("CustomerOrders", fields: [customerId], references: [id], onDelete: Restrict)
 
-  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Restrict)
 
   branch RestaurantBranch? @relation(fields: [branchId], references: [id])
 
@@ -2129,7 +2129,7 @@ model OrderStatusHistory {
 
   createdAt DateTime @default(now())
 
-  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
 
   @@index([orderId])
   @@index([status])
@@ -2699,7 +2699,7 @@ model Payment {
 
   updatedAt DateTime @updatedAt
 
-  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
 
   refunds Refund[]
 
@@ -2729,7 +2729,7 @@ model Refund {
 
   createdAt DateTime @default(now())
 
-  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
 
   @@index([paymentId])
   @@map("refunds")
@@ -2792,7 +2792,7 @@ model DeliveryAssignment {
 
   updatedAt DateTime @updatedAt
 
-  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
 
   deliveryPartner DeliveryPartner @relation(fields: [deliveryPartnerId], references: [id], onDelete: Cascade)
 
@@ -2884,7 +2884,7 @@ model DeliveryProofPhoto {
 
   createdAt DateTime @default(now())
 
-  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
 
   @@unique([orderId, type])
   @@map("delivery_proof_photos")

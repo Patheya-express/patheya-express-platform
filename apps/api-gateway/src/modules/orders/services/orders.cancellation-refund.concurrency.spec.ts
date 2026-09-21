@@ -80,8 +80,21 @@ describe('OrdersService cancellation — refund/coupon concurrency (real databas
 
   afterAll(async () => {
     if (createdOrderIds.length > 0) {
-      // Payment/Refund/CouponRedemption/DeliveryAssignment rows cascade-delete with their Order
-      // (schema.prisma: onDelete: Cascade throughout this chain).
+      // P0-CASCADE-3: Order.payment, Payment.refunds, and OrderStatusHistory.order are now
+      // onDelete: Restrict, so Refund, Payment, and OrderStatusHistory rows must be deleted
+      // explicitly, in dependency order, before their Order — every test here goes through the
+      // real OrdersService, which writes OrderStatusHistory on every transition. CouponRedemption
+      // is unaffected and still cascade-deletes with its Order; this file never creates a
+      // DeliveryAssignment or DeliveryProofPhoto, so no cleanup is needed for those models.
+      await prisma.refund.deleteMany({
+        where: { payment: { orderId: { in: createdOrderIds } } },
+      });
+      await prisma.payment.deleteMany({
+        where: { orderId: { in: createdOrderIds } },
+      });
+      await prisma.orderStatusHistory.deleteMany({
+        where: { orderId: { in: createdOrderIds } },
+      });
       await prisma.order.deleteMany({ where: { id: { in: createdOrderIds } } });
     }
     if (createdCouponIds.length > 0) {
