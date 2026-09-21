@@ -10,6 +10,13 @@
 *                           @Patheya-express/platform-team
 
 apps/api-gateway/           @Patheya-express/backend-team
+
+# ESLint-1/ESLint-1A: the ESLint debt-ratchet baseline gets its own explicit line (more specific
+# than the directory rule above, so it's visibly called out, not just implicitly covered) — any
+# diff to this file either shrinks it (remediation landing, expected and routine) or grows it (new
+# debt being explicitly grandfathered in, which must be justified in review). Same existing
+# backend-team placeholder as the rest of apps/api-gateway/ — not a new team.
+apps/api-gateway/.eslint-baseline.json   @Patheya-express/backend-team
 k8s/                        @Patheya-express/platform-team
 Dockerfile                  @Patheya-express/platform-team
 .dockerignore               @Patheya-express/platform-team
