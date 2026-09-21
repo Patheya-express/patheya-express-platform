@@ -32,7 +32,13 @@ permissions:
 jobs:
   quality:
     name: Lint, typecheck, test
-    uses: Patheya-express/patheya-express-platform/.github/workflows/reusable-node-quality.yml@main
+    # Relative path, not `@main` — this reusable workflow currently has exactly one caller (this
+    # job), so there's no cross-repo reuse to preserve, and a relative reference resolves to the
+    # calling ref's own copy of the file. `@main` would mean a PR that edits
+    # reusable-node-quality.yml (e.g. its checkout depth) could never actually exercise that edit
+    # in its own CI run — only after merging blind. See that file's own checkout step and this
+    # job's lint-command below for why the history depth matters.
+    uses: ./.github/workflows/reusable-node-quality.yml
     with:
       pnpm-version: "11.4.0"
       node-version: "24"
@@ -56,7 +62,18 @@ jobs:
       # actually unblocks this gate (it was already failing on `main` itself before this change,
       # on pre-existing debt unrelated to whatever a given PR touches) without weakening any rule,
       # widening any tolerance, or touching branch protection.
-      lint-command: "pnpm --filter api-gateway run lint:ratchet"
+      # On a pull_request, pass the actual PR base commit so the ratchet's rename detection
+      # (scripts/lint-ratchet/rename.ts's `git diff --name-status -M <base-ref>`) can tell "this
+      # baselined finding's file was renamed during the PR" apart from "this is a genuinely new
+      # file" — without it, a renamed file's pre-existing findings would incorrectly look like new
+      # debt. Requires reusable-node-quality.yml's checkout to fetch full history (see its own
+      # comment) and this job to call that workflow by relative path (see `uses:` above) so the
+      # fix applies within the same PR that introduces it. Omitted on push-to-main: that path's
+      # existing, already-verified no-base-ref behavior is unchanged — a push's "base" isn't a
+      # stable per-PR concept the same way, and nothing today depends on rename detection there.
+      lint-command: >-
+        pnpm --filter api-gateway run lint:ratchet --
+        ${{ github.event_name == 'pull_request' && format('--base-ref={0}', github.event.pull_request.base.sha) || '' }}
       typecheck-command: "pnpm --filter api-gateway run typecheck"
       test-command: "pnpm --filter api-gateway run test:cov"
 
