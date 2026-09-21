@@ -37,6 +37,7 @@ import { getAllowedSourceStatuses } from '../constants/payment-state-machine';
 import { GetAdminPaymentsQueryDto } from '../dto/get-admin-payments-query.dto';
 import { PaginatedAdminPaymentsResponseDto } from '../dto/paginated-admin-payments-response.dto';
 import { AdminPaymentResponseDto } from '../dto/admin-payment-response.dto';
+import { MetricsService } from '../../metrics/metrics.service';
 
 /** Amounts within a paisa of each other are treated as equal — avoids float-rounding false negatives. */
 const AMOUNT_TOLERANCE = 0.01;
@@ -135,6 +136,8 @@ export class PaymentsService {
     private readonly logger: AppLoggerService,
 
     private readonly auditService: AuditService,
+
+    private readonly metrics: MetricsService,
   ) {}
 
   async createPayment(orderId: string, amount: number, userId: string) {
@@ -735,6 +738,11 @@ export class PaymentsService {
 
       if (!actuallyRefunded) {
         await this.paymentsRepository.finalizeRefundFailure(refund.id);
+
+        // The one place this refund attempt is confirmed to have reached the terminal FAILED
+        // state — incremented here, not in either OrdersService catch block this ConflictException
+        // subsequently propagates through, so a single failed attempt is counted exactly once.
+        this.metrics.recordRefundFailed();
 
         this.logger.error(
           {

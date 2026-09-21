@@ -28,6 +28,7 @@ export interface FindAllOrdersForAdminParams {
   take: number;
   search?: string;
   status?: OrderStatus;
+  paymentStatus?: PaymentStatus;
   restaurantId?: string;
   customerId?: string;
   deliveryPartnerId?: string;
@@ -444,6 +445,10 @@ export class OrdersRepository extends BaseRepository {
 
     if (params.status) {
       where.status = params.status;
+    }
+
+    if (params.paymentStatus) {
+      where.paymentStatus = params.paymentStatus;
     }
 
     if (params.restaurantId) {

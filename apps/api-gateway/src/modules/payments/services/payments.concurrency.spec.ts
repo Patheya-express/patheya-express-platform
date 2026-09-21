@@ -115,6 +115,7 @@ describe('PaymentsService.verifyPayment — concurrency (real database)', () => 
     };
     const logger = { log: jest.fn(), error: jest.fn(), warn: jest.fn() };
     const auditService = { log: jest.fn().mockResolvedValue(undefined) };
+    const metrics = { recordRefundFailed: jest.fn() };
 
     const service = new PaymentsService(
       paymentsRepository,
@@ -124,9 +125,10 @@ describe('PaymentsService.verifyPayment — concurrency (real database)', () => 
       prisma,
       logger as any,
       auditService as any,
+      metrics as any,
     );
 
-    return { service, razorpayProvider, eventBus, queueService };
+    return { service, razorpayProvider, eventBus, queueService, metrics };
   }
 
   it('claimStatusTransition: N concurrent claims on the same PENDING payment — exactly one wins', async () => {

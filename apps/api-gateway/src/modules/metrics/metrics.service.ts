@@ -399,6 +399,19 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     registers: [this.registry],
   });
 
+  /** P0-FIN-1B — an attempted refund reaching PaymentsRepository's existing terminal FAILED
+   *  state (Refund.status = FAILED) was previously visible only via a structured log line
+   *  (`payment_refund_provider_call_failed`/`cancellation_refund_failed`), with no counter an
+   *  operator could alert on (2026-09 cancellation-refund review's operator-visibility finding).
+   *  Payment.status is left untouched on this path (unchanged, existing behavior) — see
+   *  PaymentsRepository.finalizeRefundFailure — so the payment remains safely retryable; this
+   *  counter is purely observational and does not participate in that state machine. */
+  private readonly refundsFailedTotal = new Counter({
+    name: 'patheya_refunds_failed_total',
+    help: 'Total refund attempts that reached the terminal FAILED state',
+    registers: [this.registry],
+  });
+
   // ---------------------------------------------------------------------------------------------
   // Socket.IO
   // ---------------------------------------------------------------------------------------------
@@ -1024,6 +1037,10 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     if (typeof refundDurationSeconds === 'number') {
       this.refundDurationSeconds.observe(refundDurationSeconds);
     }
+  }
+
+  recordRefundFailed(): void {
+    this.refundsFailedTotal.inc();
   }
 
   recordSocketConnection(): void {

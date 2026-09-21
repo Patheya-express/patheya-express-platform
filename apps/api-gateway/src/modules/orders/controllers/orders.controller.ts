@@ -602,13 +602,16 @@ export class OrdersController {
   @Roles(UserRole.ADMIN, UserRole.SUPER_ADMIN)
   @Patch(':id/admin-cancel')
   adminCancelOrder(
+    @CurrentUser()
+    user: any,
+
     @Param('id')
     id: string,
 
     @Body()
     dto: CancelOrderDto,
   ) {
-    return this.ordersService.adminCancelOrder(id, dto);
+    return this.ordersService.adminCancelOrder(id, dto, user.userId);
   }
 
   @ApiBearerAuth('JWT-auth')

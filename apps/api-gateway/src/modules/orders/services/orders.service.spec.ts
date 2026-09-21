@@ -727,3 +727,318 @@ describe('OrdersService.switchToCod', () => {
     );
   });
 });
+
+/**
+ * P0 fix (2026-09 production-readiness audit) — regression coverage for
+ * OrdersService.handleCancellationSideEffects, exercised through its two callers
+ * (updateOrderStatus's CANCELLED branch, and adminCancelOrder). refundOrder itself is
+ * spied/stubbed here (its own claim/reversal/coupon-release behavior is already covered by
+ * refundOrder's existing tests and by refund-integrity.concurrency.spec.ts) — what's under test
+ * is purely the new orchestration: does cancellation call it at all, only when appropriate, and
+ * does it correctly, never let a refund outcome fail the cancellation itself.
+ */
+describe('OrdersService — cancellation triggers refund/coupon release (P0 fix)', () => {
+  let service: OrdersService;
+  let ordersRepository: {
+    findOrderById: jest.Mock;
+    updateOrderStatus: jest.Mock;
+    createStatusHistory: jest.Mock;
+  };
+  let eventBus: { publish: jest.Mock };
+  let realtimeService: { emitToOrder: jest.Mock };
+  let couponsService: { releaseForOrder: jest.Mock };
+  let deliveryService: { releasePartnerFromDelivery: jest.Mock };
+  let logger: { log: jest.Mock; error: jest.Mock; warn: jest.Mock };
+
+  const customer = { userId: 'customer-1', role: 'CUSTOMER' } as any;
+
+  function buildOrder(overrides: Partial<any> = {}) {
+    return {
+      id: 'order-1',
+      customerId: 'customer-1',
+      restaurantId: 'restaurant-1',
+      deliveryPartnerId: null,
+      status: 'CONFIRMED',
+      paymentMode: 'ONLINE',
+      paymentStatus: 'PAID',
+      totalAmount: 300,
+      placedAt: new Date(),
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    ordersRepository = {
+      findOrderById: jest.fn(),
+      updateOrderStatus: jest.fn().mockImplementation((_id, status) =>
+        Promise.resolve({ ...buildOrder(), status }),
+      ),
+      createStatusHistory: jest.fn().mockResolvedValue(undefined),
+    };
+    eventBus = { publish: jest.fn().mockResolvedValue(undefined) };
+    realtimeService = { emitToOrder: jest.fn() };
+    couponsService = {
+      releaseForOrder: jest.fn().mockResolvedValue(undefined),
+    };
+    deliveryService = {
+      releasePartnerFromDelivery: jest.fn().mockResolvedValue(undefined),
+    };
+    logger = { log: jest.fn(), error: jest.fn(), warn: jest.fn() };
+
+    service = new OrdersService(
+      {} as any, // prisma
+      ordersRepository as any,
+      eventBus as any,
+      deliveryService as any,
+      {} as any, // paymentsService
+      {} as any, // restaurantsService
+      {} as any, // addressesService
+      realtimeService as any,
+      {} as any, // queueService
+      {} as any, // redisService
+      {} as any, // auditService
+      logger as any,
+      {} as any, // pricingEngineService
+      couponsService as any,
+    );
+  });
+
+  /** Chains one mockResolvedValueOnce per findOrderById call, in call order, for readability —
+   *  handleCancellationSideEffects re-reads the order (status check, and again inside the
+   *  refundOrder catch block on a ConflictException), so most cancellation flows call
+   *  findOrderById 2-3 times with intentionally different snapshots at each point. */
+  function mockOrderReads(...orders: any[]) {
+    orders.forEach((order) =>
+      ordersRepository.findOrderById.mockResolvedValueOnce(order),
+    );
+  }
+
+  describe('customer/restaurant cancellation (updateOrderStatus)', () => {
+    it('PAID order: triggers refundOrder with the cancellation reason and releases the coupon (Invariant A/D)', async () => {
+      mockOrderReads(
+        buildOrder({ status: 'CONFIRMED', paymentStatus: 'PAID' }), // initial read (pre-write, validates the transition)
+        buildOrder({ status: 'CANCELLED', paymentStatus: 'PAID' }), // re-check at the top of handleCancellationSideEffects
+      );
+      const refundSpy = jest
+        .spyOn(service, 'refundOrder')
+        .mockResolvedValue({} as any);
+
+      await service.updateOrderStatus(
+        'order-1',
+        { status: 'CANCELLED', reason: 'changed my mind' } as any,
+        customer,
+      );
+
+      expect(couponsService.releaseForOrder).toHaveBeenCalledWith('order-1');
+      expect(refundSpy).toHaveBeenCalledWith(
+        'order-1',
+        { reason: 'changed my mind' },
+        'customer-1',
+      );
+    });
+
+    it('unpaid (PENDING) order: releases the coupon but never attempts a refund (Invariant E)', async () => {
+      mockOrderReads(
+        buildOrder({ status: 'PENDING', paymentStatus: 'PENDING' }),
+        buildOrder({ status: 'CANCELLED', paymentStatus: 'PENDING' }),
+      );
+      const refundSpy = jest.spyOn(service, 'refundOrder');
+
+      await service.updateOrderStatus(
+        'order-1',
+        { status: 'CANCELLED' } as any,
+        customer,
+      );
+
+      expect(couponsService.releaseForOrder).toHaveBeenCalledWith('order-1');
+      expect(refundSpy).not.toHaveBeenCalled();
+    });
+
+    it('COD order that was never paid: no refund attempted (Invariant E)', async () => {
+      mockOrderReads(
+        buildOrder({
+          status: 'PENDING',
+          paymentMode: 'COD',
+          paymentStatus: 'PENDING',
+        }),
+        buildOrder({
+          status: 'CANCELLED',
+          paymentMode: 'COD',
+          paymentStatus: 'PENDING',
+        }),
+      );
+      const refundSpy = jest.spyOn(service, 'refundOrder');
+
+      await service.updateOrderStatus(
+        'order-1',
+        { status: 'CANCELLED' } as any,
+        customer,
+      );
+
+      expect(refundSpy).not.toHaveBeenCalled();
+    });
+
+    it('cancellation still succeeds when refundOrder rejects with a genuine provider failure, and the failure is logged (Invariant C)', async () => {
+      mockOrderReads(
+        buildOrder({ status: 'CONFIRMED', paymentStatus: 'PAID' }), // initial read
+        buildOrder({ status: 'CANCELLED', paymentStatus: 'PAID' }), // status re-check — still cancelled
+        buildOrder({ status: 'CANCELLED', paymentStatus: 'PAID' }), // re-read after the failed claim — still PAID, not REFUNDED
+      );
+      jest
+        .spyOn(service, 'refundOrder')
+        .mockRejectedValue(
+          new ConflictException(
+            'Refund could not be processed by the payment provider — it is safe to retry',
+          ),
+        );
+
+      const result = await service.updateOrderStatus(
+        'order-1',
+        { status: 'CANCELLED' } as any,
+        customer,
+      );
+
+      expect(result.status).toBe('CANCELLED');
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'cancellation_refund_failed' }),
+        undefined,
+        'OrdersService',
+      );
+    });
+
+    it('cancellation still succeeds, without an error log, when refundOrder loses the race to an already-completed refund (Invariant B/G)', async () => {
+      mockOrderReads(
+        buildOrder({ status: 'CONFIRMED', paymentStatus: 'PAID' }), // initial read
+        buildOrder({ status: 'CANCELLED', paymentStatus: 'PAID' }), // status re-check — still cancelled
+        buildOrder({ status: 'CANCELLED', paymentStatus: 'REFUNDED' }), // re-read shows a concurrent winner already refunded it
+      );
+      jest
+        .spyOn(service, 'refundOrder')
+        .mockRejectedValue(
+          new ConflictException(
+            'This order has already been refunded, or has no paid balance to refund',
+          ),
+        );
+
+      const result = await service.updateOrderStatus(
+        'order-1',
+        { status: 'CANCELLED' } as any,
+        customer,
+      );
+
+      expect(result.status).toBe('CANCELLED');
+      expect(logger.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'cancellation_refund_already_processed',
+        }),
+        'OrdersService',
+      );
+      expect(logger.error).not.toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'cancellation_refund_failed' }),
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it('a coupon-release failure is logged but never blocks cancellation or the refund attempt', async () => {
+      mockOrderReads(
+        buildOrder({ status: 'CONFIRMED', paymentStatus: 'PAID' }),
+        buildOrder({ status: 'CANCELLED', paymentStatus: 'PAID' }),
+      );
+      couponsService.releaseForOrder.mockRejectedValue(new Error('db hiccup'));
+      const refundSpy = jest
+        .spyOn(service, 'refundOrder')
+        .mockResolvedValue({} as any);
+
+      const result = await service.updateOrderStatus(
+        'order-1',
+        { status: 'CANCELLED' } as any,
+        customer,
+      );
+
+      expect(result.status).toBe('CANCELLED');
+      expect(refundSpy).toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'cancellation_coupon_release_failed',
+        }),
+        undefined,
+        'OrdersService',
+      );
+    });
+
+    it("lost the race to a different, non-cancelled transition: no refund and no coupon release, even though this caller's own local check saw PAID (Invariant H — closes the gap TEST 3 targets)", async () => {
+      mockOrderReads(
+        buildOrder({ status: 'CONFIRMED', paymentStatus: 'PAID' }), // initial read — passes CONFIRMED -> CANCELLED validation
+        buildOrder({ status: 'PREPARING', paymentStatus: 'PAID' }), // by the time the re-check runs, a concurrent restaurant-accept write won last
+      );
+      const refundSpy = jest.spyOn(service, 'refundOrder');
+
+      await service.updateOrderStatus(
+        'order-1',
+        { status: 'CANCELLED' } as any,
+        customer,
+      );
+
+      expect(refundSpy).not.toHaveBeenCalled();
+      expect(couponsService.releaseForOrder).not.toHaveBeenCalled();
+      expect(logger.log).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'cancellation_side_effects_skipped_status_changed',
+          currentStatus: 'PREPARING',
+        }),
+        'OrdersService',
+      );
+    });
+  });
+
+  describe('admin cancellation (adminCancelOrder)', () => {
+    it('PAID order cancelled by admin: triggers the same refund + coupon release, attributed to the acting admin', async () => {
+      mockOrderReads(
+        buildOrder({
+          status: 'OUT_FOR_DELIVERY',
+          paymentStatus: 'PAID',
+          deliveryPartnerId: 'partner-1',
+        }),
+        buildOrder({
+          status: 'CANCELLED',
+          paymentStatus: 'PAID',
+          deliveryPartnerId: 'partner-1',
+        }),
+      );
+      const refundSpy = jest
+        .spyOn(service, 'refundOrder')
+        .mockResolvedValue({} as any);
+
+      await service.adminCancelOrder(
+        'order-1',
+        { reason: 'restaurant closed' },
+        'admin-1',
+      );
+
+      expect(deliveryService.releasePartnerFromDelivery).toHaveBeenCalledWith(
+        'partner-1',
+        'order-1',
+      );
+      expect(couponsService.releaseForOrder).toHaveBeenCalledWith('order-1');
+      expect(refundSpy).toHaveBeenCalledWith(
+        'order-1',
+        { reason: 'restaurant closed' },
+        'admin-1',
+      );
+    });
+
+    it('unpaid order cancelled by admin: releases the coupon but never attempts a refund', async () => {
+      mockOrderReads(
+        buildOrder({ status: 'PENDING', paymentStatus: 'PENDING' }),
+        buildOrder({ status: 'CANCELLED', paymentStatus: 'PENDING' }),
+      );
+      const refundSpy = jest.spyOn(service, 'refundOrder');
+
+      await service.adminCancelOrder('order-1', {}, 'admin-1');
+
+      expect(refundSpy).not.toHaveBeenCalled();
+      expect(couponsService.releaseForOrder).toHaveBeenCalledWith('order-1');
+    });
+  });
+});
