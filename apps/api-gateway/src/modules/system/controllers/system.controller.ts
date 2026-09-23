@@ -1,5 +1,7 @@
 import { Controller, Get, Param } from '@nestjs/common';
 
+import { ApiOperation } from '@nestjs/swagger';
+
 import { RedisService } from '../../../infrastructure/redis/redis.service';
 import { QueueService } from '../../../infrastructure/queues/queue.service';
 import { PresenceService } from '../../presence/services/presence.service';
@@ -13,6 +15,7 @@ export class SystemController {
   ) {}
 
   @Get('redis-test')
+  @ApiOperation({ summary: 'Redis connectivity smoke test' })
   async testRedis() {
     await this.redisService.set(
       'test',
@@ -31,6 +34,7 @@ export class SystemController {
     };
   }
   @Get('queue-test')
+  @ApiOperation({ summary: 'BullMQ queue connectivity smoke test' })
   async queueTest() {
     await this.queueService.addNotificationJob({
       message: 'Hello Queue',
@@ -41,6 +45,7 @@ export class SystemController {
     };
   }
   @Get('queue-health')
+  @ApiOperation({ summary: 'Queue module load status' })
   async queueHealth() {
     return {
       success: true,
@@ -49,6 +54,9 @@ export class SystemController {
     };
   }
   @Get('presence-test/:partnerId')
+  @ApiOperation({
+    summary: 'Presence status smoke test for a delivery partner',
+  })
   async presenceTest(
     @Param('partnerId')
     id: string,

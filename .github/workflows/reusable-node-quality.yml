@@ -81,7 +81,14 @@ jobs:
       JWT_ACCESS_SECRET: ci-only-placeholder-access-secret
       JWT_REFRESH_SECRET: ci-only-placeholder-refresh-secret
     steps:
+      # Full history, not the default shallow depth-1 clone — a caller's lint-command may need to
+      # do a base-ref-relative `git diff` (e.g. the backend's ESLint ratchet rename detection,
+      # scripts/lint-ratchet/rename.ts). That code already fails safe on a missing/unresolvable
+      # ref (falls through to "no renames detected", never a crash or a false pass), but it can
+      # only ever detect anything real if the base commit is actually present locally.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: Patheya-express/patheya-express-platform/.github/actions/setup-pnpm-node@main
         with:

@@ -60,8 +60,16 @@ describe('Refund integrity — concurrency (real database)', () => {
 
   afterAll(async () => {
     if (createdOrderIds.length > 0) {
-      // Payment/Refund/CouponRedemption rows cascade-delete with their Order/Payment
-      // (schema.prisma: onDelete: Cascade throughout this chain).
+      // P0-CASCADE-3: Order.payment and Payment.refunds are now onDelete: Restrict (financial
+      // records must never disappear as a side effect of deleting their parent), so Refund and
+      // Payment rows must be deleted explicitly, in dependency order, before their Order —
+      // CouponRedemption is unaffected and still cascade-deletes with its Order.
+      await prisma.refund.deleteMany({
+        where: { payment: { orderId: { in: createdOrderIds } } },
+      });
+      await prisma.payment.deleteMany({
+        where: { orderId: { in: createdOrderIds } },
+      });
       await prisma.order.deleteMany({ where: { id: { in: createdOrderIds } } });
     }
     if (createdCouponIds.length > 0) {

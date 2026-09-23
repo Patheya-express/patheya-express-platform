@@ -1401,6 +1401,10 @@ export class OrdersService {
       }
     }
 
+    if (dto.status === OrderStatus.CANCELLED) {
+      await this.handleCancellationSideEffects(order, dto.reason, user.userId);
+    }
+
     return updatedOrder;
   }
 
@@ -1537,6 +1541,8 @@ export class OrdersService {
 
       status: query.status,
 
+      paymentStatus: query.paymentStatus,
+
       restaurantId: query.restaurantId,
 
       customerId: query.customerId,
@@ -1562,7 +1568,11 @@ export class OrdersService {
   }
 
   /** Admin-only override of the customer/restaurant-facing cancel — allows cancelling from any non-terminal status. */
-  async adminCancelOrder(orderId: string, dto: CancelOrderDto) {
+  async adminCancelOrder(
+    orderId: string,
+    dto: CancelOrderDto,
+    actorId: string,
+  ) {
     const order = await this.ordersRepository.findOrderById(orderId);
 
     if (!order) {
@@ -1599,6 +1609,8 @@ export class OrdersService {
       );
     }
 
+    await this.handleCancellationSideEffects(order, dto.reason, actorId);
+
     return updatedOrder;
   }
 
@@ -1634,6 +1646,135 @@ export class OrdersService {
     }
 
     return updatedOrder;
+  }
+
+  /**
+   * P0 fix (2026-09 production-readiness audit — "a paid order can be cancelled through the
+   * normal cancellation path without the existing refund workflow ever running"). Called from
+   * both cancellation entry points — updateOrderStatus (customer/restaurant path, status ===
+   * CANCELLED) and adminCancelOrder — so there is exactly one implementation of "what a
+   * cancellation must do to money/coupons", not two.
+   *
+   * Coupon release is unconditional: Invariant D applies regardless of payment status (an unpaid
+   * cancelled order can still have reserved a coupon redemption), and CouponsService.
+   * releaseForOrder is already a no-op both when the order used no coupon and when the
+   * redemption was already released (P2025-safe) — so calling it here even when refundOrder below
+   * will also call it internally is a harmless second no-op, not a double-release.
+   *
+   * Refund is only attempted when the pre-cancellation snapshot shows PAID — a PENDING/COD order
+   * never captured any money, so there is nothing for the existing refund workflow to do
+   * (Invariant E). When it does apply, this delegates entirely to refundOrder: no second
+   * Razorpay call, no second claim/reversal implementation. refundOrder's own atomic
+   * PAID -> REFUNDED claim (OrdersRepository.claimPaymentStatusTransition) is what makes two
+   * concurrent cancellations of the same order, or a cancellation racing an explicit admin
+   * refund, resolve to exactly one refund (Invariants B/G).
+   *
+   * Every failure here — including a genuine provider error — is logged and swallowed rather
+   * than propagated to the cancel caller. By the time this runs, the order's status write has
+   * already committed: the order IS cancelled, so raising an exception here would misreport a
+   * successful cancellation as a failed HTTP request. refundOrder can throw ConflictException for
+   * several distinct reasons (lost the order-level claim outright, or won it but the payment-level
+   * attempt itself then failed and was reverted) — rather than pattern-matching error messages,
+   * the order's actual post-attempt paymentStatus is re-read to tell them apart: REFUNDED means
+   * some caller (possibly this one, possibly a concurrent winner) genuinely completed the refund,
+   * a benign idempotent outcome; anything else means the attempt did not land, which is logged at
+   * error level for operator visibility. Either way, a real failure is never silently lost:
+   * refundOrder's own catch block reverts REFUNDED -> PAID before rethrowing (Invariant C — the
+   * order is never left falsely showing as refunded), and the refund remains safely retryable
+   * afterward via the existing admin PATCH /orders/:id/refund endpoint.
+   *
+   * Re-verifies the order is still actually CANCELLED before touching money or the coupon.
+   * ordersRepository.updateOrderStatus is a plain unconditional write (no compare-and-swap —
+   * a separately tracked, pre-existing limitation this fix does not take on), so a genuinely
+   * concurrent, different valid transition for the same order (e.g. the restaurant accepting it
+   * at the same instant) can still win the last write after this cancellation's own write already
+   * happened. Firing a refund or releasing a coupon for an order that turns out not to be
+   * cancelled would be wrong regardless of how that came about — this fresh read is the minimal
+   * guard that keeps this new code correct without generalizing a fix for that pre-existing race.
+   */
+  private async handleCancellationSideEffects(
+    order: { id: string; paymentStatus: PaymentStatus },
+    reason: string | undefined,
+    actorId: string,
+  ): Promise<void> {
+    const current = await this.ordersRepository.findOrderById(order.id);
+
+    if (current?.status !== OrderStatus.CANCELLED) {
+      this.logger.log(
+        {
+          event: 'cancellation_side_effects_skipped_status_changed',
+          orderId: order.id,
+          currentStatus: current?.status,
+        },
+        'OrdersService',
+      );
+
+      return;
+    }
+
+    try {
+      await this.couponsService.releaseForOrder(order.id);
+    } catch (error) {
+      this.logger.error(
+        {
+          event: 'cancellation_coupon_release_failed',
+          orderId: order.id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        undefined,
+        'OrdersService',
+      );
+    }
+
+    if (order.paymentStatus !== PaymentStatus.PAID) {
+      return;
+    }
+
+    try {
+      await this.refundOrder(
+        order.id,
+        { reason: reason ?? 'Order cancelled' },
+        actorId,
+      );
+
+      this.logger.log(
+        {
+          event: 'cancellation_refund_triggered',
+          orderId: order.id,
+          actorId,
+        },
+        'OrdersService',
+      );
+    } catch (error) {
+      if (error instanceof ConflictException) {
+        const current = await this.ordersRepository.findOrderById(order.id);
+
+        if (current?.paymentStatus === PaymentStatus.REFUNDED) {
+          // Some caller — possibly a concurrent cancellation/refund request for this same order —
+          // already completed the refund by the time this one's claim resolved. Idempotent,
+          // expected outcome; nothing more to do.
+          this.logger.log(
+            {
+              event: 'cancellation_refund_already_processed',
+              orderId: order.id,
+            },
+            'OrdersService',
+          );
+
+          return;
+        }
+      }
+
+      this.logger.error(
+        {
+          event: 'cancellation_refund_failed',
+          orderId: order.id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        undefined,
+        'OrdersService',
+      );
+    }
   }
 
   /**
