@@ -31,7 +31,12 @@ runs:
   using: composite
   steps:
     - name: Trivy scan (SARIF)
-      uses: aquasecurity/trivy-action@0.28.0
+      # v0.36.0, not 0.28.0: the action has only ever published `v`-prefixed tags (one stray
+      # exception, `0.35.0`, doesn't cover this version either) — `@0.28.0` never resolved to
+      # anything, so every backend-release run's publish job failed here before ever reaching the
+      # actual Docker build/push/sign steps. Confirmed no `0.28.0` (bare) tag has ever existed via
+      # the action repo's own tag list; `v0.36.0` is its current latest release.
+      uses: aquasecurity/trivy-action@v0.36.0
       with:
         scan-type: image
         image-ref: ${{ inputs.image-ref }}
@@ -48,7 +53,7 @@ runs:
         category: ${{ inputs.sarif-category }}
 
     - name: Trivy scan (quality gate)
-      uses: aquasecurity/trivy-action@0.28.0
+      uses: aquasecurity/trivy-action@v0.36.0
       with:
         scan-type: image
         image-ref: ${{ inputs.image-ref }}
