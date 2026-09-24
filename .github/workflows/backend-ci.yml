@@ -16,6 +16,12 @@ on:
       - "pnpm-workspace.yaml"
       - "package.json"
       - ".github/workflows/backend-ci.yml"
+      # P1-DX-3J: composite actions this workflow (and backend-release.yml, which reuses the same
+      # ones) consumes — PR #25 demonstrated a fix scoped to just one of these (trivy-scan) never
+      # triggered backend-ci at all, leaving the PR permanently "unstable" against the ruleset's
+      # required checks (none of which could ever post a result) despite being a correct, isolated
+      # fix. See .github/actions/*/action.yml for the full set this covers.
+      - ".github/actions/**"
   push:
     branches: [main]
     paths:
@@ -25,6 +31,7 @@ on:
       - "pnpm-lock.yaml"
       - "pnpm-workspace.yaml"
       - "package.json"
+      - ".github/actions/**"
 
 permissions:
   contents: read
