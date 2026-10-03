@@ -59,7 +59,18 @@ function normalizeOrigin(origin: string): string {
   return origin.replace(/\/+$/, '');
 }
 
-function buildRealtimeCorsOrigin(
+/** Same parsing as `configuration.ts`'s `cors.extraAllowedOrigins` (comma-separated, trimmed,
+ *  empties dropped) — the REST allowlist already honors this list; without it here, origins added
+ *  through it (e.g. the Capacitor apps' `https://localhost` / `capacitor://localhost` WebView
+ *  origins) would pass REST CORS but be rejected by the realtime gateway. */
+function parseExtraAllowedOrigins(): string[] {
+  return (process.env.EXTRA_ALLOWED_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+}
+
+export function buildRealtimeCorsOrigin(
   origin: string | undefined,
   callback: (err: Error | null, allow?: boolean) => void,
 ): void {
@@ -73,6 +84,7 @@ function buildRealtimeCorsOrigin(
     process.env.RESTAURANT_APP_URL,
     process.env.ADMIN_APP_URL,
     process.env.DELIVERY_APP_URL,
+    ...parseExtraAllowedOrigins(),
   ]
     .filter((value): value is string => Boolean(value))
     .map(normalizeOrigin);

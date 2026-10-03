@@ -7,6 +7,10 @@ name: backend-promote
 # staging/production at a tag that backend-release.yml already built, scanned, signed, and attested.
 # The PR itself is where the human review this phase requires actually happens; this workflow
 # cannot merge its own PR (no auto-merge input is ever passed here).
+#
+# Production is NOT a target of this workflow: Production runs on ECS Fargate, deployed by
+# backend-deploy-ecs.yml (ADR-004 as amended). This GitOps path remains only for the
+# non-Production overlays still present in patheya-express-gitops.
 
 on:
   workflow_dispatch:
@@ -14,7 +18,7 @@ on:
       environment:
         description: Target environment to promote into.
         type: choice
-        options: [staging, production]
+        options: [staging] # production -> backend-deploy-ecs.yml
         required: true
       image-tag:
         description: >

@@ -22,6 +22,14 @@ section below with a phase assignment, not left implicit.
 
 ---
 
+> **Production architecture update (2026-10-02).** Production (AWS account 512297269884,
+> ap-south-1) runs on **ECS Fargate + ALB + AWS WAF + Aurora PostgreSQL (via RDS Proxy) +
+> ElastiCache Redis (cluster mode disabled)**, with **S3 + CloudFront** for static web only. EKS,
+> Karpenter, ArgoCD, External Secrets, PgBouncer and the in-cluster observability/supply-chain
+> stacks are retired from Production. Development, QA and Staging remain on non-AWS hosting
+> (Render, Neon, Upstash, Vercel). Sections below that describe Kubernetes describe the superseded
+> design; see the dated amendments under ADR-001, ADR-004, ADR-005, ADR-007 and ADR-008.
+
 ## Executive Summary
 
 Patheya Express is a two-repository food-delivery platform (Angular frontend, NestJS backend)
@@ -662,6 +670,18 @@ taking on control-plane patching/HA ourselves for no corresponding benefit. EKS 
 manifests as literally reusable Git history, at the cost of EKS's per-cluster control-plane fee and
 more operational surface than Fargate-only ECS would have had.
 
+**Amendment (2026-10-02) — superseded for Production.** Production runs on **ECS Fargate**, not
+EKS. The Production EKS cluster's node groups failed on the account's then-5-vCPU EC2 quota
+(VcpuLimitExceeded), the cluster was destroyed on 2026-09-28, and a read-only audit concluded that
+the application — one modular NestJS monolith image serving API, worker and migration roles —
+does not need Kubernetes' scheduling, CRD or operator ecosystem at launch scale. ECS Fargate
+removes the control-plane cost, node patching, Karpenter, the in-cluster add-on stack and the
+private-endpoint access path (Tailscale/self-hosted runner) while keeping every runtime property
+the application relies on: private tasks, a single image, rolling deploys with automatic
+rollback, and autoscaling. Implementation: `patheya-express-terraform/environments/production/app`
+(modules/ecs in `ci_autoscaled` mode). Development/QA/Staging are not AWS-hosted (Render, Neon,
+Upstash, Vercel) and are unaffected.
+
 ### ADR-002: Why Aurora (not vanilla RDS PostgreSQL)
 
 **Problem**: need a managed PostgreSQL-compatible database matching Prisma's existing schema, with
@@ -711,6 +731,20 @@ in Section 12 (a future multi-cloud or multi-region-with-different-origins failo
 origin-pool change, not a DNS delegation change). The cost is an added vendor relationship and one
 more system to keep the WAF rule set aligned with AWS-side changes.
 
+**Amendment (2026-10-02) — AWS-native edge for Production.** The decision above is superseded for
+Production. The Production API edge is **AWS-native**: Route53 (`api.patheyaexpress.com`, in the
+shared-services apex zone) -> a **public ALB** (ACM certificate, TLS 1.3 policy, HTTP -> HTTPS
+redirect) protected by **AWS WAF** (AWS managed rule groups only — no rate limits, no
+geo-blocking) -> ECS Fargate tasks in private subnets. The Capacitor mobile apps — the primary
+channel — call the API directly; nothing is proxied through a CDN. **CloudFront** (private S3
+origins via Origin Access Control, `PriceClass_200`) is used only for the static web apps: admin,
+plus the secondary customer/restaurant/delivery web builds. Cloudflare is no longer in the request
+path, so the ALB security group admits `0.0.0.0/0` on 443/80 and AWS WAF is the edge filter.
+Reasons: Cloudflare-only ingress made the ALB unreachable for direct mobile traffic, the WAF/DDoS
+posture is now owned in the same Terraform as the origin it protects, and Production CloudFront
+account verification was approved by AWS Support (case 179033039500096). Shield Advanced is not
+enabled; Shield Standard applies to the ALB and CloudFront automatically.
+
 ### ADR-005: Why ArgoCD (not AWS-native CodeDeploy/CodePipeline for the CD stage)
 
 **Problem**: need a deployment mechanism for the Kustomize manifests both repositories produce.
@@ -726,6 +760,15 @@ auto-corrected) is exactly the "GitOps-only production changes" goal from this d
 Architecture Goals, not just a deployment trigger. Flux was a close second (equally capable
 GitOps); ArgoCD's UI and the maturity of Argo Rollouts (Section 9's canary mechanism) for
 progressive delivery were the deciding factors.
+
+**Amendment (2026-10-02) — superseded for Production.** With no Kubernetes cluster there is no
+ArgoCD. Production deploys through `patheya-express-platform/.github/workflows/backend-deploy-ecs.yml`:
+GitHub OIDC (the `production` GitHub Environment, with required reviewers, is the approval gate)
+-> cosign verification of the release image -> new ECS task-definition revisions (image pinned by
+digest) -> one-off migration task (must exit 0) -> API and worker service updates -> wait for
+stability, with the ECS deployment circuit breaker performing rollback. Terraform owns the ECS
+infrastructure and task-definition settings; CI owns only the image revision. The
+`patheya-express-gitops` repository is not used by Production.
 
 ### ADR-006: Why GitHub Actions (not AWS CodeBuild)
 
@@ -754,6 +797,11 @@ about instance-type diversification for spot (Section 14's cost strategy depends
 across several instance families, which Karpenter's NodePool model expresses far more naturally
 than a set of parallel ASGs would).
 
+**Amendment (2026-10-02) — not applicable to Production.** Fargate has no nodes to provision;
+ECS service capacity is Application Auto Scaling target tracking (CPU and memory) within
+Terraform-owned min/max bounds per operating mode, sized to stay inside the account's Fargate
+On-Demand vCPU quota including rolling-deployment surge.
+
 ### ADR-008: Why External Secrets Operator (not storing secrets directly as Kubernetes Secrets)
 
 **Problem**: Phase 1A's `secretGenerator` approach uses a plaintext (placeholder-only) env file —
@@ -769,6 +817,12 @@ another stateful system to operate; given AWS Secrets Manager already provides r
 CloudTrail-native auditing as a managed service, and this platform has no multi-cloud secret
 requirement that would justify Vault's added operational surface, External Secrets Operator
 pointed at Secrets Manager is the least additional infrastructure for the required capability.
+
+**Amendment (2026-10-02) — not applicable to Production.** ECS resolves Secrets Manager values
+natively at task launch (task definition `secrets`, via the execution role scoped to exactly the
+referenced secret ARNs). `DATABASE_URL` is a Terraform-generated secret for a dedicated
+application database user connecting through **RDS Proxy** (which replaces PgBouncer); migrations
+use a separate schema-owning user connecting directly to the Aurora writer.
 
 ### ADR-009: Why Cloudinary (continue, not migrate to S3)
 
