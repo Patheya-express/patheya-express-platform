@@ -1,0 +1,253 @@
+name: backend-deploy-ecs
+
+# Production deployment to ECS Fargate (ADR-004 as amended) — replaces the ArgoCD/GitOps
+# promotion path for Production. Deploys an image that backend-release.yml already built, scanned,
+# signed and attested; this workflow never builds anything (platform-standards.md Section 10:
+# an image is built once and promoted unchanged).
+#
+# Sequence: OIDC -> verify signatures -> render task definitions -> run migration task (must exit
+# 0) -> update API service -> update worker service -> wait for both to be stable. Rollback is the
+# ECS deployment circuit breaker's job (enabled with rollback on both services); this workflow
+# only reports a rolled-back deployment as a failure.
+#
+# Ownership: Terraform (patheya-express-terraform, environments/production/app) owns the ECS
+# infrastructure and every task-definition setting; this workflow owns only the image revision.
+# It renders each new revision from the family's latest ACTIVE revision — so Terraform-side
+# setting changes ship with the next release — swapping only the image for a digest-pinned one.
+#
+# Everything environment-specific comes from the `production` GitHub Environment's variables
+# (values are the app layer's `ecs_deploy_settings` output). The environment's required-reviewer
+# rule is the manual approval gate, and the deploy role trusts only this environment's OIDC subject.
+
+on:
+  workflow_dispatch:
+    inputs:
+      image-tag:
+        description: >
+          Release tag to deploy (<semver>-<git-sha-short>), already published by backend-release.yml
+          together with its "-migrate" sibling.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # AWS OIDC + cosign keyless verification
+
+concurrency:
+  group: backend-deploy-production
+  cancel-in-progress: false # never interrupt a running migration or rollout
+
+env:
+  AWS_REGION: ap-south-1
+  # Keyless signatures are made by reusable-docker-publish.yml on main (backend-release.yml).
+  COSIGN_CERTIFICATE_IDENTITY_REGEXP: ^https://github\.com/Patheya-express/patheya-express-platform/\.github/workflows/reusable-docker-publish\.yml@refs/heads/main$
+  COSIGN_CERTIFICATE_OIDC_ISSUER: https://token.actions.githubusercontent.com
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.image-tag }} to production
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    env:
+      IMAGE_TAG: ${{ inputs.image-tag }}
+      IMAGE_REPOSITORY_URL: ${{ vars.PRODUCTION_IMAGE_REPOSITORY_URL }}
+      ECS_CLUSTER: ${{ vars.PRODUCTION_ECS_CLUSTER }}
+      API_SERVICE: ${{ vars.PRODUCTION_ECS_API_SERVICE }}
+      WORKER_SERVICE: ${{ vars.PRODUCTION_ECS_WORKER_SERVICE }}
+      API_TASK_FAMILY: ${{ vars.PRODUCTION_ECS_API_TASK_FAMILY }}
+      WORKER_TASK_FAMILY: ${{ vars.PRODUCTION_ECS_WORKER_TASK_FAMILY }}
+      MIGRATION_TASK_FAMILY: ${{ vars.PRODUCTION_ECS_MIGRATION_TASK_FAMILY }}
+      MIGRATION_LOG_GROUP: ${{ vars.PRODUCTION_ECS_MIGRATION_LOG_GROUP }}
+      MIGRATION_SUBNET_IDS: ${{ vars.PRODUCTION_ECS_MIGRATION_SUBNET_IDS }} # comma-separated
+      MIGRATION_SECURITY_GROUP_ID: ${{ vars.PRODUCTION_ECS_MIGRATION_SECURITY_GROUP_ID }}
+    steps:
+      - name: Validate inputs and environment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$IMAGE_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9a-f]{7,40}$ ]]; then
+            echo "::error::image-tag must be an immutable release tag (<semver>-<git-sha>), got '$IMAGE_TAG'"
+            exit 1
+          fi
+          for name in IMAGE_REPOSITORY_URL ECS_CLUSTER API_SERVICE WORKER_SERVICE API_TASK_FAMILY \
+                      WORKER_TASK_FAMILY MIGRATION_TASK_FAMILY MIGRATION_LOG_GROUP \
+                      MIGRATION_SUBNET_IDS MIGRATION_SECURITY_GROUP_ID; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::production environment variable for $name is not set (see the app layer's ecs_deploy_settings output)"
+              exit 1
+            fi
+          done
+          registry="${IMAGE_REPOSITORY_URL%%/*}"
+          echo "REGISTRY=$registry" >> "$GITHUB_ENV"
+          echo "REGISTRY_ID=${registry%%.*}" >> "$GITHUB_ENV"
+          echo "REPOSITORY_NAME=${IMAGE_REPOSITORY_URL#*/}" >> "$GITHUB_ENV"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ vars.PRODUCTION_ECS_DEPLOY_ROLE_ARN }}
+          role-session-name: backend-deploy-${{ github.run_id }}
+
+      - name: Log in to the shared-services registry
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registries: ${{ env.REGISTRY_ID }}
+
+      - name: Resolve release digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          resolve() {
+            aws ecr batch-get-image \
+              --registry-id "$REGISTRY_ID" \
+              --repository-name "$REPOSITORY_NAME" \
+              --image-ids "imageTag=$1" \
+              --query 'images[0].imageId.imageDigest' \
+              --output text
+          }
+          app_digest="$(resolve "$IMAGE_TAG")"
+          migrate_digest="$(resolve "$IMAGE_TAG-migrate")"
+          for d in "$app_digest" "$migrate_digest"; do
+            if [[ ! "$d" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "::error::release $IMAGE_TAG (and its -migrate image) must exist in $IMAGE_REPOSITORY_URL"
+              exit 1
+            fi
+          done
+          echo "APP_IMAGE=$IMAGE_REPOSITORY_URL@$app_digest" >> "$GITHUB_ENV"
+          echo "MIGRATE_IMAGE=$IMAGE_REPOSITORY_URL@$migrate_digest" >> "$GITHUB_ENV"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Verify image signatures
+        shell: bash
+        run: |
+          set -euo pipefail
+          for image in "$APP_IMAGE" "$MIGRATE_IMAGE"; do
+            cosign verify \
+              --certificate-identity-regexp "$COSIGN_CERTIFICATE_IDENTITY_REGEXP" \
+              --certificate-oidc-issuer "$COSIGN_CERTIFICATE_OIDC_ISSUER" \
+              "$image" > /dev/null
+            echo "verified $image"
+          done
+
+      - name: Register task-definition revisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Renders a new revision of $1 from its latest ACTIVE revision, replacing the image of
+          # container $2 with $3 (digest-pinned). Echoes the new revision's ARN.
+          register() {
+            local family="$1" container="$2" image="$3"
+            aws ecs describe-task-definition --task-definition "$family" --include TAGS --output json \
+              | jq --arg container "$container" --arg image "$image" '
+                  (.tags // []) as $tags
+                  | .taskDefinition
+                  | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                        .compatibilities, .registeredAt, .registeredBy, .deregisteredAt)
+                  | if ([.containerDefinitions[] | select(.name == $container)] | length) != 1
+                      then error("container \($container) not found in task definition") else . end
+                  | .containerDefinitions |= map(if .name == $container then .image = $image else . end)
+                  | if ($tags | length) > 0 then . + {tags: $tags} else . end
+                ' > "register-$family.json"
+            aws ecs register-task-definition --cli-input-json "file://register-$family.json" \
+              --query 'taskDefinition.taskDefinitionArn' --output text
+          }
+          {
+            echo "API_TASK_DEFINITION=$(register "$API_TASK_FAMILY" api "$APP_IMAGE")"
+            echo "WORKER_TASK_DEFINITION=$(register "$WORKER_TASK_FAMILY" worker "$APP_IMAGE")"
+            echo "MIGRATION_TASK_DEFINITION=$(register "$MIGRATION_TASK_FAMILY" migrate "$MIGRATE_IMAGE")"
+          } >> "$GITHUB_ENV"
+
+      - name: Run database migration task
+        shell: bash
+        run: |
+          set -euo pipefail
+          subnets="$(jq -cn --arg s "$MIGRATION_SUBNET_IDS" '$s | split(",") | map(gsub("\\s"; ""))')"
+          network="$(jq -cn --argjson subnets "$subnets" --arg sg "$MIGRATION_SECURITY_GROUP_ID" \
+            '{awsvpcConfiguration: {subnets: $subnets, securityGroups: [$sg], assignPublicIp: "DISABLED"}}')"
+          task_arn="$(aws ecs run-task \
+            --cluster "$ECS_CLUSTER" \
+            --task-definition "$MIGRATION_TASK_DEFINITION" \
+            --launch-type FARGATE \
+            --network-configuration "$network" \
+            --started-by "gh-${GITHUB_RUN_ID}" \
+            --query 'tasks[0].taskArn' --output text)"
+          if [[ -z "$task_arn" || "$task_arn" == "None" ]]; then
+            echo "::error::migration task failed to start"
+            exit 1
+          fi
+          echo "migration task: $task_arn"
+
+          # The tasks-stopped waiter gives up after 10 minutes; keep waiting up to 30.
+          for _ in 1 2 3; do
+            aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$task_arn" && break
+          done
+
+          read -r last_status exit_code stopped_reason < <(aws ecs describe-tasks \
+            --cluster "$ECS_CLUSTER" --tasks "$task_arn" \
+            --query 'tasks[0].[lastStatus, containers[?name==`migrate`] | [0].exitCode, stoppedReason]' \
+            --output text)
+
+          task_id="${task_arn##*/}"
+          echo "::group::migration output"
+          aws logs get-log-events --log-group-name "$MIGRATION_LOG_GROUP" \
+            --log-stream-name "migrate/migrate/$task_id" --start-from-head \
+            --query 'events[].message' --output text || echo "(log stream not available)"
+          echo "::endgroup::"
+
+          if [[ "$last_status" != "STOPPED" || "$exit_code" != "0" ]]; then
+            echo "::error::migration did not succeed (status=$last_status exit=$exit_code reason=$stopped_reason) — services were NOT updated"
+            exit 1
+          fi
+
+      - name: Update API service
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$API_SERVICE" \
+            --task-definition "$API_TASK_DEFINITION" --query 'service.serviceArn' --output text
+
+      - name: Update worker service
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws ecs update-service --cluster "$ECS_CLUSTER" --service "$WORKER_SERVICE" \
+            --task-definition "$WORKER_TASK_DEFINITION" --query 'service.serviceArn' --output text
+
+      - name: Wait for services to stabilize
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The services-stable waiter gives up after 10 minutes; keep waiting up to 30.
+          for _ in 1 2 3; do
+            aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$API_SERVICE" "$WORKER_SERVICE" && break
+          done
+
+          # A circuit-breaker rollback also ends "stable" — on the previous revision. Fail on that.
+          failed=0
+          for pair in "$API_SERVICE=$API_TASK_DEFINITION" "$WORKER_SERVICE=$WORKER_TASK_DEFINITION"; do
+            service="${pair%%=*}" expected="${pair#*=}"
+            read -r running rollout < <(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$service" \
+              --query 'services[0].deployments[?status==`PRIMARY`] | [0].[taskDefinition, rolloutState]' --output text)
+            echo "$service: $rollout on $running"
+            if [[ "$running" != "$expected" || "$rollout" != "COMPLETED" ]]; then
+              echo "::error::$service did not complete on $expected (ECS circuit breaker rolled back or the rollout is still in progress)"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Production deploy — \`$IMAGE_TAG\`"
+            echo "- App image: \`${APP_IMAGE:-unresolved}\`"
+            echo "- Migration image: \`${MIGRATE_IMAGE:-unresolved}\`"
+            echo "- API task definition: \`${API_TASK_DEFINITION:-not registered}\`"
+            echo "- Worker task definition: \`${WORKER_TASK_DEFINITION:-not registered}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
