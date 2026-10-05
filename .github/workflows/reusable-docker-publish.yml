@@ -118,10 +118,13 @@ jobs:
       # SLSA provenance (Section 6) — GitHub's own attestation store, a separate, independently
       # verifiable claim from the Sigstore signature above (docs/signing-guide.md explains why both
       # exist: this is provenance *about* the build, Sigstore is the admission-time trust anchor).
+      # subject-name must be the repository name with no tag: with push-to-registry, actions/attest
+      # parses it with @sigstore/oci's `registry/path` grammar, which rejects a `:tag` suffix
+      # ("Invalid image name"). The digest below is what binds the attestation to the image.
       - name: Generate SLSA provenance attestation
         uses: actions/attest-build-provenance@v1
         with:
-          subject-name: ${{ steps.build.outputs.image-uri }}
+          subject-name: ${{ steps.build.outputs.registry }}/patheya-express/${{ inputs.ecr-repository }}
           subject-digest: ${{ steps.build.outputs.image-digest }}
           push-to-registry: true
 

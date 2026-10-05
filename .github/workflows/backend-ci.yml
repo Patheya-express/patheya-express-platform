@@ -22,6 +22,7 @@ on:
       # required checks (none of which could ever post a result) despite being a correct, isolated
       # fix. See .github/actions/*/action.yml for the full set this covers.
       - ".github/actions/**"
+      - ".github/workflows/reusable-*.yml"
   push:
     branches: [main]
     paths:
@@ -32,6 +33,7 @@ on:
       - "pnpm-workspace.yaml"
       - "package.json"
       - ".github/actions/**"
+      - ".github/workflows/reusable-*.yml"
 
 permissions:
   contents: read
