@@ -16,3 +16,10 @@ allowBuilds:
 onlyBuiltDependencies:
   - '@nestjs/core'
   - '@scarf/scarf'
+
+overrides:
+  # Security (Trivy HIGH CVE-2026-40345, fixed in deepmerge-ts 8.0.0): every Prisma 6.x release pins
+  # @prisma/config -> deepmerge-ts 7.1.5 exactly. @prisma/config uses it only as the c12 merger when
+  # loading a prisma.config.ts (this repo has none); 8.x's breaking changes (Map deep-merge, type
+  # renames, deepmergeInto) do not affect that plain-object merge. Remove once Prisma ships >= 8.
+  '@prisma/config>deepmerge-ts': ^8.0.2
