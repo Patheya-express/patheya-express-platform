@@ -4,9 +4,9 @@ name: Reusable / Docker build, scan, sign, publish
 # all four produced here, against the one digest-pinned image this job builds once
 # (platform-standards.md Section 10: "an image built once is promoted unchanged... never rebuilt
 # per environment"). This workflow never touches Kubernetes, ArgoCD, or the gitops repo — it stops
-# at "image exists in ECR, signed and attested." The gitops-image-update step is a separate,
-# explicit job in the calling workflow, not folded in here, so a caller that only wants to
-# build-and-verify (e.g. a PR-time dry run) can invoke this without also proposing a deploy.
+# at "image exists in ECR, signed and attested." Deployment is a separate, explicit step
+# (backend-deploy-ecs.yml), not folded in here, so a caller that only wants to build-and-verify
+# (e.g. a PR-time dry run) can invoke this without also proposing a deploy.
 
 on:
   workflow_call:
