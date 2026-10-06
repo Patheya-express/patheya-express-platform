@@ -21,7 +21,9 @@ permissions:
 jobs:
   version:
     name: Compute version
-    if: github.event.workflow_run.conclusion == 'success'
+    # `branches: [main]` matches the run's head branch, which a pull_request run (backend-ci runs
+    # on every PR) can also carry — e.g. a fork's own `main`. Only a push to main releases.
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     outputs:
       semver: ${{ steps.version.outputs.version }}

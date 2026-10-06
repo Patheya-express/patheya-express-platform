@@ -6,25 +6,13 @@ name: backend-ci
 # gated on this one passing (Section 10: "CI MUST NEVER deploy directly").
 
 on:
+  # No path filter on pull_request: this workflow's jobs are required status checks on main, and a
+  # path-filtered required workflow never reports on a PR outside its paths — that PR could then
+  # never merge (PR #25 hit exactly this with a trivy-scan-only fix).
   pull_request:
     branches: [main]
-    paths:
-      - "apps/api-gateway/**"
-      - "Dockerfile"
-      - ".dockerignore"
-      - "pnpm-lock.yaml"
-      - "pnpm-workspace.yaml"
-      - "package.json"
-      - ".github/workflows/backend-ci.yml"
-      - ".github/workflows/backend-release.yml"
-      - ".github/workflows/backend-deploy-ecs.yml"
-      # P1-DX-3J: composite actions this workflow (and backend-release.yml, which reuses the same
-      # ones) consumes — PR #25 demonstrated a fix scoped to just one of these (trivy-scan) never
-      # triggered backend-ci at all, leaving the PR permanently "unstable" against the ruleset's
-      # required checks (none of which could ever post a result) despite being a correct, isolated
-      # fix. See .github/actions/*/action.yml for the full set this covers.
-      - ".github/actions/**"
-      - ".github/workflows/reusable-*.yml"
+  # push keeps its path filter: each successful push run triggers backend-release.yml, so an
+  # unrelated (docs-only) merge must not cut a release.
   push:
     branches: [main]
     paths:
