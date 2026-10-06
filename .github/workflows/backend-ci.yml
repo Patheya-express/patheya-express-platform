@@ -17,6 +17,7 @@ on:
       - "package.json"
       - ".github/workflows/backend-ci.yml"
       - ".github/workflows/backend-release.yml"
+      - ".github/workflows/backend-deploy-ecs.yml"
       # P1-DX-3J: composite actions this workflow (and backend-release.yml, which reuses the same
       # ones) consumes — PR #25 demonstrated a fix scoped to just one of these (trivy-scan) never
       # triggered backend-ci at all, leaving the PR permanently "unstable" against the ruleset's

@@ -217,28 +217,68 @@ jobs:
           aws ecs update-service --cluster "$ECS_CLUSTER" --service "$WORKER_SERVICE" \
             --task-definition "$WORKER_TASK_DEFINITION" --query 'service.serviceArn' --output text
 
+      # Success is ECS's own rolloutState for the deployment of the NEW revision reaching COMPLETED —
+      # not `aws ecs wait services-stable`, which only compares runningCount with desiredCount and so
+      # passes at once at desired 0 (idle) while the rollout is still IN_PROGRESS (run 37424142757).
+      # Tracking the deployment by task definition (not just PRIMARY) also catches a circuit-breaker
+      # rollback: the new revision's deployment goes FAILED and a rollback deployment of the
+      # previous revision becomes PRIMARY.
       - name: Wait for services to stabilize
         shell: bash
         run: |
           set -euo pipefail
-          # The services-stable waiter gives up after 10 minutes; keep waiting up to 30.
-          for _ in 1 2 3; do
-            aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$API_SERVICE" "$WORKER_SERVICE" && break
-          done
+          poll_seconds=10
+          deadline=$(( $(date +%s) + 600 )) # 10 minutes for both rollouts together
 
-          # A circuit-breaker rollback also ends "stable" — on the previous revision. Fail on that.
-          failed=0
-          for pair in "$API_SERVICE=$API_TASK_DEFINITION" "$WORKER_SERVICE=$WORKER_TASK_DEFINITION"; do
-            service="${pair%%=*}" expected="${pair#*=}"
-            read -r running rollout < <(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$service" \
-              --query 'services[0].deployments[?status==`PRIMARY`] | [0].[taskDefinition, rolloutState]' --output text)
-            echo "$service: $rollout on $running"
-            if [[ "$running" != "$expected" || "$rollout" != "COMPLETED" ]]; then
-              echo "::error::$service did not complete on $expected (ECS circuit breaker rolled back or the rollout is still in progress)"
-              failed=1
+          # Prints "<rolloutState>\t<status>\t<summary>" for the newest deployment of task definition
+          # $2 on service $1, or "MISSING" if no deployment for that revision exists any more.
+          deployment_state() {
+            aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$1" --output json \
+              | jq -r --arg service "$1" --arg td "$2" '
+                  [.services[0].deployments[] | select(.taskDefinition == $td)] | sort_by(.createdAt) | last
+                  | if . == null then "MISSING\t-\t\($service): no deployment of \($td) (replaced or rolled back)"
+                    else "\(.rolloutState // "NONE")\t\(.status)\t\($service): deployment=\(.id) status=\(.status) rolloutState=\(.rolloutState // "none") desired=\(.desiredCount) running=\(.runningCount) pending=\(.pendingCount) failedTasks=\(.failedTasks) reason=\(.rolloutStateReason // "none")"
+                    end'
+          }
+
+          declare -A expected=([$API_SERVICE]="$API_TASK_DEFINITION" [$WORKER_SERVICE]="$WORKER_TASK_DEFINITION")
+          declare -A completed=()
+          while true; do
+            for service in "$API_SERVICE" "$WORKER_SERVICE"; do
+              [[ -n "${completed[$service]:-}" ]] && continue
+              result="$(deployment_state "$service" "${expected[$service]}")"
+              IFS=$'\t' read -r state status summary <<< "$result"
+              echo "$summary"
+              case "$state" in
+                COMPLETED)
+                  if [[ "$status" != "PRIMARY" ]]; then
+                    echo "::error::$service: deployment of ${expected[$service]} completed but is no longer PRIMARY"
+                    exit 1
+                  fi
+                  completed[$service]=1
+                  ;;
+                FAILED | MISSING)
+                  echo "::error::$service rollout of ${expected[$service]} failed — $summary"
+                  exit 1
+                  ;;
+                *) ;; # IN_PROGRESS (or not yet reported): keep polling until the deadline
+              esac
+            done
+
+            if [[ ${#completed[@]} -eq 2 ]]; then
+              echo "PRODUCTION ECS DEPLOYMENT ROLLOUT COMPLETE"
+              exit 0
             fi
+            if (( $(date +%s) >= deadline )); then
+              echo "::error::rollout did not complete within 10 minutes; latest state:"
+              for service in "$API_SERVICE" "$WORKER_SERVICE"; do
+                result="$(deployment_state "$service" "${expected[$service]}")"
+                echo "${result##*$'\t'}"
+              done
+              exit 1
+            fi
+            sleep "$poll_seconds"
           done
-          exit "$failed"
 
       - name: Summary
         if: always()
