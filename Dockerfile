@@ -57,17 +57,34 @@ RUN SRC=$(find /workspace/node_modules/.pnpm -maxdepth 3 -type d -name '.prisma'
     rm -rf "$DEST" && cp -r "$SRC" "$DEST"
 
 # ---------------------------------------------------------------------------
-# migrate: Phase 9's migration Job target — `prisma migrate deploy` needs the `prisma` CLI, which
-# is a devDependency deliberately excluded from `runtime`'s pruned, production-only node_modules
-# (the running service only ever needs `@prisma/client`, never the CLI). Reuses `build`'s full
-# workspace install rather than re-installing anything. Pushed as a second tag
-# (`<tag>-migrate`) in the same ECR repository — never deployed as a long-running service, only
-# run to completion by the migration Job (k8s/base/api-gateway/migrate-job.yaml) as an ArgoCD
-# PreSync hook.
+# node-base: the Node.js runtime alone. The official image also ships npm, corepack and yarn,
+# which neither the API nor the migration task ever invokes — they only add a package-manager
+# toolchain (and its bundled tar/undici/brace-expansion/... CVEs) to the attack surface, so they
+# are removed. `node` itself is untouched.
 # ---------------------------------------------------------------------------
-FROM build AS migrate
+FROM node:${NODE_VERSION} AS node-base
 
-RUN addgroup -S app && adduser -S app -G app && chown -R app:app /workspace
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+      /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+      /usr/local/bin/yarn /usr/local/bin/yarnpkg /opt/yarn-*
+
+# ---------------------------------------------------------------------------
+# migrate: the migration task target (`<tag>-migrate` in the same ECR repository) — run to
+# completion by the ECS migration task definition with this image's own ENTRYPOINT/CMD, never as
+# a long-running service. `prisma` (the CLI) is a production dependency of api-gateway, so
+# `build`'s pruned `pnpm deploy --prod` output already contains it together with its engines;
+# only that, the schema/migrations and package.json are copied — no workspace source, dev
+# dependencies, compiler toolchain or pnpm.
+# ---------------------------------------------------------------------------
+FROM node-base AS migrate
+
+RUN addgroup -S app && adduser -S app -G app
+
+WORKDIR /workspace/apps/api-gateway
+
+COPY --from=build --chown=app:app /workspace/deploy/node_modules ./node_modules
+COPY --from=build --chown=app:app /workspace/apps/api-gateway/prisma ./prisma
+COPY --from=build --chown=app:app /workspace/apps/api-gateway/package.json ./package.json
 
 USER app
 
@@ -80,8 +97,6 @@ USER app
 # Invoking the already-resolved `prisma` binary directly sidesteps pnpm's CLI wrapper entirely —
 # verified working end-to-end (a real `migrate deploy` against a real, deliberately-behind
 # Postgres database) from this exact WORKDIR.
-WORKDIR /workspace/apps/api-gateway
-
 ENTRYPOINT ["node_modules/.bin/prisma"]
 
 CMD ["migrate", "deploy"]
@@ -89,7 +104,7 @@ CMD ["migrate", "deploy"]
 # ---------------------------------------------------------------------------
 # runtime: minimal image — no package manager, no dev dependencies, no source.
 # ---------------------------------------------------------------------------
-FROM node:${NODE_VERSION} AS runtime
+FROM node-base AS runtime
 
 ARG VCS_REF
 ARG BUILD_DATE

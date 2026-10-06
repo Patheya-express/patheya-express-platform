@@ -173,6 +173,21 @@ const REQUIRED_PROOF_TYPE_FOR_STATUS: Partial<
   [OrderStatus.DELIVERED]: DeliveryProofType.DELIVERY,
 };
 
+/**
+ * Pickup-photo extension of the proof-gate above — a delivery partner must have uploaded a
+ * DeliveryProofPhoto (see ProofService.uploadPickupPhoto) before the order may advance to
+ * OUT_FOR_DELIVERY, on top of (not instead of) the existing verified-pickup-OTP requirement.
+ * Checked in the exact same choke point (updateOrderStatus) as REQUIRED_PROOF_TYPE_FOR_STATUS, so
+ * every existing and future caller of the status pipeline is covered — a client cannot reach
+ * OUT_FOR_DELIVERY by calling any status endpoint, generic or shortcut, without the photo
+ * existing first. Same admin-bypass as the OTP gate (see assertPhotoVerifiedForStatus).
+ */
+const REQUIRED_PHOTO_TYPE_FOR_STATUS: Partial<
+  Record<OrderStatus, DeliveryProofType>
+> = {
+  [OrderStatus.OUT_FOR_DELIVERY]: DeliveryProofType.PICKUP,
+};
+
 const RESTAURANT_STAFF_ROLES: UserRole[] = [
   UserRole.RESTAURANT_OWNER,
   UserRole.RESTAURANT_MANAGER,
@@ -344,6 +359,35 @@ export class OrdersService {
     }
   }
 
+  /**
+   * Payment/order lifecycle Rule 5 — an ONLINE order must not be accepted by the restaurant
+   * until payment has actually succeeded; COD never requires pre-payment. Scoped to only the
+   * CONFIRMED transition (the sole restaurant-only status reachable from PENDING per
+   * ORDER_STATUS_TRANSITIONS — i.e. "accept") — later restaurant-only transitions (PREPARING,
+   * READY_FOR_PICKUP) don't need to re-check this: an order can only ever reach CONFIRMED via
+   * this same gate or via markOrderPaid's own payment-triggered auto-confirm, both of which
+   * already guarantee payment eligibility by the time CONFIRMED is reached, so nothing "unpaid"
+   * can be sitting downstream of it later.
+   */
+  private assertPaymentEligibleForAcceptance(
+    order: { paymentMode: PaymentMode; paymentStatus: PaymentStatus },
+    status: OrderStatus,
+  ): void {
+    if (status !== OrderStatus.CONFIRMED) {
+      return;
+    }
+
+    if (order.paymentMode === PaymentMode.COD) {
+      return;
+    }
+
+    if (order.paymentStatus !== PaymentStatus.PAID) {
+      throw new ConflictException(
+        'This order cannot be accepted until online payment has been completed',
+      );
+    }
+  }
+
   /** See REQUIRED_PROOF_TYPE_FOR_STATUS's doc comment. Admins bypass this (support overrides), matching the isAdmin escape hatch already used throughout the delivery/dispatch/tracking modules. */
   private async assertProofVerifiedForStatus(
     orderId: string,
@@ -371,6 +415,33 @@ export class OrdersService {
     }
   }
 
+  /** See REQUIRED_PHOTO_TYPE_FOR_STATUS's doc comment. Same admin-bypass as assertProofVerifiedForStatus. */
+  private async assertPhotoVerifiedForStatus(
+    orderId: string,
+    status: OrderStatus,
+    user: AuthenticatedUser,
+  ): Promise<void> {
+    if (user.role !== UserRole.DELIVERY_PARTNER) {
+      return;
+    }
+
+    const requiredType = REQUIRED_PHOTO_TYPE_FOR_STATUS[status];
+
+    if (!requiredType) {
+      return;
+    }
+
+    const photo = await this.prisma.deliveryProofPhoto.findUnique({
+      where: { orderId_type: { orderId, type: requiredType } },
+    });
+
+    if (!photo) {
+      throw new ForbiddenException(
+        `A ${requiredType.toLowerCase()} photo is required before marking this order as ${status}`,
+      );
+    }
+  }
+
   /** Lightweight ownership lookup reused by other modules (e.g. tracking) that need to authorize against an order without fetching its full item graph. */
   async getOrderOwnership(orderId: string) {
     const order = await this.ordersRepository.findOrderOwnership(orderId);
@@ -380,6 +451,15 @@ export class OrdersService {
     }
 
     return order;
+  }
+
+  /** See OrdersRepository.findPickupLocation's doc comment — resolves order.branch with a
+   *  fallback to the restaurant's primary/active branch. Returns null (not a thrown error) when
+   *  neither is available; callers decide what that means for their own business rule. */
+  getPickupLocation(
+    orderId: string,
+  ): Promise<{ latitude: number; longitude: number } | null> {
+    return this.ordersRepository.findPickupLocation(orderId);
   }
 
   /** Throws unless the user can access the given order; returns the ownership record so callers can reuse it. */
@@ -439,11 +519,7 @@ export class OrdersService {
         'OrdersService',
       );
 
-      return {
-        ...existingOrder,
-
-        items: flattenOrderItems(existingOrder.items),
-      };
+      return this.toPlacedOrderResponse(existingOrder);
     }
 
     const lockKey = `order-placement-lock:${customerId}:${dto.idempotencyKey}`;
@@ -737,11 +813,7 @@ export class OrdersService {
             'OrdersService',
           );
 
-          return {
-            ...winner,
-
-            items: flattenOrderItems(winner.items),
-          };
+          return this.toPlacedOrderResponse(winner);
         }
       }
 
@@ -783,8 +855,24 @@ export class OrdersService {
       ),
     ]);
 
+    return this.toPlacedOrderResponse(order);
+  }
+
+  /**
+   * Shapes a just-created/idempotently-replayed order (from OrdersRepository.createOrder or
+   * findOrderByIdempotencyKey, both of which include `restaurant: { select: { name: true } }`)
+   * into the OrderResponseDto wire shape — same `restaurantName` field, same `restaurant:
+   * undefined` scrub, as OrdersService.getCustomerOrders already does for GET /orders/me. Used by
+   * all three placeOrder() return paths (fresh success, idempotent replay, lost-idempotency-race)
+   * so the customer's Live Orders tracker gets the restaurant name straight from the POST /orders
+   * response, without waiting on a subsequent GET /orders/me.
+   */
+  private toPlacedOrderResponse(order: any) {
     return {
       ...order,
+
+      restaurantName: order.restaurant?.name,
+      restaurant: undefined,
 
       items: flattenOrderItems(order.items),
     };
@@ -957,6 +1045,71 @@ export class OrdersService {
       [PaymentStatus.PENDING, PaymentStatus.FAILED, PaymentStatus.REFUNDED],
       PaymentStatus.FAILED,
     );
+  }
+
+  /**
+   * Payment/order lifecycle Rule 4 ("Continue with COD") — lets the customer fall back to COD
+   * for their own order after an ONLINE payment attempt failed/was cancelled, without creating a
+   * second order or a second Razorpay payment attempt (the existing order and its idempotency
+   * key are simply reused). One-way: this only ever moves ONLINE -> COD, never the reverse — a
+   * COD -> ONLINE upgrade isn't part of this rule and isn't implemented here.
+   *
+   * Restricted to the order's own customer (or an admin support override) — never restaurant
+   * staff or a delivery partner. Only legal while the order is still PENDING and not already
+   * PAID: once paid there is nothing to "continue" (the customer should see their order as
+   * normally paid, not be offered a COD fallback), and once a restaurant has acted on the order
+   * (past PENDING) payment mode is no longer something this action should touch. The actual
+   * write is an atomic compare-and-swap (OrdersRepository.switchPaymentModeIfEligible) so a
+   * payment that succeeds concurrently with this call can never be silently overwritten back to
+   * COD-and-still-owed — see that method's doc comment.
+   */
+  async switchToCod(orderId: string, user: AuthenticatedUser) {
+    const order = await this.ordersRepository.findOrderById(orderId);
+
+    if (!order) {
+      throw new NotFoundException('Order not found');
+    }
+
+    if (
+      order.customerId !== user.userId &&
+      user.role !== UserRole.ADMIN &&
+      user.role !== UserRole.SUPER_ADMIN
+    ) {
+      throw new ForbiddenException('You do not have access to this order');
+    }
+
+    if (order.paymentMode === PaymentMode.COD) {
+      return order;
+    }
+
+    if (order.paymentStatus === PaymentStatus.PAID) {
+      throw new ConflictException(
+        'This order has already been paid online — payment mode cannot be changed',
+      );
+    }
+
+    if (order.status !== OrderStatus.PENDING) {
+      throw new ConflictException(
+        'Payment mode can only be changed while the order is still awaiting acceptance',
+      );
+    }
+
+    const updatedOrder =
+      await this.ordersRepository.switchPaymentModeIfEligible(
+        orderId,
+        PaymentMode.COD,
+      );
+
+    if (!updatedOrder) {
+      // Lost the race — payment succeeded (or the order moved past PENDING) between the reads
+      // above and the atomic write. The order is now legitimately paid/progressing; nothing to
+      // roll back, so surface the same "already paid" outcome the eager check above would give.
+      throw new ConflictException(
+        'This order has already been paid online — payment mode cannot be changed',
+      );
+    }
+
+    return updatedOrder;
   }
 
   async getCustomerOrders(
@@ -1169,7 +1322,11 @@ export class OrdersService {
 
     this.assertActorAllowedForStatus(dto.status, user);
 
+    this.assertPaymentEligibleForAcceptance(order, dto.status);
+
     await this.assertProofVerifiedForStatus(orderId, dto.status, user);
+
+    await this.assertPhotoVerifiedForStatus(orderId, dto.status, user);
 
     const updatedOrder = await this.ordersRepository.updateOrderStatus(
       orderId,
@@ -1242,6 +1399,10 @@ export class OrdersService {
           updatedOrder.id,
         );
       }
+    }
+
+    if (dto.status === OrderStatus.CANCELLED) {
+      await this.handleCancellationSideEffects(order, dto.reason, user.userId);
     }
 
     return updatedOrder;
@@ -1380,6 +1541,8 @@ export class OrdersService {
 
       status: query.status,
 
+      paymentStatus: query.paymentStatus,
+
       restaurantId: query.restaurantId,
 
       customerId: query.customerId,
@@ -1405,7 +1568,11 @@ export class OrdersService {
   }
 
   /** Admin-only override of the customer/restaurant-facing cancel — allows cancelling from any non-terminal status. */
-  async adminCancelOrder(orderId: string, dto: CancelOrderDto) {
+  async adminCancelOrder(
+    orderId: string,
+    dto: CancelOrderDto,
+    actorId: string,
+  ) {
     const order = await this.ordersRepository.findOrderById(orderId);
 
     if (!order) {
@@ -1442,6 +1609,8 @@ export class OrdersService {
       );
     }
 
+    await this.handleCancellationSideEffects(order, dto.reason, actorId);
+
     return updatedOrder;
   }
 
@@ -1477,6 +1646,135 @@ export class OrdersService {
     }
 
     return updatedOrder;
+  }
+
+  /**
+   * P0 fix (2026-09 production-readiness audit — "a paid order can be cancelled through the
+   * normal cancellation path without the existing refund workflow ever running"). Called from
+   * both cancellation entry points — updateOrderStatus (customer/restaurant path, status ===
+   * CANCELLED) and adminCancelOrder — so there is exactly one implementation of "what a
+   * cancellation must do to money/coupons", not two.
+   *
+   * Coupon release is unconditional: Invariant D applies regardless of payment status (an unpaid
+   * cancelled order can still have reserved a coupon redemption), and CouponsService.
+   * releaseForOrder is already a no-op both when the order used no coupon and when the
+   * redemption was already released (P2025-safe) — so calling it here even when refundOrder below
+   * will also call it internally is a harmless second no-op, not a double-release.
+   *
+   * Refund is only attempted when the pre-cancellation snapshot shows PAID — a PENDING/COD order
+   * never captured any money, so there is nothing for the existing refund workflow to do
+   * (Invariant E). When it does apply, this delegates entirely to refundOrder: no second
+   * Razorpay call, no second claim/reversal implementation. refundOrder's own atomic
+   * PAID -> REFUNDED claim (OrdersRepository.claimPaymentStatusTransition) is what makes two
+   * concurrent cancellations of the same order, or a cancellation racing an explicit admin
+   * refund, resolve to exactly one refund (Invariants B/G).
+   *
+   * Every failure here — including a genuine provider error — is logged and swallowed rather
+   * than propagated to the cancel caller. By the time this runs, the order's status write has
+   * already committed: the order IS cancelled, so raising an exception here would misreport a
+   * successful cancellation as a failed HTTP request. refundOrder can throw ConflictException for
+   * several distinct reasons (lost the order-level claim outright, or won it but the payment-level
+   * attempt itself then failed and was reverted) — rather than pattern-matching error messages,
+   * the order's actual post-attempt paymentStatus is re-read to tell them apart: REFUNDED means
+   * some caller (possibly this one, possibly a concurrent winner) genuinely completed the refund,
+   * a benign idempotent outcome; anything else means the attempt did not land, which is logged at
+   * error level for operator visibility. Either way, a real failure is never silently lost:
+   * refundOrder's own catch block reverts REFUNDED -> PAID before rethrowing (Invariant C — the
+   * order is never left falsely showing as refunded), and the refund remains safely retryable
+   * afterward via the existing admin PATCH /orders/:id/refund endpoint.
+   *
+   * Re-verifies the order is still actually CANCELLED before touching money or the coupon.
+   * ordersRepository.updateOrderStatus is a plain unconditional write (no compare-and-swap —
+   * a separately tracked, pre-existing limitation this fix does not take on), so a genuinely
+   * concurrent, different valid transition for the same order (e.g. the restaurant accepting it
+   * at the same instant) can still win the last write after this cancellation's own write already
+   * happened. Firing a refund or releasing a coupon for an order that turns out not to be
+   * cancelled would be wrong regardless of how that came about — this fresh read is the minimal
+   * guard that keeps this new code correct without generalizing a fix for that pre-existing race.
+   */
+  private async handleCancellationSideEffects(
+    order: { id: string; paymentStatus: PaymentStatus },
+    reason: string | undefined,
+    actorId: string,
+  ): Promise<void> {
+    const current = await this.ordersRepository.findOrderById(order.id);
+
+    if (current?.status !== OrderStatus.CANCELLED) {
+      this.logger.log(
+        {
+          event: 'cancellation_side_effects_skipped_status_changed',
+          orderId: order.id,
+          currentStatus: current?.status,
+        },
+        'OrdersService',
+      );
+
+      return;
+    }
+
+    try {
+      await this.couponsService.releaseForOrder(order.id);
+    } catch (error) {
+      this.logger.error(
+        {
+          event: 'cancellation_coupon_release_failed',
+          orderId: order.id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        undefined,
+        'OrdersService',
+      );
+    }
+
+    if (order.paymentStatus !== PaymentStatus.PAID) {
+      return;
+    }
+
+    try {
+      await this.refundOrder(
+        order.id,
+        { reason: reason ?? 'Order cancelled' },
+        actorId,
+      );
+
+      this.logger.log(
+        {
+          event: 'cancellation_refund_triggered',
+          orderId: order.id,
+          actorId,
+        },
+        'OrdersService',
+      );
+    } catch (error) {
+      if (error instanceof ConflictException) {
+        const current = await this.ordersRepository.findOrderById(order.id);
+
+        if (current?.paymentStatus === PaymentStatus.REFUNDED) {
+          // Some caller — possibly a concurrent cancellation/refund request for this same order —
+          // already completed the refund by the time this one's claim resolved. Idempotent,
+          // expected outcome; nothing more to do.
+          this.logger.log(
+            {
+              event: 'cancellation_refund_already_processed',
+              orderId: order.id,
+            },
+            'OrdersService',
+          );
+
+          return;
+        }
+      }
+
+      this.logger.error(
+        {
+          event: 'cancellation_refund_failed',
+          orderId: order.id,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        undefined,
+        'OrdersService',
+      );
+    }
   }
 
   /**

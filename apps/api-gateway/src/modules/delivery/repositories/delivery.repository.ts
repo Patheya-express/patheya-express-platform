@@ -86,6 +86,12 @@ export class DeliveryRepository extends BaseRepository {
     userId: string,
 
     status: any,
+
+    // Radius dispatch revision (2026-09-16) — optional location, set only when the caller
+    // (DeliveryService.goAvailable) actually received one. Undefined leaves the existing
+    // currentLatitude/currentLongitude columns untouched, exactly as before this parameter
+    // existed.
+    location?: { latitude: number; longitude: number },
   ) {
     return this.prisma.deliveryPartner.update({
       where: {
@@ -94,6 +100,36 @@ export class DeliveryRepository extends BaseRepository {
 
       data: {
         status,
+
+        ...(location
+          ? {
+              currentLatitude: location.latitude,
+              currentLongitude: location.longitude,
+            }
+          : {}),
+      },
+    });
+  }
+
+  /**
+   * Always-on presence heartbeat (2026-09-16 follow-up) — location-only update, deliberately
+   * narrower than updatePartnerStatus above: a heartbeat re-ping (every ~60s while the app is
+   * online, per PresenceService's PRESENCE_TTL_SECONDS) must never touch `status`, only refresh
+   * `currentLatitude`/`currentLongitude`, so a heartbeat firing during e.g. a brief admin-side
+   * SUSPENDED transition can't accidentally resurrect the partner back to AVAILABLE.
+   */
+  async updatePartnerLocation(
+    userId: string,
+    location: { latitude: number; longitude: number },
+  ) {
+    return this.prisma.deliveryPartner.update({
+      where: {
+        userId,
+      },
+
+      data: {
+        currentLatitude: location.latitude,
+        currentLongitude: location.longitude,
       },
     });
   }

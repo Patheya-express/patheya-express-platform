@@ -2,8 +2,9 @@ name: backend-release
 
 # Section 9 (Release Management) + Section 2 (Backend Pipeline)'s publish stage. Triggered only
 # once backend-ci.yml has actually passed on the merge commit (workflow_run, not a duplicated
-# trigger) — this is the one workflow in this repo with AWS/ECR credentials and the one that opens
-# a GitOps PR. It never calls kubectl/helm/argocd (DO NOT IMPLEMENT).
+# trigger) — this is the one workflow in this repo with AWS/ECR credentials. It publishes images and
+# the GitHub Release only; Production deployment is backend-deploy-ecs.yml. It never calls
+# kubectl/helm/argocd (DO NOT IMPLEMENT).
 
 on:
   workflow_run:
@@ -20,7 +21,9 @@ permissions:
 jobs:
   version:
     name: Compute version
-    if: github.event.workflow_run.conclusion == 'success'
+    # `branches: [main]` matches the run's head branch, which a pull_request run (backend-ci runs
+    # on every PR) can also carry — e.g. a fork's own `main`. Only a push to main releases.
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     outputs:
       semver: ${{ steps.version.outputs.version }}
@@ -124,31 +127,9 @@ jobs:
             -f event_type=openapi-updated \
             -f "client_payload[release_tag]=${{ needs.release.outputs.tag }}"
 
-  gitops-update-development:
-    name: Open GitOps PR (development)
-    needs: [version, publish, publish-migrate]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Open image-update PR
-        uses: Patheya-express/patheya-express-platform/.github/actions/gitops-image-update@main
-        with:
-          github-token: ${{ secrets.GITOPS_PR_TOKEN }}
-          app-path: applications/backend/overlays/development
-          image-name-old: patheya-express-api-gateway
-          image-name-new: ${{ needs.publish.outputs.image-name }}
-          image-tag: ${{ needs.version.outputs.image-tag }}
-          migrate-image-name-old: patheya-express-api-gateway-migrate
-          migrate-image-name-new: ${{ needs.publish-migrate.outputs.image-name }}
-          migrate-image-tag: ${{ needs.version.outputs.image-tag }}-migrate
-          git-commit-sha: ${{ github.event.workflow_run.head_sha }}
-          build-id: ${{ github.run_id }}
-          environment: development
-          app-display-name: "Backend (api-gateway)"
-          auto-merge: "true"
-
   notify:
     name: Notify
-    needs: [version, publish, publish-migrate, release, gitops-update-development]
+    needs: [version, publish, publish-migrate, release]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -158,6 +139,5 @@ jobs:
           title: "backend-release: v${{ needs.version.outputs.semver }}"
           details: |
             Image: `${{ needs.publish.outputs.image-uri }}`
-            GitOps PR (development): see gitops-update-development job
           slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
           pagerduty-routing-key: ${{ secrets.PAGERDUTY_ROUTING_KEY }}

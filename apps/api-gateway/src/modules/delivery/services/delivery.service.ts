@@ -182,13 +182,19 @@ export class DeliveryService {
    * assignments never being created. A single "go available" action now satisfies both checks;
    * the standalone `/presence/online` endpoint still exists unchanged for heartbeat-style re-pings.
    */
-  async goAvailable(userId: string) {
+  async goAvailable(
+    userId: string,
+
+    location?: { latitude: number; longitude: number },
+  ) {
     await this.assertOnlineEligible(userId);
 
     const partner = await this.deliveryRepository.updatePartnerStatus(
       userId,
 
       DeliveryPartnerStatus.AVAILABLE,
+
+      location,
     );
 
     await this.presenceService.markOnline(userId);
@@ -199,6 +205,31 @@ export class DeliveryService {
     );
 
     return partner;
+  }
+
+  /**
+   * Always-on presence heartbeat (2026-09-16 follow-up) — closes the gap where
+   * `currentLatitude`/`currentLongitude` only ever got set once, at the moment a partner tapped
+   * "Go available" (see goAvailable's `location` param), then went stale for the rest of that
+   * online session. Called from `PresenceController.markOnline` whenever the client's periodic
+   * heartbeat (already firing every ~60s to keep Redis presence alive, independent of this
+   * change) includes a fresh GPS fix, so a rider's location on file is never more than one
+   * heartbeat interval old for as long as they're online — "always accessible unless offline or
+   * logged out" is enforced simply by the client only sending heartbeats while online/logged in,
+   * not by anything new here.
+   *
+   * Deliberately does not call assertOnlineEligible/re-check status: a heartbeat is a passive
+   * location refresh for a partner who (per the caller) already passed that gate to go online in
+   * the first place, and rejecting a stray late-arriving heartbeat from a partner who went
+   * SUSPENDED moments ago would gain nothing — dispatch's own eligibility checks (isVerified,
+   * status, findAvailablePartners' WHERE clause) independently re-verify at assignment time
+   * regardless of what this row's coordinates say.
+   */
+  async reportLocation(
+    userId: string,
+    location: { latitude: number; longitude: number },
+  ) {
+    return this.deliveryRepository.updatePartnerLocation(userId, location);
   }
 
   /** Also clears live Redis presence — the counterpart to goAvailable()'s fix above, so a

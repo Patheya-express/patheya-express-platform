@@ -59,7 +59,11 @@ describe('DispatchRepository — dispatch/assignment concurrency (real database)
 
   afterAll(async () => {
     if (createdOrderIds.length > 0) {
-      // DeliveryAssignment rows cascade-delete with their Order (schema.prisma: onDelete: Cascade).
+      // P0-CASCADE-3: DeliveryAssignment.order is now onDelete: Restrict (dispatch history must
+      // survive order deletion), so assignment rows must be deleted explicitly before their Order.
+      await prisma.deliveryAssignment.deleteMany({
+        where: { orderId: { in: createdOrderIds } },
+      });
       await prisma.order.deleteMany({ where: { id: { in: createdOrderIds } } });
     }
     if (createdUserIds.length > 0) {

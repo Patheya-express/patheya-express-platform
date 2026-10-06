@@ -14,6 +14,7 @@ import {
   PaymentProvider as ProviderType,
   PaymentMethod,
   AuditAction,
+  OrderStatus,
   type Payment,
 } from '@prisma/client';
 
@@ -36,9 +37,27 @@ import { getAllowedSourceStatuses } from '../constants/payment-state-machine';
 import { GetAdminPaymentsQueryDto } from '../dto/get-admin-payments-query.dto';
 import { PaginatedAdminPaymentsResponseDto } from '../dto/paginated-admin-payments-response.dto';
 import { AdminPaymentResponseDto } from '../dto/admin-payment-response.dto';
+import { MetricsService } from '../../metrics/metrics.service';
 
 /** Amounts within a paisa of each other are treated as equal — avoids float-rounding false negatives. */
 const AMOUNT_TOLERANCE = 0.01;
+
+/**
+ * Payment/order lifecycle — order states in which "pay for this order" (both the initial ONLINE
+ * checkout payment and, for a COD order, the Rule 6 "Complete Payment" online top-up) is still
+ * meaningful. Deliberately excludes DELIVERED (nothing left to pay for/against) and CANCELLED
+ * (the order no longer exists in any actionable sense) — every other status is still "this order
+ * is in progress," which is what payability actually tracks, independent of who's allowed to
+ * advance it next. Single source of truth, enforced here in createPayment (the one entry point
+ * for initiating a payment) rather than duplicated per caller.
+ */
+const PAYABLE_ORDER_STATUSES: OrderStatus[] = [
+  OrderStatus.PENDING,
+  OrderStatus.CONFIRMED,
+  OrderStatus.PREPARING,
+  OrderStatus.READY_FOR_PICKUP,
+  OrderStatus.OUT_FOR_DELIVERY,
+];
 
 /** Razorpay's captured-payment webhook entity uses lowercase method names — map onto our enum. */
 const RAZORPAY_METHOD_MAP: Record<string, string> = {
@@ -117,6 +136,8 @@ export class PaymentsService {
     private readonly logger: AppLoggerService,
 
     private readonly auditService: AuditService,
+
+    private readonly metrics: MetricsService,
   ) {}
 
   async createPayment(orderId: string, amount: number, userId: string) {
@@ -124,6 +145,7 @@ export class PaymentsService {
       where: { id: orderId },
       select: {
         customerId: true,
+        status: true,
         paymentStatus: true,
         totalAmount: true,
         walletAmountUsed: true,
@@ -140,6 +162,12 @@ export class PaymentsService {
 
     if (order.paymentStatus === PaymentStatus.PAID) {
       throw new ConflictException('Order already paid');
+    }
+
+    if (!PAYABLE_ORDER_STATUSES.includes(order.status)) {
+      throw new ConflictException(
+        `Payment can no longer be completed for an order in ${order.status} status`,
+      );
     }
 
     // The order may already be partially paid via wallet (C9 mixed payment) — the Razorpay leg
@@ -710,6 +738,11 @@ export class PaymentsService {
 
       if (!actuallyRefunded) {
         await this.paymentsRepository.finalizeRefundFailure(refund.id);
+
+        // The one place this refund attempt is confirmed to have reached the terminal FAILED
+        // state — incremented here, not in either OrdersService catch block this ConflictException
+        // subsequently propagates through, so a single failed attempt is counted exactly once.
+        this.metrics.recordRefundFailed();
 
         this.logger.error(
           {

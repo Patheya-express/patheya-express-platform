@@ -5,6 +5,7 @@ import { PrismaService } from '../../../infrastructure/database/prisma.service';
 import {
   AssignmentStatus,
   DeliveryPartnerStatus,
+  DeliveryProofType,
   OrderStatus,
   Prisma,
 } from '@prisma/client';
@@ -305,6 +306,26 @@ export class DispatchRepository {
                 id: true,
                 name: true,
                 phone: true,
+
+                // Live-bug fix (delivery workflow manual test) — Order.branchId is frequently
+                // null (checkout doesn't always resolve one; ~1 in 4 orders in practice), which
+                // left the rider with no pickup address/navigation at all. RestaurantBranch's
+                // pre-existing isPrimary/isActive flags exist for exactly this "default
+                // location" case, so DispatchService.getAssignments falls back to this branch
+                // when order.branch is unset — no schema change, no data duplication.
+                branches: {
+                  where: { isPrimary: true, isActive: true },
+                  take: 1,
+                  select: {
+                    addressLine1: true,
+                    addressLine2: true,
+                    city: true,
+                    state: true,
+                    postalCode: true,
+                    latitude: true,
+                    longitude: true,
+                  },
+                },
               },
             },
 
@@ -328,6 +349,17 @@ export class DispatchRepository {
                   },
                 },
               },
+            },
+
+            // Delivery Proof & Trust extension — lets DispatchService.getAssignments derive
+            // pickupPhotoUploaded without a second round-trip, so the delivery app can resume the
+            // correct workflow step after a refresh/relogin purely from this one response rather
+            // than trusting client-side memory. (Assignment-level arrivedAtRestaurantAt doesn't
+            // need a select here — it's a plain scalar on DeliveryAssignment, already returned by
+            // the top-level `include` below without a nested selection.)
+            proofPhotos: {
+              where: { type: DeliveryProofType.PICKUP },
+              select: { id: true },
             },
           },
         },
@@ -440,10 +472,54 @@ export class DispatchRepository {
         },
 
         restaurant: {
-          select: { status: true },
+          select: {
+            status: true,
+
+            // Radius dispatch revision (2026-09-16) — same Order.branchId-frequently-null
+            // fallback already established in findPartnerAssignments (rider pickup-location
+            // display): an order whose own branch FK never resolved still needs a pickup
+            // location to enforce the 5km dispatch radius against, so DispatchService falls back
+            // to the restaurant's primary/active branch. No schema change, no data duplication.
+            branches: {
+              where: { isPrimary: true, isActive: true },
+              take: 1,
+              select: { latitude: true, longitude: true },
+            },
+          },
         },
       },
     });
+  }
+
+  /**
+   * Batched — one query for every onlinePartners candidate, same MGET-style philosophy as
+   * findPartnerIdsWithActiveAssignment above. Returns each partner's most recent
+   * DeliveryAssignment timestamp across ALL of their orders/cycles/statuses (not scoped to this
+   * order) — used by DispatchService.selectPartnerByPriority to rank "who has gone longest
+   * without work" for the radius dispatch revision's idle-time priority. A partner with zero
+   * assignment rows ever (never offered anything) is simply absent from the returned Map;
+   * callers treat that as maximally idle, ranked ahead of anyone with real history.
+   */
+  async findLastAssignmentActivityForPartners(
+    partnerIds: string[],
+  ): Promise<Map<string, Date>> {
+    if (partnerIds.length === 0) {
+      return new Map();
+    }
+
+    const rows = await this.prisma.deliveryAssignment.groupBy({
+      by: ['deliveryPartnerId'],
+
+      where: { deliveryPartnerId: { in: partnerIds } },
+
+      _max: { assignedAt: true },
+    });
+
+    return new Map(
+      rows
+        .filter((row) => row._max.assignedAt !== null)
+        .map((row) => [row.deliveryPartnerId, row._max.assignedAt as Date]),
+    );
   }
 
   /**

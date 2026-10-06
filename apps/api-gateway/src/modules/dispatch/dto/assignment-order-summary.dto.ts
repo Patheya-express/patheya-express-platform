@@ -59,4 +59,10 @@ export class AssignmentOrderSummaryDto {
     type: () => [AssignmentOrderItemSummaryDto],
   })
   items: AssignmentOrderItemSummaryDto[];
+
+  @ApiProperty({
+    description:
+      'Whether the mandatory pickup-parcel photo has been uploaded for this order (DeliveryProofPhoto). Required before OUT_FOR_DELIVERY.',
+  })
+  pickupPhotoUploaded: boolean;
 }

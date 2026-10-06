@@ -1,5 +1,6 @@
 import { Controller, Get, Header } from '@nestjs/common';
 
+import { ApiOperation } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
 
 import { MetricsService } from './metrics.service';
@@ -16,6 +17,7 @@ export class MetricsController {
 
   @Get()
   @SkipThrottle()
+  @ApiOperation({ summary: 'Prometheus metrics exposition' })
   // prom-client's own default registry content-type (Registry.PROMETHEUS_CONTENT_TYPE) — static
   // here rather than read from the registry at request time since `@Header` requires a literal.
   @Header('Content-Type', 'text/plain; version=0.0.4; charset=utf-8')

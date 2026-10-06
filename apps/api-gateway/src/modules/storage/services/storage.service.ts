@@ -7,7 +7,7 @@ import type {
   UploadResult,
 } from '../interfaces/storage-provider.interface';
 
-import { UploadFile } from 'src/shared/types/upload-file.type';
+import { UploadFile } from '../../../shared/types/upload-file.type';
 
 import { MetricsService } from '../../metrics/metrics.service';
 

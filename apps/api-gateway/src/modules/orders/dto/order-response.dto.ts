@@ -31,7 +31,7 @@ export class OrderResponseDto {
 
   @ApiPropertyOptional({
     description:
-      'Only populated by endpoints that already join the restaurant (e.g. order history)',
+      'Only populated by endpoints that already join the restaurant (e.g. order history, order placement)',
   })
   restaurantName?: string;
 
@@ -82,6 +82,12 @@ export class OrderResponseDto {
 
   @ApiProperty()
   totalAmount: number;
+
+  @ApiProperty({
+    description:
+      "Portion of totalAmount already paid via wallet balance — the remainder is what any Razorpay payment must cover exactly (see PaymentsService.createPayment's remaining-amount check).",
+  })
+  walletAmountUsed: number;
 
   @ApiProperty()
   deliveryAddress: string;

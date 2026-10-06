@@ -25,16 +25,25 @@ describe('PaymentsService', () => {
     deactivateOrderAttempts: jest.Mock;
     claimStatusTransition: jest.Mock;
     createWebhookEvent: jest.Mock;
+    findActivePaymentForOrder: jest.Mock;
+    findLatestAttempt: jest.Mock;
+    createPayment: jest.Mock;
+    claimRefund: jest.Mock;
+    finalizeRefundFailure: jest.Mock;
+    finalizeRefundSuccess: jest.Mock;
   };
   let razorpayProvider: {
     verifyPaymentSignature: jest.Mock;
     verifyWebhookSignature: jest.Mock;
     fetchPayment: jest.Mock;
+    createOrder: jest.Mock;
+    refund: jest.Mock;
   };
   let eventBus: { publish: jest.Mock };
   let queueService: { addNotificationJob: jest.Mock };
   let logger: { log: jest.Mock; error: jest.Mock; warn: jest.Mock };
   let auditService: { log: jest.Mock };
+  let metrics: { recordRefundFailed: jest.Mock };
   let service: PaymentsService;
 
   const CUSTOMER_ID = 'customer-1';
@@ -71,6 +80,19 @@ describe('PaymentsService', () => {
       deactivateOrderAttempts: jest.fn().mockResolvedValue({ count: 1 }),
       claimStatusTransition: jest.fn(),
       createWebhookEvent: jest.fn().mockResolvedValue(undefined),
+      findActivePaymentForOrder: jest.fn().mockResolvedValue(null),
+      findLatestAttempt: jest.fn().mockResolvedValue(null),
+      createPayment: jest
+        .fn()
+        .mockImplementation((data) =>
+          Promise.resolve({ id: 'payment-1', ...data }),
+        ),
+      claimRefund: jest.fn(),
+      finalizeRefundFailure: jest.fn().mockResolvedValue({ count: 1 }),
+      finalizeRefundSuccess: jest.fn().mockResolvedValue({
+        paymentClaimCount: 1,
+        refundClaimCount: 1,
+      }),
     };
     razorpayProvider = {
       verifyPaymentSignature: jest.fn().mockResolvedValue(true),
@@ -80,6 +102,12 @@ describe('PaymentsService', () => {
         currency: 'INR',
         status: 'captured',
       }),
+      createOrder: jest.fn().mockResolvedValue({
+        id: 'order_rzp_1',
+        amount: 22000,
+        currency: 'INR',
+      }),
+      refund: jest.fn(),
     };
     eventBus = { publish: jest.fn().mockResolvedValue(undefined) };
     queueService = {
@@ -87,6 +115,7 @@ describe('PaymentsService', () => {
     };
     logger = { log: jest.fn(), error: jest.fn(), warn: jest.fn() };
     auditService = { log: jest.fn().mockResolvedValue(undefined) };
+    metrics = { recordRefundFailed: jest.fn() };
 
     service = new PaymentsService(
       paymentsRepository as any,
@@ -96,7 +125,98 @@ describe('PaymentsService', () => {
       {} as any, // prisma — unused directly by the methods under test
       logger as any,
       auditService as any,
+      metrics as any,
     );
+  });
+
+  /**
+   * Payment/order lifecycle "Payment Eligibility" — regression coverage for
+   * PAYABLE_ORDER_STATUSES enforcement in createPayment: PENDING/CONFIRMED/PREPARING/
+   * READY_FOR_PICKUP/OUT_FOR_DELIVERY orders may still be paid for (covers both the initial
+   * ONLINE checkout payment and, for a COD order, the "Complete Payment" online top-up);
+   * DELIVERED/CANCELLED may not. Uses a local `prisma.order.findUnique` mock + a separately
+   * constructed service instance (the outer `beforeEach` above deliberately stubs prisma as
+   * unused, since none of the pre-existing suites below call createPayment).
+   */
+  describe('createPayment', () => {
+    let prisma: { order: { findUnique: jest.Mock } };
+    let localService: PaymentsService;
+
+    function buildOrder(overrides: Partial<Record<string, unknown>> = {}) {
+      return {
+        customerId: CUSTOMER_ID,
+        status: 'PENDING',
+        paymentStatus: 'PENDING',
+        totalAmount: 220,
+        walletAmountUsed: 0,
+        ...overrides,
+      };
+    }
+
+    beforeEach(() => {
+      prisma = { order: { findUnique: jest.fn() } };
+      localService = new PaymentsService(
+        paymentsRepository as any,
+        razorpayProvider as any,
+        eventBus as any,
+        queueService as any,
+        prisma as any,
+        logger as any,
+        auditService as any,
+        metrics as any,
+      );
+    });
+
+    it.each([
+      'PENDING',
+      'CONFIRMED',
+      'PREPARING',
+      'READY_FOR_PICKUP',
+      'OUT_FOR_DELIVERY',
+    ])(
+      'allows initiating payment for an order in %s status',
+      async (status) => {
+        prisma.order.findUnique.mockResolvedValue(buildOrder({ status }));
+
+        await expect(
+          localService.createPayment('order-1', 220, CUSTOMER_ID),
+        ).resolves.toMatchObject({ payment: expect.anything() });
+      },
+    );
+
+    it.each(['DELIVERED', 'CANCELLED'])(
+      'rejects initiating payment for an order in %s status',
+      async (status) => {
+        prisma.order.findUnique.mockResolvedValue(buildOrder({ status }));
+
+        await expect(
+          localService.createPayment('order-1', 220, CUSTOMER_ID),
+        ).rejects.toThrow(ConflictException);
+      },
+    );
+
+    it('is payment-mode-agnostic — a COD order in a payable status can still initiate an online payment (Rule 6, "Complete Payment")', async () => {
+      // paymentMode isn't selected/read by createPayment at all — this just documents that a COD
+      // order (status already advanced by restaurant acceptance, exactly like Rule 6's example
+      // flow) goes through the identical, unmodified eligibility check as an ONLINE order.
+      prisma.order.findUnique.mockResolvedValue(
+        buildOrder({ status: 'OUT_FOR_DELIVERY' }),
+      );
+
+      await expect(
+        localService.createPayment('order-1', 220, CUSTOMER_ID),
+      ).resolves.toMatchObject({ payment: expect.anything() });
+    });
+
+    it('still rejects an already-paid order regardless of status', async () => {
+      prisma.order.findUnique.mockResolvedValue(
+        buildOrder({ status: 'PREPARING', paymentStatus: 'PAID' }),
+      );
+
+      await expect(
+        localService.createPayment('order-1', 220, CUSTOMER_ID),
+      ).rejects.toThrow(ConflictException);
+    });
   });
 
   describe('verifyPayment', () => {
@@ -447,6 +567,86 @@ describe('PaymentsService', () => {
       );
 
       expect(paymentsRepository.claimStatusTransition).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * P0-FIN-1B — regression coverage for the new `patheya_refunds_failed_total` counter
+   * (MetricsService.recordRefundFailed). Only the metrics call is under test here; refundPayment's
+   * own claim/reversal/idempotency behavior is unchanged and already covered by
+   * refund-integrity.concurrency.spec.ts (real database).
+   */
+  describe('refundPayment — failed refund metric', () => {
+    function buildClaimedRefund(
+      overrides: Partial<Record<string, unknown>> = {},
+    ) {
+      return {
+        claimed: true as const,
+        payment: buildPayment({
+          status: TransactionStatus.SUCCESS,
+          providerPaymentId: 'pay_rzp_1',
+        }),
+        refund: { id: 'refund-1', paymentId: 'payment-1', amount: 500 },
+        ...overrides,
+      };
+    }
+
+    it('a failed provider refund increments the counter exactly once', async () => {
+      paymentsRepository.claimRefund.mockResolvedValue(buildClaimedRefund());
+      razorpayProvider.refund = jest
+        .fn()
+        .mockRejectedValue(new Error('ECONNRESET'));
+      razorpayProvider.fetchPayment.mockResolvedValue({
+        refund_status: 'none',
+        amount_refunded: 0,
+      });
+
+      await expect(service.refundPayment('payment-1', 500)).rejects.toThrow(
+        ConflictException,
+      );
+
+      expect(paymentsRepository.finalizeRefundFailure).toHaveBeenCalledWith(
+        'refund-1',
+      );
+      expect(metrics.recordRefundFailed).toHaveBeenCalledTimes(1);
+    });
+
+    it('a successful refund does not increment the failure counter', async () => {
+      paymentsRepository.claimRefund.mockResolvedValue(buildClaimedRefund());
+      razorpayProvider.refund = jest.fn().mockResolvedValue({ id: 'rfnd_1' });
+      paymentsRepository.findById.mockResolvedValue(
+        buildPayment({ status: TransactionStatus.REFUNDED }),
+      );
+
+      await service.refundPayment('payment-1', 500);
+
+      expect(metrics.recordRefundFailed).not.toHaveBeenCalled();
+    });
+
+    it('two independent failed refund attempts increment the counter once each (twice total)', async () => {
+      paymentsRepository.claimRefund
+        .mockResolvedValueOnce(
+          buildClaimedRefund({ refund: { id: 'refund-1' } }),
+        )
+        .mockResolvedValueOnce(
+          buildClaimedRefund({ refund: { id: 'refund-2' } }),
+        );
+      razorpayProvider.refund = jest
+        .fn()
+        .mockRejectedValue(new Error('ECONNRESET'));
+      razorpayProvider.fetchPayment.mockResolvedValue({
+        refund_status: 'none',
+        amount_refunded: 0,
+      });
+
+      await expect(service.refundPayment('payment-1', 500)).rejects.toThrow(
+        ConflictException,
+      );
+      await expect(service.refundPayment('payment-2', 500)).rejects.toThrow(
+        ConflictException,
+      );
+
+      expect(metrics.recordRefundFailed).toHaveBeenCalledTimes(2);
     });
   });
 });
