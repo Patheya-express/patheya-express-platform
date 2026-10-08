@@ -1,8 +1,9 @@
-import { Controller, Get, Header } from '@nestjs/common';
+import { Controller, Get, Header, UseGuards } from '@nestjs/common';
 
 import { ApiOperation } from '@nestjs/swagger';
 import { SkipThrottle } from '@nestjs/throttler';
 
+import { MetricsAccessGuard } from './metrics-access.guard';
 import { MetricsService } from './metrics.service';
 
 /**
@@ -17,6 +18,7 @@ export class MetricsController {
 
   @Get()
   @SkipThrottle()
+  @UseGuards(MetricsAccessGuard)
   @ApiOperation({ summary: 'Prometheus metrics exposition' })
   // prom-client's own default registry content-type (Registry.PROMETHEUS_CONTENT_TYPE) — static
   // here rather than read from the registry at request time since `@Header` requires a literal.

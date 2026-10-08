@@ -1,8 +1,10 @@
 import { Module } from '@nestjs/common';
 
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 
 import configuration from './config/configuration';
+
+import { buildThrottlerOptions } from './config/rate-limit.config';
 
 import { envValidationSchema } from './config/env.validation';
 
@@ -30,7 +32,7 @@ import { MetricsModule } from './modules/metrics/metrics.module';
 import { RealtimeModule } from './modules/realtime/realtime.module';
 import { RedisModule } from './infrastructure/redis/redis.module';
 import { RedisInfrastructureModule } from './infrastructure/redis-infrastructure/redis-infrastructure.module';
-import { SystemModule } from './modules/system/system.module';
+import { systemModulesFor } from './modules/system/system.module';
 import { QueueInfrastructureModule } from './infrastructure/queues/queue-infrastructure.module';
 import { QueueProducerModule } from './infrastructure/queues/queue-producer.module';
 import { PaymentsModule } from './modules/payments/payments.module';
@@ -65,13 +67,11 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
       validationSchema: envValidationSchema,
     }),
 
-    ThrottlerModule.forRoot([
-      {
-        name: 'default',
-        ttl: 60000,
-        limit: 100,
-      },
-    ]),
+    // Per-client-IP limit; RATE_LIMIT_MAX (default 100/60 s) — see config/rate-limit.config.ts.
+    ThrottlerModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: buildThrottlerOptions,
+    }),
 
     PrismaModule,
 
@@ -107,7 +107,8 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 
     RedisInfrastructureModule,
 
-    SystemModule,
+    // Smoke-test utilities — not registered in production (see systemModulesFor).
+    ...systemModulesFor(process.env.NODE_ENV),
 
     QueueInfrastructureModule,
 

@@ -30,6 +30,8 @@ import { buildSwaggerDocument } from './swagger.config';
 
 import { registerProcessLifecycleHandlers } from './bootstrap/process-lifecycle';
 
+import { DEFAULT_RATE_LIMIT_MAX } from './config/rate-limit.config';
+
 /** Any localhost/127.0.0.1 origin, regardless of port — dev servers (`ng serve`) don't have a
  *  fixed port across the four apps, and this is local-machine-only convenience, not a security
  *  boundary. Never matches in production (NODE_ENV check happens at the call site). */
@@ -166,15 +168,32 @@ async function bootstrap() {
     shutdownTimeoutMs,
   });
 
-  const document = buildSwaggerDocument(app);
+  // Logged on every boot so the active limit is visible in the service logs; anything other than
+  // the default is a temporary load-test override and must be reverted (loadtest/k6/README.md).
+  const rateLimitMax = config.get<number>('rateLimit.max');
+  if (rateLimitMax === DEFAULT_RATE_LIMIT_MAX) {
+    logger.log(
+      `Rate limit: ${rateLimitMax} requests / 60s per client IP (default)`,
+      'Bootstrap',
+    );
+  } else {
+    logger.warn(
+      `Rate limit: ${rateLimitMax} requests / 60s per client IP — NON-DEFAULT (RATE_LIMIT_MAX override, default ${DEFAULT_RATE_LIMIT_MAX})`,
+      'Bootstrap',
+    );
+  }
 
-  SwaggerModule.setup('api/docs', app, document, {
-    swaggerOptions: {
-      persistAuthorization: true,
-    },
-    jsonDocumentUrl: 'api/docs-json',
-    yamlDocumentUrl: 'api/docs-yaml',
-  });
+  if (config.get<boolean>('swagger.enabled')) {
+    const document = buildSwaggerDocument(app);
+
+    SwaggerModule.setup('api/docs', app, document, {
+      swaggerOptions: {
+        persistAuthorization: true,
+      },
+      jsonDocumentUrl: 'api/docs-json',
+      yamlDocumentUrl: 'api/docs-yaml',
+    });
+  }
 
   await app.listen(process.env.PORT || 3000);
 }

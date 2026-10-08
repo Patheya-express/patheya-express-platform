@@ -311,4 +311,28 @@ describe('envValidationSchema', () => {
       expect(error?.message).toMatch(/LOG_TO_FILE/);
     });
   });
+
+  describe('exposure controls (SWAGGER_ENABLED, METRICS_AUTH_TOKEN)', () => {
+    it('both are optional — a complete production config without them passes', () => {
+      expect(validate(VALID_PRODUCTION_ENV).error).toBeUndefined();
+    });
+
+    it('SWAGGER_ENABLED accepts "true"/"false" and rejects anything else', () => {
+      const withFlag = (value: string) =>
+        validate({ ...VALID_PRODUCTION_ENV, SWAGGER_ENABLED: value }).error;
+      expect(withFlag('true')).toBeUndefined();
+      expect(withFlag('false')).toBeUndefined();
+      expect(withFlag('maybe')?.message).toMatch(/SWAGGER_ENABLED/);
+    });
+
+    it('METRICS_AUTH_TOKEN must be long and not a placeholder', () => {
+      const withToken = (value: string) =>
+        validate({ ...VALID_PRODUCTION_ENV, METRICS_AUTH_TOKEN: value }).error;
+      expect(withToken('k'.repeat(40))).toBeUndefined();
+      expect(withToken('short')?.message).toMatch(/METRICS_AUTH_TOKEN/);
+      expect(
+        withToken('replace-with-a-long-random-metrics-token-value')?.message,
+      ).toMatch(/placeholder/);
+    });
+  });
 });

@@ -46,6 +46,9 @@ production requires:
 | `CUSTOMER_APP_URL` / `RESTAURANT_APP_URL` / `ADMIN_APP_URL` / `DELIVERY_APP_URL` | Deployed origin of each frontend app — the CORS allowlist |
 | `API_PUBLIC_URL` | Optional — this API's own public origin, so Swagger UI's "Try it out" (served by this same process) isn't rejected by the CORS allowlist. Not needed in local dev (localhost is always allowed there) |
 | `EXTRA_ALLOWED_ORIGINS` | Optional, comma-separated — further CORS-allowed origins for future expansion, without a code change |
+| `RATE_LIMIT_MAX` | Optional — global requests per 60 s per client IP. Default **100** (normal production value). Raised only temporarily for a load test, then reverted (see `loadtest/k6/README.md`). Invalid values fail boot |
+| `SWAGGER_ENABLED` | Optional `true`/`false` — `/api/docs*`. Default: off in production, on elsewhere |
+| `METRICS_AUTH_TOKEN` | Optional, ≥ 32 chars — bearer token for `/metrics` in production. Unset: production `/metrics` answers only in-task loopback callers (404 for everyone else). Non-production is unchanged (open) |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` | Password-reset email delivery |
 
 Optional, feature-gated variables (`STORAGE_DRIVER=cloudinary` + `CLOUDINARY_*`,
