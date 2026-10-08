@@ -53,7 +53,8 @@ series() { # namespace metric stat dimensions...
   aws cloudwatch get-metric-statistics --namespace "$ns" --metric-name "$metric" \
     --dimensions "$@" --statistics "$stat" --period 60 \
     --start-time "$(date -u -d "-$((SUSTAIN_MINUTES + 3)) min" +%FT%TZ)" --end-time "$(date -u +%FT%TZ)" \
-    --query "sort_by(Datapoints,&Timestamp)[-${SUSTAIN_MINUTES}:].${stat}" --output text 2>/dev/null
+    --query "sort_by(Datapoints,&Timestamp)[-${SUSTAIN_MINUTES}:].${stat}" --output text 2>/dev/null \
+    | tr -d '\r' # Windows AWS CLI ends text-output lines with \r\n
 }
 
 # True when there are SUSTAIN_MINUTES datapoints and every one is above the limit.
@@ -62,8 +63,8 @@ sustained_above() { # "values" limit
     END { exit !(n >= need && !ok) }' <<<"$1"
 }
 
-lb_arn=$(aws elbv2 describe-load-balancers --names "${PREFIX}-alb" --query 'LoadBalancers[0].LoadBalancerArn' --output text)
-tg_arn=$(aws elbv2 describe-target-groups --names "${PREFIX}-api-tg" --query 'TargetGroups[0].TargetGroupArn' --output text)
+lb_arn=$(aws elbv2 describe-load-balancers --names "${PREFIX}-alb" --query 'LoadBalancers[0].LoadBalancerArn' --output text | tr -d '\r')
+tg_arn=$(aws elbv2 describe-target-groups --names "${PREFIX}-api-tg" --query 'TargetGroups[0].TargetGroupArn' --output text | tr -d '\r')
 LB_DIM="Name=LoadBalancer,Value=${lb_arn#*:loadbalancer/}"
 TG_DIM="Name=TargetGroup,Value=${tg_arn##*:}"
 ECS_API=("Name=ClusterName,Value=${PREFIX}-ecs" "Name=ServiceName,Value=${PREFIX}-api")

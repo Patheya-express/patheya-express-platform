@@ -21,7 +21,9 @@ rm -f results/preflight.json
 failures=0
 pass() { printf '  PASS  %s\n' "$1"; }
 fail() { printf '  FAIL  %s\n' "$1"; failures=$((failures + 1)); }
-q() { aws "$@" --output text 2>/dev/null || echo "ERROR"; }
+# Strips CR: the Windows AWS CLI ends text-output lines with \r\n, and `read` would otherwise
+# keep the \r on the last field (e.g. $'None\r'), breaking exact comparisons.
+q() { { aws "$@" --output text 2>/dev/null || echo "ERROR"; } | tr -d '\r'; }
 
 echo "Preflight: ${PREFIX} in ${AWS_REGION} -> ${BASE_URL}"
 

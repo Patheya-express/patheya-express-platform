@@ -12,11 +12,12 @@ export AWS_REGION="${AWS_REGION:-ap-south-1}"
 PREFIX="${NAME_PREFIX:-patheya-production}"
 DEFAULT_LIMIT=100
 
+# `tr -d '\r'`: the Windows AWS CLI ends text-output lines with \r\n (see preflight.sh q()).
 read -r td_arn rollout < <(aws ecs describe-services --cluster "${PREFIX}-ecs" --services "${PREFIX}-api" \
-  --query 'services[0].deployments[?status==`PRIMARY`] | [0].[taskDefinition,rolloutState]' --output text)
+  --query 'services[0].deployments[?status==`PRIMARY`] | [0].[taskDefinition,rolloutState]' --output text | tr -d '\r')
 raw=$(aws ecs describe-task-definition --task-definition "$td_arn" \
   --query 'taskDefinition.containerDefinitions[?name==`api`] | [0].environment[?name==`RATE_LIMIT_MAX`] | [0].value' \
-  --output text)
+  --output text | tr -d '\r')
 
 if [[ "$raw" == "None" || -z "$raw" ]]; then
   active=$DEFAULT_LIMIT; source_desc="unset -> default"

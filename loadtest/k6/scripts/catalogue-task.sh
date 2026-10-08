@@ -25,8 +25,9 @@ PREFIX="${NAME_PREFIX:-patheya-production}"
 CLUSTER="${PREFIX}-ecs"
 LOG_GROUP="${LOG_GROUP:-/patheya-express/production/ecs/api}"
 
+# `tr -d '\r'` on text captures: the Windows AWS CLI ends text-output lines with \r\n.
 task_def=$(aws ecs describe-services --cluster "$CLUSTER" --services "${PREFIX}-api" \
-  --query 'services[0].taskDefinition' --output text)
+  --query 'services[0].taskDefinition' --output text | tr -d '\r')
 network=$(aws ecs describe-services --cluster "$CLUSTER" --services "${PREFIX}-api" \
   --query 'services[0].networkConfiguration' --output json)
 
@@ -39,13 +40,13 @@ overrides="{\"containerOverrides\":[{\"name\":\"api\",\"command\":[${cmd_json:1}
 echo "Running '${command} $*' as a one-off task on ${task_def##*/} ..."
 task_arn=$(aws ecs run-task --cluster "$CLUSTER" --launch-type FARGATE --task-definition "$task_def" \
   --network-configuration "$network" --overrides "$overrides" --started-by "loadtest-catalogue-${command}" \
-  --query 'tasks[0].taskArn' --output text)
+  --query 'tasks[0].taskArn' --output text | tr -d '\r')
 task_id=${task_arn##*/}
 echo "task ${task_id} started; waiting for it to stop ..."
 aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$task_arn"
 
 exit_code=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$task_arn" \
-  --query 'tasks[0].containers[?name==`api`] | [0].exitCode' --output text)
+  --query 'tasks[0].containers[?name==`api`] | [0].exitCode' --output text | tr -d '\r')
 aws logs get-log-events --log-group-name "$LOG_GROUP" --log-stream-name "api/api/${task_id}" \
   --start-from-head --query 'events[].message' --output text | tr '\t' '\n'
 echo "task ${task_id} exit code: ${exit_code}"
