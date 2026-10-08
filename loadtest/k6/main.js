@@ -13,6 +13,7 @@ import {
   ALLOW_EMPTY_CATALOG,
   MAX_RPS,
   PROFILE,
+  assertPreflightStamp,
   assertTargetAllowed,
   buildStages,
   buildThresholds,
@@ -24,8 +25,16 @@ import { BASE_SEARCH_TERMS, browse, pickJourney } from './lib/journeys.js';
 
 // --- init-time safety gates (run before any request is sent) -----------------------------------
 
-assertTargetAllowed(() => open('./results/preflight.json'));
+assertTargetAllowed();
 const STAGES = buildStages();
+
+// Read here (open() is init-only) but validated in setup() — see assertPreflightStamp().
+let PREFLIGHT_STAMP = null;
+try {
+  PREFLIGHT_STAMP = open('./results/preflight.json');
+} catch (_) {
+  PREFLIGHT_STAMP = null; // missing stamp: rejected in setup() for production targets
+}
 
 export const options = {
   scenarios: {
@@ -53,6 +62,8 @@ const authFallbacks = new Counter('auth_fallbacks');
 // --- setup: one readiness check, catalogue discovery, optional single login --------------------
 
 export function setup() {
+  // Production gate, part 2 — first statement, before any request (including readiness).
+  assertPreflightStamp(PREFLIGHT_STAMP);
   if (!isReady()) throw new Error('GET /api/v1/health/ready is not 200 — refusing to start');
 
   const restaurants = [];
