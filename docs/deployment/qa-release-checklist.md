@@ -123,8 +123,8 @@ Why this order specifically:
       confirm no immediate disconnect.
 - [ ] Trigger one BullMQ-backed action (e.g. a notification-producing event) and confirm the Worker
       actually processes it, not just that the Web Service accepted the request.
-- [ ] Hit `/api/docs` (Swagger) and confirm it loads — always mounted regardless of environment
-      (Phase DEV-1 finding).
+- [ ] Hit `/api/docs` (Swagger) and confirm it loads — mounted by default in every environment
+      except production (`NODE_ENV=production` defaults it off; `SWAGGER_ENABLED` overrides).
 
 ### Rollback
 - [ ] **Web Service / Worker**: use Render's own deploy history to redeploy the previous successful

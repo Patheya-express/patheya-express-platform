@@ -1,7 +1,29 @@
+import { isSwaggerEnabled } from '../swagger.config';
+
+import { parseRateLimitMax } from './rate-limit.config';
+
 export default () => ({
   app: {
     port: parseInt(process.env.PORT || '3000', 10),
     nodeEnv: process.env.NODE_ENV,
+  },
+
+  /** Global per-client-IP request limit per 60 s — see rate-limit.config.ts. Default 100. */
+  rateLimit: {
+    max: parseRateLimitMax(process.env.RATE_LIMIT_MAX),
+  },
+
+  /** `/api/docs*` — off in production unless SWAGGER_ENABLED=true; on everywhere else. */
+  swagger: {
+    enabled: isSwaggerEnabled(
+      process.env.NODE_ENV,
+      process.env.SWAGGER_ENABLED,
+    ),
+  },
+
+  /** Optional bearer token for `/metrics` in production — see MetricsAccessGuard. */
+  metrics: {
+    authToken: process.env.METRICS_AUTH_TOKEN || undefined,
   },
 
   database: {

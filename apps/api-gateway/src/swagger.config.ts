@@ -3,6 +3,23 @@ import { INestApplication } from '@nestjs/common';
 import { DocumentBuilder, OpenAPIObject, SwaggerModule } from '@nestjs/swagger';
 
 /**
+ * Whether main.ts mounts the live Swagger UI/JSON/YAML at `/api/docs*`. Production defaults to
+ * off: nothing consumes the live production document (the frontend api-sdk is generated from
+ * localhost, CI exports it in-process via scripts/export-openapi.ts), and a public, complete map
+ * of every route is unnecessary exposure. SWAGGER_ENABLED=true|false overrides the default in any
+ * environment; development/staging/QA keep it on by default.
+ */
+export function isSwaggerEnabled(
+  nodeEnv: string | undefined,
+  raw: string | undefined,
+): boolean {
+  const flag = raw?.trim().toLowerCase();
+  if (flag === 'true') return true;
+  if (flag === 'false') return false;
+  return nodeEnv !== 'production';
+}
+
+/**
  * Shared by main.ts (live `/api/docs*`) and scripts/export-openapi.ts (static CI artifact) so the
  * two can never drift apart — platform-standards.md Section 15/21 requires the OpenAPI document
  * to be the single source of truth the frontend `api-sdk` is generated from.

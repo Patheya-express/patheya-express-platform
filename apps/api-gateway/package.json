@@ -18,6 +18,7 @@
     "lint:ratchet": "tsx scripts/lint-ratchet.ts verify",
     "lint:baseline:update": "tsx scripts/lint-ratchet.ts update",
     "test:lint-ratchet": "tsx --test scripts/lint-ratchet.test.ts",
+    "test:loadtest-catalogue": "tsx --test scripts/loadtest-catalogue/plan.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "jest",
     "test:watch": "jest --watch",

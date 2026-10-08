@@ -1,5 +1,7 @@
 import * as Joi from 'joi';
 
+import { RATE_LIMIT_MAX_UPPER_BOUND } from './rate-limit.config';
+
 /**
  * Case-insensitive substrings that indicate an unedited placeholder value was copied straight
  * from .env.example / .env.qa.example rather than replaced with a real secret — e.g.
@@ -258,4 +260,24 @@ export const envValidationSchema = Joi.object({
   // connection retries before giving up; defaults to 60 (~81s ride-out window) if unset.
   REDIS_MAX_RECONNECT_ATTEMPTS: Joi.number().integer().positive().optional(),
   APP_NAME: Joi.string().optional(),
+
+  // Global per-client-IP requests per 60 s (rate-limit.config.ts). Unset/blank = 100, the normal
+  // production value. Only a temporary load-test deployment sets it higher (loadtest/k6/README.md).
+  RATE_LIMIT_MAX: Joi.number()
+    .integer()
+    .min(1)
+    .max(RATE_LIMIT_MAX_UPPER_BOUND)
+    .optional()
+    .allow(''),
+  // Live `/api/docs*`. Default: off in production, on elsewhere (swagger.config.ts).
+  SWAGGER_ENABLED: Joi.boolean().truthy('true').falsy('false').optional(),
+  // Optional bearer token for `/metrics` in production (MetricsAccessGuard). Unset = loopback only.
+  METRICS_AUTH_TOKEN: Joi.string()
+    .min(32)
+    .custom(rejectPlaceholder)
+    .optional()
+    .messages({
+      ...PLACEHOLDER_MESSAGES,
+      'string.min': '"{{#label}}" must be at least {{#limit}} characters long',
+    }),
 }).unknown(true);

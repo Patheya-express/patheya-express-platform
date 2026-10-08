@@ -16,6 +16,8 @@ import { getRedisConnectionOptions } from '../src/infrastructure/redis/redis-con
  * Env vars:
  *  - SMOKE_TEST_BASE_URL (default http://localhost:3000) — the deployed instance to test.
  *  - SMOKE_TEST_TIMEOUT_MS (default 5000) — per-check timeout.
+ *  - SMOKE_TEST_METRICS_TOKEN — the deployed METRICS_AUTH_TOKEN, if any; needed for the `/metrics`
+ *    check against production, where the endpoint is internal-only (skipped without it).
  *  - JWT_ACCESS_SECRET — same secret the deployed instance validates websocket tokens with;
  *    required only for the websocket check (used to *locally sign* a throwaway token, never sent
  *    to any endpoint) — skipped if absent.
@@ -183,7 +185,20 @@ async function checkWebsocketConnection(): Promise<CheckOutcome> {
  *  had no exclusion for `/metrics`, so a real Prometheus server could never actually scrape this
  *  endpoint (its exposition-format parser has no notion of a JSON wrapper). */
 async function checkMetricsEndpoint(): Promise<CheckOutcome> {
-  const res = await fetch(`${BASE_URL}/metrics`);
+  // In production `/metrics` is internal-only (MetricsAccessGuard): loopback peers or
+  // `Authorization: Bearer <METRICS_AUTH_TOKEN>`. Without a token, a 404 there is the expected,
+  // correct answer for a remote caller — reported as skipped, not as a failure.
+  const token = process.env.SMOKE_TEST_METRICS_TOKEN;
+  const res = await fetch(`${BASE_URL}/metrics`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+
+  if (res.status === 404 && !token) {
+    return {
+      status: 'skipped',
+      detail: 'HTTP 404 — protected (production); set SMOKE_TEST_METRICS_TOKEN to check it',
+    };
+  }
 
   if (!res.ok) {
     return { status: 'fail', detail: `HTTP ${res.status}` };
