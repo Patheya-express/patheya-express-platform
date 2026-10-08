@@ -141,10 +141,10 @@ export function buildThresholds(stages) {
   return thresholds;
 }
 
-// Refuses to target production unless scripts/preflight.sh passed within the last 15 minutes and
-// the operator confirmed explicitly. Runs at init time, before any VU sends a request.
-// `readStamp` is passed in from main.js because open() must resolve relative to the entry script.
-export function assertTargetAllowed(readStamp) {
+// Production gate, part 1 (init time): https-only for non-local targets, and production requires
+// CONFIRM_PRODUCTION=I_UNDERSTAND. Time-independent, so it is safe for k6 to re-run init (it does,
+// e.g. for handleSummary). Part 2 — the preflight stamp — is assertPreflightStamp(), run in setup().
+export function assertTargetAllowed() {
   const match = BASE_URL.match(/^(https?):\/\/([^/:]+)/);
   if (!match) {
     throw new Error('BASE_URL must be set to an http(s) origin (e.g. https://api.patheyaexpress.com)');
@@ -159,9 +159,20 @@ export function assertTargetAllowed(readStamp) {
   if (__ENV.CONFIRM_PRODUCTION !== 'I_UNDERSTAND') {
     throw new Error('Targeting production requires CONFIRM_PRODUCTION=I_UNDERSTAND');
   }
+}
+
+// Production gate, part 2: scripts/preflight.sh must have passed for this BASE_URL within the last
+// 15 minutes. Called as the first statement of setup(), so it runs exactly once, before any request
+// (including the readiness check), and is NOT re-evaluated when k6 re-runs init to produce the
+// end-of-test summary — a run longer than 15 minutes keeps its summary. `stampText` is read at init
+// time by main.js (open() is init-only and must resolve relative to the entry script); null = missing.
+export function assertPreflightStamp(stampText) {
+  if (!PRODUCTION_HOSTS.includes(BASE_URL.replace(/^https?:\/\//, '').split(/[/:]/)[0])) return;
+
   let stamp;
   try {
-    stamp = JSON.parse(readStamp());
+    if (!stampText) throw new Error('missing'); // JSON.parse(null) would not throw
+    stamp = JSON.parse(stampText);
   } catch (_) {
     throw new Error('No results/preflight.json — run scripts/preflight.sh first (it must pass)');
   }
