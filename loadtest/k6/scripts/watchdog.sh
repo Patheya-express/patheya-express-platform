@@ -113,11 +113,12 @@ while true; do
   sustained_above "$redis_cpu" "$REDIS_CPU_MAX" && stop_k6 "Redis engine CPU > ${REDIS_CPU_MAX}% for ${SUSTAIN_MINUTES}m"
   sustained_above "$redis_mem" "$REDIS_MEM_MAX" && stop_k6 "Redis memory > ${REDIS_MEM_MAX}% for ${SUSTAIN_MINUTES}m"
 
-  # Target health is critical immediately — no sustain window.
-  last_healthy=${healthy##* }
+  # Target health is critical immediately — no sustain window. Latest datapoint = last
+  # whitespace-separated field (the AWS CLI separates datapoints with tabs, not spaces).
+  last_healthy=$(awk '{print $NF}' <<<"$healthy")
   [[ -n "$last_healthy" && "$last_healthy" != "None" ]] && awk -v h="$last_healthy" 'BEGIN { exit !(h < 1) }' \
     && stop_k6 "ALB HealthyHostCount dropped to ${last_healthy}"
-  last_unhealthy=${unhealthy##* }
+  last_unhealthy=$(awk '{print $NF}' <<<"$unhealthy")
   [[ -n "$last_unhealthy" && "$last_unhealthy" != "None" ]] && awk -v u="$last_unhealthy" 'BEGIN { exit !(u > 0) }' \
     && stop_k6 "ALB UnHealthyHostCount = ${last_unhealthy}"
 
