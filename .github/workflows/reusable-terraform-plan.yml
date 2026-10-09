@@ -91,14 +91,24 @@ jobs:
           tflint --init
           tflint --recursive
 
+      # Pinned binary + pinned SHA-256 instead of aquasecurity/tfsec-action: the action resolves
+      # "latest" through the GitHub API, which rate-limits unauthenticated runner IPs and rejects
+      # authenticated ones (the aquasecurity org enforces an IP allow list). A release-asset download
+      # uses neither path. Report-only (--soft-fail), as the action actually ran: despite
+      # soft_fail: false its entrypoint passed --soft-fail, so tfsec findings never failed a job.
+      # Making it blocking is a separate decision (findings are tracked in the Terraform repo's
+      # docs/ci-baseline.md backlog).
       - name: tfsec
-        uses: aquasecurity/tfsec-action@v1.0.3
-        with:
-          working_directory: ${{ inputs.working-directory }}
-          soft_fail: false
-          # Authenticated release lookup — unauthenticated GitHub API calls from shared runners hit the
-          # rate limit and the action's installer aborts before tfsec runs.
-          github_token: ${{ github.token }}
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          TFSEC_VERSION: v1.28.14
+          TFSEC_SHA256: a32d0799bbefababaa4fcd814da9f4d251cd932789590b99d1d5fcb89ace6f68
+        run: |
+          bin="$RUNNER_TEMP/tfsec"
+          curl -sSfL -o "$bin" "https://github.com/aquasecurity/tfsec/releases/download/${TFSEC_VERSION}/tfsec-linux-amd64"
+          echo "${TFSEC_SHA256}  $bin" | sha256sum -c -
+          chmod +x "$bin"
+          "$bin" --no-color --soft-fail .
 
       - name: Checkov
         uses: bridgecrewio/checkov-action@v12
