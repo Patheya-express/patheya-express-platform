@@ -2,8 +2,14 @@ name: Reusable / Terraform validate + plan
 
 # platform-standards.md Section 9/10: fmt -check and validate are required CI checks on every PR;
 # this workflow adds tflint/tfsec/Checkov on top (this task's Section 4) and, for a real
-# environment directory (not a bare module), a saved plan artifact — never an apply. No job in this
-# workflow ever runs `terraform apply`.
+# environment directory (not a bare module), a plan — never an apply. No job in this workflow ever
+# runs `terraform apply`.
+#
+# The plan is never saved or uploaded. A binary plan file embeds the prior state, and for layers that
+# manage credentials (database passwords, the Redis AUTH token, DATABASE_URL secrets) that state holds
+# them in plain text — an artifact would copy those secrets out of AWS to anyone with read access to
+# the repository's Actions. Full plan output stays in the runner's temp directory and is deleted;
+# only the summary line and the resource addresses/actions are published to the job summary.
 
 on:
   workflow_call:
@@ -90,6 +96,9 @@ jobs:
         with:
           working_directory: ${{ inputs.working-directory }}
           soft_fail: false
+          # Authenticated release lookup — unauthenticated GitHub API calls from shared runners hit the
+          # rate limit and the action's installer aborts before tfsec runs.
+          github_token: ${{ github.token }}
 
       - name: Checkov
         uses: bridgecrewio/checkov-action@v12
@@ -99,22 +108,28 @@ jobs:
           quiet: true
           soft_fail: false
 
-      - name: terraform plan
+      - name: terraform plan (no plan file, summary only)
         if: inputs.needs-plan
         working-directory: ${{ inputs.working-directory }}
-        run: terraform plan -input=false -out=tfplan
-
-      - name: Compute safe artifact name
-        if: inputs.needs-plan
-        id: artifact-name
         run: |
-          safe=$(echo "${{ inputs.working-directory }}" | tr '/' '-')
-          echo "name=tfplan-${safe}" >> "$GITHUB_OUTPUT"
-
-      - name: Upload plan artifact
-        if: inputs.needs-plan
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ steps.artifact-name.outputs.name }}
-          path: ${{ inputs.working-directory }}/tfplan
-          retention-days: 14
+          out="$RUNNER_TEMP/plan-output.txt"
+          trap 'rm -f "$out"' EXIT
+          set +e
+          terraform plan -input=false -no-color -detailed-exitcode > "$out" 2>&1
+          rc=$?
+          set -e
+          {
+            echo "### terraform plan: ${{ inputs.working-directory }}"
+            echo
+            echo '```'
+            grep -E '^(Plan:|No changes.|Error: )' "$out" || true
+            grep -E '^  # .* (will|must) be ' "$out" | sed -E 's/^  # //' || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          grep -E '^(Plan:|No changes.)' "$out" || true
+          if [ "$rc" -eq 1 ]; then
+            # Error lines only; never the full plan body.
+            grep -E '^(Error: |  on |│ Error)' "$out" | head -20 >&2 || true
+            exit 1
+          fi
+          exit 0
