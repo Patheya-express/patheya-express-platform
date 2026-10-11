@@ -25,6 +25,7 @@ import { MetricsModule } from './modules/metrics/metrics.module';
 import { QueueInfrastructureModule } from './infrastructure/queues/queue-infrastructure.module';
 import { QueueProducerModule } from './infrastructure/queues/queue-producer.module';
 import { QueueWorkerModule } from './infrastructure/queues/queue-worker.module';
+import { QueueMetricsModule } from './infrastructure/queues/metrics/queue-metrics.module';
 
 import { EventsModule } from './modules/events/events.module';
 
@@ -79,6 +80,7 @@ import { EventsModule } from './modules/events/events.module';
     QueueInfrastructureModule,
     QueueProducerModule,
     QueueWorkerModule,
+    QueueMetricsModule,
   ],
 })
 export class WorkerModule {}
