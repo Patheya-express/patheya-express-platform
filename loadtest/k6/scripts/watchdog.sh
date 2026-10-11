@@ -33,8 +33,22 @@ REDIS_MEM_MAX="${REDIS_MEM_MAX:-75}"
 METRICS_URL="${METRICS_URL:-}"
 QUEUE_GROWTH_POLLS="${QUEUE_GROWTH_POLLS:-5}"
 QUEUE_MIN_DEPTH="${QUEUE_MIN_DEPTH:-100}"
+# CloudWatch queue backlog published by the worker (Patheya/Queues BacklogWaiting, Maximum);
+# needs no /metrics token. An absent metric (publisher not deployed) skips the check.
+QUEUE_NAMESPACE="${QUEUE_NAMESPACE:-Patheya/Queues}"
+QUEUE_ENVIRONMENT="${QUEUE_ENVIRONMENT:-production}"
+QUEUE_BACKLOG_MAX="${QUEUE_BACKLOG_MAX:-200}"
+# HTTP 5xx per minute, ALB-generated + target-generated, sustained.
+HTTP_5XX_PER_MIN_MAX="${HTTP_5XX_PER_MIN_MAX:-10}"
+# Aurora writer latency in seconds (Average), sustained.
+DB_READ_LATENCY_MAX="${DB_READ_LATENCY_MAX:-0.05}"
+DB_WRITE_LATENCY_MAX="${DB_WRITE_LATENCY_MAX:-0.05}"
+# Capacity/cost ceiling: a service held at its autoscaling maximum means the test is measuring
+# the ceiling at maximum cost — stop rather than sit there. Defaults are the live maxima.
+API_TASKS_MAX="${API_TASKS_MAX:-6}"
+WORKER_TASKS_MAX="${WORKER_TASKS_MAX:-3}"
 
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 mkdir -p results
 LOG="results/watchdog-$(date -u +%Y%m%dT%H%M%SZ).log"
 
@@ -72,6 +86,10 @@ ECS_WORKER=("Name=ClusterName,Value=${PREFIX}-ecs" "Name=ServiceName,Value=${PRE
 DB_DIM="Name=DBInstanceIdentifier,Value=${PREFIX}-aurora-writer"
 REDIS_DIM="Name=CacheClusterId,Value=${PREFIX}-redis-001"
 
+QUEUE_DIM="Name=Environment,Value=${QUEUE_ENVIRONMENT}"
+at_max_api=0
+at_max_worker=0
+
 echo "watchdog: polling every ${POLL_SECONDS}s, sustain=${SUSTAIN_MINUTES}m, db_conn_max=${DB_CONN_MAX}, log=${LOG}"
 not_ready=0
 k6_missing=0
@@ -93,6 +111,13 @@ while true; do
   redis_mem=$(series AWS/ElastiCache DatabaseMemoryUsagePercentage Maximum "$REDIS_DIM")
   healthy=$(series AWS/ApplicationELB HealthyHostCount Minimum "$TG_DIM" "$LB_DIM")
   unhealthy=$(series AWS/ApplicationELB UnHealthyHostCount Maximum "$TG_DIM" "$LB_DIM")
+  elb5xx=$(series AWS/ApplicationELB HTTPCode_ELB_5XX_Count Sum "$LB_DIM")
+  tgt5xx=$(series AWS/ApplicationELB HTTPCode_Target_5XX_Count Sum "$TG_DIM" "$LB_DIM")
+  db_rlat=$(series AWS/RDS ReadLatency Average "$DB_DIM")
+  db_wlat=$(series AWS/RDS WriteLatency Average "$DB_DIM")
+  backlog=$(series "$QUEUE_NAMESPACE" BacklogWaiting Maximum "$QUEUE_DIM")
+  desired=$(aws ecs describe-services --cluster "${PREFIX}-ecs" --services "${PREFIX}-api" "${PREFIX}-worker" \
+    --query 'services[].desiredCount' --output text 2>/dev/null | tr -d '\r')
   ready=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${BASE_URL%/}/api/v1/health/ready" || echo 000)
 
   queue="n/a"
@@ -103,8 +128,8 @@ while true; do
       || queue="n/a"
   fi
 
-  printf '%s api_cpu=[%s] api_mem=[%s] worker_cpu=[%s] db_cpu=[%s] db_conn=[%s] redis_cpu=[%s] redis_mem=[%s] healthy=[%s] unhealthy=[%s] ready=%s queue_waiting=%s\n' \
-    "$(date -u +%FT%TZ)" "$api_cpu" "$api_mem" "$wrk_cpu" "$db_cpu" "$db_conn" "$redis_cpu" "$redis_mem" "$healthy" "$unhealthy" "$ready" "$queue" | tee -a "$LOG"
+  printf '%s api_cpu=[%s] api_mem=[%s] worker_cpu=[%s] db_cpu=[%s] db_conn=[%s] db_rlat=[%s] db_wlat=[%s] redis_cpu=[%s] redis_mem=[%s] healthy=[%s] unhealthy=[%s] elb5xx=[%s] tgt5xx=[%s] backlog=[%s] desired=[%s] ready=%s queue_waiting=%s
+'     "$(date -u +%FT%TZ)" "$api_cpu" "$api_mem" "$wrk_cpu" "$db_cpu" "$db_conn" "$db_rlat" "$db_wlat" "$redis_cpu" "$redis_mem" "$healthy" "$unhealthy" "$elb5xx" "$tgt5xx" "$backlog" "$desired" "$ready" "$queue" | tee -a "$LOG"
 
   sustained_above "$api_cpu" "$ECS_API_CPU_MAX" && stop_k6 "ECS API CPU > ${ECS_API_CPU_MAX}% for ${SUSTAIN_MINUTES}m"
   sustained_above "$api_mem" "$ECS_API_MEM_MAX" && stop_k6 "ECS API memory > ${ECS_API_MEM_MAX}% for ${SUSTAIN_MINUTES}m"
@@ -112,6 +137,20 @@ while true; do
   sustained_above "$db_conn" "$DB_CONN_MAX" && stop_k6 "Aurora connections > ${DB_CONN_MAX} for ${SUSTAIN_MINUTES}m"
   sustained_above "$redis_cpu" "$REDIS_CPU_MAX" && stop_k6 "Redis engine CPU > ${REDIS_CPU_MAX}% for ${SUSTAIN_MINUTES}m"
   sustained_above "$redis_mem" "$REDIS_MEM_MAX" && stop_k6 "Redis memory > ${REDIS_MEM_MAX}% for ${SUSTAIN_MINUTES}m"
+  sustained_above "$db_rlat" "$DB_READ_LATENCY_MAX" && stop_k6 "Aurora read latency > ${DB_READ_LATENCY_MAX}s for ${SUSTAIN_MINUTES}m"
+  sustained_above "$db_wlat" "$DB_WRITE_LATENCY_MAX" && stop_k6 "Aurora write latency > ${DB_WRITE_LATENCY_MAX}s for ${SUSTAIN_MINUTES}m"
+  # 5xx counts only have datapoints in minutes that had a 5xx, so "sustained" here means the last
+  # SUSTAIN_MINUTES minutes that had any were all over the limit, within the series window.
+  sustained_above "$elb5xx" "$HTTP_5XX_PER_MIN_MAX" && stop_k6 "ALB 5xx > ${HTTP_5XX_PER_MIN_MAX}/min for ${SUSTAIN_MINUTES}m"
+  sustained_above "$tgt5xx" "$HTTP_5XX_PER_MIN_MAX" && stop_k6 "Target 5xx > ${HTTP_5XX_PER_MIN_MAX}/min for ${SUSTAIN_MINUTES}m"
+  sustained_above "$backlog" "$QUEUE_BACKLOG_MAX" && stop_k6 "Queue backlog > ${QUEUE_BACKLOG_MAX} waiting jobs for ${SUSTAIN_MINUTES}m"
+
+  # Capacity ceiling: desired count at the autoscaling maximum for SUSTAIN_MINUTES polls in a row.
+  read -r d_api d_worker <<<"$desired"
+  if [[ "${d_api:-}" =~ ^[0-9]+$ ]] && (( d_api >= API_TASKS_MAX )); then at_max_api=$((at_max_api + 1)); else at_max_api=0; fi
+  if [[ "${d_worker:-}" =~ ^[0-9]+$ ]] && (( d_worker >= WORKER_TASKS_MAX )); then at_max_worker=$((at_max_worker + 1)); else at_max_worker=0; fi
+  (( at_max_api >= SUSTAIN_MINUTES )) && stop_k6 "API held at its maximum of ${API_TASKS_MAX} tasks for ${SUSTAIN_MINUTES} polls"
+  (( at_max_worker >= SUSTAIN_MINUTES )) && stop_k6 "Worker held at its maximum of ${WORKER_TASKS_MAX} tasks for ${SUSTAIN_MINUTES} polls"
 
   # Target health is critical immediately — no sustain window. Latest datapoint = last
   # whitespace-separated field (the AWS CLI separates datapoints with tabs, not spaces).

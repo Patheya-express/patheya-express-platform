@@ -11,6 +11,8 @@ import { Rate } from 'k6/metrics';
 import { API, BASE_URL } from './config.js';
 
 export const throttled = new Rate('throttled');
+// 5xx responses (API or load balancer), thresholded separately from all failures in config.js.
+export const serverErrors = new Rate('server_errors');
 
 function query(qs) {
   const parts = Object.keys(qs || {})
@@ -26,6 +28,7 @@ export function get(name, path, qs, token) {
   if (token) headers.Authorization = `Bearer ${token}`;
   const res = http.get(`${API}${path}${query(qs)}`, { headers, tags: { name }, timeout: '30s' });
   throttled.add(res.status === 429);
+  serverErrors.add(res.status >= 500);
 
   let body = null;
   if (res.status === 200) {

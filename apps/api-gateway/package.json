@@ -39,6 +39,7 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-cloudwatch": "^3.1149.0",
     "@nestjs/bullmq": "^11.0.4",
     "@nestjs/cache-manager": "^3.1.2",
     "@nestjs/common": "^11.0.1",

@@ -7,6 +7,10 @@ gives out first, so ECS autoscaling can be set from evidence instead of guesses.
 > Follow [the test plan](#test-plan-production) in order; every step marked **APPROVAL** needs an
 > explicit go-ahead first.
 
+> **Realistic test (seeded catalogue + one CUSTOMER login, read-only):** see
+> [RUNBOOK-realistic.md](RUNBOOK-realistic.md) for scope, approval record, stop conditions,
+> cleanup, and why checkout/payments are not load-tested yet.
+
 ```
 loadtest/k6/
   main.js                       entry point: options, setup() discovery, per-stage summary

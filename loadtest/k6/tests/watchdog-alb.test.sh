@@ -25,7 +25,9 @@ case "$*" in
   *describe-target-groups*)  emit 'arn:aws:elasticloadbalancing:ap-south-1:1:targetgroup/patheya-production-api-tg/y' ;;
   *HealthyHostCount*Minimum*) emit "$STUB_HEALTHY" ;;   # HealthyHostCount
   *UnHealthyHostCount*)       emit "$STUB_UNHEALTHY" ;; # matched before the generic case below
-  *get-metric-statistics*)    emit '1.0\t2.0\t3.0' ;;   # CPU/memory/DB/Redis: far below limits
+  *ReadLatency*|*WriteLatency*) emit '0.001\t0.001\t0.001' ;; # seconds, far below limits
+  *describe-services*)        emit '2\t1' ;;            # api, worker desired counts below maxima
+  *get-metric-statistics*)    emit '1.0\t2.0\t3.0' ;;   # CPU/memory/DB/Redis/5xx/backlog: below limits
   *) echo "unstubbed aws call: $*" >&2; exit 99 ;;
 esac
 EOF

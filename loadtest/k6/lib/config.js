@@ -42,6 +42,12 @@ const PROFILES = {
   // Steady low load for a reference latency at a known-good level.
   baseline: () => [step(25, 600, 60)],
 
+  // Seeded LOADTEST_ catalogue + one CUSTOMER login, read-only journeys (no carts, orders or
+  // payments). Bounded and gentle: the 2026-10-11 empty-catalogue ramp reached ~55 rps at 100 VUs
+  // on 2-3 API tasks; real catalogue reads are heavier, so this stops at 75 VUs. ~23 min total.
+  realistic: () =>
+    [10, 25, 50, 75].filter((target) => target <= MAX_VUS).map((target) => step(target, 240, 60)),
+
   // The capacity search. 7 levels x 5 min = 35 min. Stops early via thresholds (see buildThresholds).
   ramp: () =>
     [25, 50, 100, 250, 500, 750, 1000]
@@ -126,6 +132,9 @@ export function buildThresholds(stages) {
     throttled: [{ threshold: 'rate<0.01', abortOnFail: true, delayAbortEval: '30s' }],
     // Envelope/shape checks.
     checks: [{ threshold: 'rate>0.98', abortOnFail: true, delayAbortEval: '1m' }],
+    // HTTP 5xx specifically (server or load balancer fault), stricter than the overall error rate:
+    // a 404 from an empty catalogue is a data issue, a 5xx is the platform failing.
+    server_errors: [{ threshold: 'rate<0.01', abortOnFail: true, delayAbortEval: '30s' }],
   };
   for (const s of stages) {
     thresholds[`http_req_duration{stage:${s.name}}`] = [
