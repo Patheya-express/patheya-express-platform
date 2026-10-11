@@ -28,6 +28,11 @@ import { SwaggerModule } from '@nestjs/swagger';
 
 import { buildSwaggerDocument } from './swagger.config';
 
+import {
+  applyHttpServerTimeouts,
+  resolveHttpServerTimeouts,
+} from './bootstrap/http-server-timeouts';
+
 import { registerProcessLifecycleHandlers } from './bootstrap/process-lifecycle';
 
 import { DEFAULT_RATE_LIMIT_MAX } from './config/rate-limit.config';
@@ -102,6 +107,10 @@ function buildCorsOriginValidator(
 }
 
 async function bootstrap() {
+  // Validated before anything starts: a keep-alive at or below the load balancer idle timeout is a
+  // configuration error (http-server-timeouts.ts).
+  const httpTimeouts = resolveHttpServerTimeouts();
+
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     rawBody: true,
   });
@@ -196,6 +205,12 @@ async function bootstrap() {
   }
 
   await app.listen(process.env.PORT || 3000);
+
+  applyHttpServerTimeouts(app.getHttpServer(), httpTimeouts);
+  logger.log(
+    `HTTP keep-alive timeout: ${httpTimeouts.keepAliveTimeoutMs} ms (above the load balancer idle timeout)`,
+    'Bootstrap',
+  );
 }
 
 void bootstrap();
