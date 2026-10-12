@@ -442,6 +442,13 @@ enum NotificationType {
   RIDER_ARRIVED_AT_RESTAURANT
 
   /**
+   * 2026-10-12 — sent (as a PUSH-channel notification) to the delivery partner a new assignment
+   * was offered to, so the offer reaches a backgrounded/closed app. Payload carries ids only;
+   * the app re-fetches the assignment before showing Accept/Reject.
+   */
+  DELIVERY_ASSIGNMENT_OFFERED
+
+  /**
    * Sprint 1.8 — sent to the customer once a refund (full or partial, wallet and/or Razorpay
    * leg) actually completes, via OrdersService.refundOrder's order-level refund-completed event.
    * No customer-facing refund notification existed before this (only a WalletTransaction ledger
@@ -2495,6 +2502,13 @@ model DeliveryOnboarding {
 
   termsAcceptedAt DateTime?
 
+  /**
+   * 2026-10-12 — when the partner consented to the background verification check (wizard step
+   * 11). The wizard always required the tick but nothing was stored, so the application implied a
+   * consent record that did not exist. Required before step 11 can be marked complete.
+   */
+  backgroundCheckConsentAt DateTime?
+
   submittedAt DateTime?
 
   decidedAt DateTime?
@@ -2837,6 +2851,16 @@ model DeliveryProofOtp {
   maxAttempts Int @default(5)
 
   expiresAt DateTime
+
+  /**
+   * 2026-10-12 OTP hardening — how many codes have been issued for this (order, type), and when
+   * the latest one was. Back the backend-enforced resend cooldown and per-order issue cap in
+   * ProofRepository.issueOtp: without them a partner could regenerate without limit (each
+   * regeneration resetting the attempt counter) and flood the customer with codes.
+   */
+  generationCount Int @default(1)
+
+  lastGeneratedAt DateTime @default(now())
 
   verifiedAt DateTime?
 
