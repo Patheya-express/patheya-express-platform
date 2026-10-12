@@ -428,7 +428,10 @@ describe('OrdersService.placeOrder — idempotency', () => {
 
     it('exposes restaurantName on the fast-path idempotent replay', async () => {
       ordersRepository.findOrderByIdempotencyKey.mockResolvedValue(
-        buildOrder({ id: 'order-existing', restaurant: { name: 'Paradise Biryani' } }),
+        buildOrder({
+          id: 'order-existing',
+          restaurant: { name: 'Paradise Biryani' },
+        }),
       );
 
       const order = await service.placeOrder('customer-1', buildDto());
@@ -442,7 +445,9 @@ describe('OrdersService.placeOrder — idempotency', () => {
         id: 'order-winner',
         restaurant: { name: 'Paradise Biryani' },
       });
-      ordersRepository.createOrder.mockRejectedValueOnce(buildUniqueConstraintError());
+      ordersRepository.createOrder.mockRejectedValueOnce(
+        buildUniqueConstraintError(),
+      );
       ordersRepository.findOrderByIdempotencyKey
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(winner);
@@ -476,6 +481,8 @@ describe('OrdersService.updateOrderStatus — payment eligibility for restaurant
   let ordersRepository: {
     findOrderById: jest.Mock;
     updateOrderStatus: jest.Mock;
+    transitionStatusIfCurrent: jest.Mock;
+    findOrderOwnership: jest.Mock;
     createStatusHistory: jest.Mock;
   };
   let eventBus: { publish: jest.Mock };
@@ -499,9 +506,17 @@ describe('OrdersService.updateOrderStatus — payment eligibility for restaurant
   beforeEach(() => {
     ordersRepository = {
       findOrderById: jest.fn(),
-      updateOrderStatus: jest.fn().mockImplementation((_id, status) =>
-        Promise.resolve({ ...buildPendingOrder(), status }),
-      ),
+      updateOrderStatus: jest
+        .fn()
+        .mockImplementation((_id, status) =>
+          Promise.resolve({ ...buildPendingOrder(), status }),
+        ),
+      transitionStatusIfCurrent: jest
+        .fn()
+        .mockImplementation((_id: string, _expected: string, status: string) =>
+          Promise.resolve({ ...buildPendingOrder(), status }),
+        ),
+      findOrderOwnership: jest.fn(),
       createStatusHistory: jest.fn().mockResolvedValue(undefined),
     };
     eventBus = { publish: jest.fn().mockResolvedValue(undefined) };
@@ -531,10 +546,14 @@ describe('OrdersService.updateOrderStatus — payment eligibility for restaurant
     );
 
     await expect(
-      service.updateOrderStatus('order-1', { status: 'CONFIRMED' } as any, adminUser),
+      service.updateOrderStatus(
+        'order-1',
+        { status: 'CONFIRMED' } as any,
+        adminUser,
+      ),
     ).rejects.toThrow(ConflictException);
 
-    expect(ordersRepository.updateOrderStatus).not.toHaveBeenCalled();
+    expect(ordersRepository.transitionStatusIfCurrent).not.toHaveBeenCalled();
   });
 
   it('ONLINE + FAILED payment → acceptance is blocked', async () => {
@@ -543,10 +562,14 @@ describe('OrdersService.updateOrderStatus — payment eligibility for restaurant
     );
 
     await expect(
-      service.updateOrderStatus('order-1', { status: 'CONFIRMED' } as any, adminUser),
+      service.updateOrderStatus(
+        'order-1',
+        { status: 'CONFIRMED' } as any,
+        adminUser,
+      ),
     ).rejects.toThrow(ConflictException);
 
-    expect(ordersRepository.updateOrderStatus).not.toHaveBeenCalled();
+    expect(ordersRepository.transitionStatusIfCurrent).not.toHaveBeenCalled();
   });
 
   it('ONLINE + PAID → acceptance is allowed', async () => {
@@ -561,7 +584,11 @@ describe('OrdersService.updateOrderStatus — payment eligibility for restaurant
     );
 
     expect(result.status).toBe('CONFIRMED');
-    expect(ordersRepository.updateOrderStatus).toHaveBeenCalledWith('order-1', 'CONFIRMED');
+    expect(ordersRepository.transitionStatusIfCurrent).toHaveBeenCalledWith(
+      'order-1',
+      'PENDING',
+      'CONFIRMED',
+    );
   });
 
   it('COD + PENDING payment → acceptance is allowed (COD never requires pre-payment)', async () => {
@@ -576,12 +603,20 @@ describe('OrdersService.updateOrderStatus — payment eligibility for restaurant
     );
 
     expect(result.status).toBe('CONFIRMED');
-    expect(ordersRepository.updateOrderStatus).toHaveBeenCalledWith('order-1', 'CONFIRMED');
+    expect(ordersRepository.transitionStatusIfCurrent).toHaveBeenCalledWith(
+      'order-1',
+      'PENDING',
+      'CONFIRMED',
+    );
   });
 
   it('does not re-check payment eligibility for transitions other than CONFIRMED (e.g. PREPARING)', async () => {
     ordersRepository.findOrderById.mockResolvedValue(
-      buildPendingOrder({ status: 'CONFIRMED', paymentMode: 'ONLINE', paymentStatus: 'PENDING' }),
+      buildPendingOrder({
+        status: 'CONFIRMED',
+        paymentMode: 'ONLINE',
+        paymentStatus: 'PENDING',
+      }),
     );
 
     const result = await service.updateOrderStatus(
@@ -653,7 +688,10 @@ describe('OrdersService.switchToCod', () => {
     const result = await service.switchToCod('order-1', owningCustomer);
 
     expect(result.paymentMode).toBe('COD');
-    expect(ordersRepository.switchPaymentModeIfEligible).toHaveBeenCalledWith('order-1', 'COD');
+    expect(ordersRepository.switchPaymentModeIfEligible).toHaveBeenCalledWith(
+      'order-1',
+      'COD',
+    );
   });
 
   it('reuses the same order — never creates a second one', async () => {
@@ -670,11 +708,13 @@ describe('OrdersService.switchToCod', () => {
   it("rejects switching another customer's order", async () => {
     ordersRepository.findOrderById.mockResolvedValue(buildPendingOnlineOrder());
 
-    await expect(service.switchToCod('order-1', otherCustomer)).rejects.toThrow();
+    await expect(
+      service.switchToCod('order-1', otherCustomer),
+    ).rejects.toThrow();
     expect(ordersRepository.switchPaymentModeIfEligible).not.toHaveBeenCalled();
   });
 
-  it('allows an admin to switch a customer\'s order on their behalf', async () => {
+  it("allows an admin to switch a customer's order on their behalf", async () => {
     ordersRepository.findOrderById.mockResolvedValue(buildPendingOnlineOrder());
     ordersRepository.switchPaymentModeIfEligible.mockResolvedValue(
       buildPendingOnlineOrder({ paymentMode: 'COD' }),
@@ -688,9 +728,9 @@ describe('OrdersService.switchToCod', () => {
       buildPendingOnlineOrder({ paymentStatus: 'PAID' }),
     );
 
-    await expect(service.switchToCod('order-1', owningCustomer)).rejects.toThrow(
-      ConflictException,
-    );
+    await expect(
+      service.switchToCod('order-1', owningCustomer),
+    ).rejects.toThrow(ConflictException);
     expect(ordersRepository.switchPaymentModeIfEligible).not.toHaveBeenCalled();
   });
 
@@ -699,9 +739,9 @@ describe('OrdersService.switchToCod', () => {
       buildPendingOnlineOrder({ status: 'CONFIRMED' }),
     );
 
-    await expect(service.switchToCod('order-1', owningCustomer)).rejects.toThrow(
-      ConflictException,
-    );
+    await expect(
+      service.switchToCod('order-1', owningCustomer),
+    ).rejects.toThrow(ConflictException);
     expect(ordersRepository.switchPaymentModeIfEligible).not.toHaveBeenCalled();
   });
 
@@ -722,9 +762,9 @@ describe('OrdersService.switchToCod', () => {
     // no longer eligible (e.g. markOrderPaid won the race) by the time the write actually runs.
     ordersRepository.switchPaymentModeIfEligible.mockResolvedValue(null);
 
-    await expect(service.switchToCod('order-1', owningCustomer)).rejects.toThrow(
-      ConflictException,
-    );
+    await expect(
+      service.switchToCod('order-1', owningCustomer),
+    ).rejects.toThrow(ConflictException);
   });
 });
 
@@ -742,6 +782,8 @@ describe('OrdersService — cancellation triggers refund/coupon release (P0 fix)
   let ordersRepository: {
     findOrderById: jest.Mock;
     updateOrderStatus: jest.Mock;
+    transitionStatusIfCurrent: jest.Mock;
+    findOrderOwnership: jest.Mock;
     createStatusHistory: jest.Mock;
   };
   let eventBus: { publish: jest.Mock };
@@ -770,9 +812,17 @@ describe('OrdersService — cancellation triggers refund/coupon release (P0 fix)
   beforeEach(() => {
     ordersRepository = {
       findOrderById: jest.fn(),
-      updateOrderStatus: jest.fn().mockImplementation((_id, status) =>
-        Promise.resolve({ ...buildOrder(), status }),
-      ),
+      updateOrderStatus: jest
+        .fn()
+        .mockImplementation((_id, status) =>
+          Promise.resolve({ ...buildOrder(), status }),
+        ),
+      transitionStatusIfCurrent: jest
+        .fn()
+        .mockImplementation((_id: string, _expected: string, status: string) =>
+          Promise.resolve({ ...buildOrder(), status }),
+        ),
+      findOrderOwnership: jest.fn(),
       createStatusHistory: jest.fn().mockResolvedValue(undefined),
     };
     eventBus = { publish: jest.fn().mockResolvedValue(undefined) };
@@ -968,27 +1018,37 @@ describe('OrdersService — cancellation triggers refund/coupon release (P0 fix)
     });
 
     it("lost the race to a different, non-cancelled transition: no refund and no coupon release, even though this caller's own local check saw PAID (Invariant H — closes the gap TEST 3 targets)", async () => {
+      // 2026-10-12: updateOrderStatus is now compare-and-set. A concurrent restaurant transition
+      // (CONFIRMED -> PREPARING) that commits first makes this cancellation's write match nothing,
+      // so the stale cancellation is refused outright (409) instead of being applied blind with
+      // only its side effects skipped. The invariant this test protects is unchanged: no refund
+      // and no coupon release for a cancellation that didn't win.
       mockOrderReads(
         buildOrder({ status: 'CONFIRMED', paymentStatus: 'PAID' }), // initial read — passes CONFIRMED -> CANCELLED validation
-        buildOrder({ status: 'PREPARING', paymentStatus: 'PAID' }), // by the time the re-check runs, a concurrent restaurant-accept write won last
       );
+      ordersRepository.transitionStatusIfCurrent.mockResolvedValueOnce(null);
+      ordersRepository.findOrderOwnership.mockResolvedValue({
+        status: 'PREPARING',
+      });
       const refundSpy = jest.spyOn(service, 'refundOrder');
 
-      await service.updateOrderStatus(
-        'order-1',
-        { status: 'CANCELLED' } as any,
-        customer,
-      );
+      await expect(
+        service.updateOrderStatus(
+          'order-1',
+          { status: 'CANCELLED' } as any,
+          customer,
+        ),
+      ).rejects.toThrow(/now PREPARING/);
 
+      expect(ordersRepository.transitionStatusIfCurrent).toHaveBeenCalledWith(
+        'order-1',
+        'CONFIRMED',
+        'CANCELLED',
+      );
       expect(refundSpy).not.toHaveBeenCalled();
       expect(couponsService.releaseForOrder).not.toHaveBeenCalled();
-      expect(logger.log).toHaveBeenCalledWith(
-        expect.objectContaining({
-          event: 'cancellation_side_effects_skipped_status_changed',
-          currentStatus: 'PREPARING',
-        }),
-        'OrdersService',
-      );
+      expect(ordersRepository.createStatusHistory).not.toHaveBeenCalled();
+      expect(eventBus.publish).not.toHaveBeenCalled();
     });
   });
 

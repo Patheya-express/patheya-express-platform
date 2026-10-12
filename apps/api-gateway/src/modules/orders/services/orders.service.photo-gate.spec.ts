@@ -4,9 +4,9 @@ import { DeliveryProofOtpStatus, OrderStatus, UserRole } from '@prisma/client';
 import { OrdersService } from './orders.service';
 
 /**
- * Business requirement (delivery parcel photo + customer confirmation + OTP-gated delivery) —
- * regression coverage for assertPhotoVerifiedForStatus, the pickup-photo mirror of the pre-existing
- * assertProofVerifiedForStatus gate. Both are checked from the same updateOrderStatus choke point
+ * Business requirement (parcel photo gates pickup; OTP gates delivery) — regression coverage for
+ * assertPhotoVerifiedForStatus and assertProofVerifiedForStatus. Since the 2026-10-11 pickup
+ * revision OUT_FOR_DELIVERY is gated by the photo alone (no pickup OTP). Both are checked from the same updateOrderStatus choke point
  * every status-change caller (generic PATCH, shortcut routes, ProofService.verify) already goes
  * through, so this exercises updateOrderStatus directly rather than the private method in
  * isolation — that's what actually proves the bypass is closed.
@@ -40,20 +40,22 @@ describe('OrdersService.updateOrderStatus — pickup-photo gate (OUT_FOR_DELIVER
   let ordersRepository: {
     findOrderById: jest.Mock;
     updateOrderStatus: jest.Mock;
+    transitionStatusIfCurrent: jest.Mock;
+    findOrderOwnership: jest.Mock;
     createStatusHistory: jest.Mock;
   };
   let eventBus: { publish: jest.Mock };
   let realtimeService: { emitToOrder: jest.Mock };
   let logger: { log: jest.Mock; warn: jest.Mock; error: jest.Mock };
 
-  const VERIFIED_PICKUP_OTP = {
+  const VERIFIED_OTP = {
     status: DeliveryProofOtpStatus.VERIFIED,
   };
 
   beforeEach(() => {
     prisma = {
       deliveryProofOtp: {
-        findUnique: jest.fn().mockResolvedValue(VERIFIED_PICKUP_OTP),
+        findUnique: jest.fn().mockResolvedValue(null),
       },
       deliveryProofPhoto: {
         findUnique: jest.fn().mockResolvedValue(null),
@@ -67,6 +69,12 @@ describe('OrdersService.updateOrderStatus — pickup-photo gate (OUT_FOR_DELIVER
         .mockResolvedValue(
           buildOrder({ status: OrderStatus.OUT_FOR_DELIVERY }),
         ),
+      transitionStatusIfCurrent: jest
+        .fn()
+        .mockImplementation((_id: string, _expected: string, status: string) =>
+          Promise.resolve(buildOrder({ status })),
+        ),
+      findOrderOwnership: jest.fn(),
       createStatusHistory: jest.fn().mockResolvedValue(undefined),
     };
 
@@ -92,7 +100,7 @@ describe('OrdersService.updateOrderStatus — pickup-photo gate (OUT_FOR_DELIVER
     );
   });
 
-  it('rejects a delivery partner advancing to OUT_FOR_DELIVERY without a pickup photo, even with a verified pickup OTP', async () => {
+  it('rejects a delivery partner advancing to OUT_FOR_DELIVERY without a pickup photo', async () => {
     prisma.deliveryProofPhoto.findUnique.mockResolvedValue(null);
 
     await expect(
@@ -103,10 +111,10 @@ describe('OrdersService.updateOrderStatus — pickup-photo gate (OUT_FOR_DELIVER
       ),
     ).rejects.toThrow(ForbiddenException);
 
-    expect(ordersRepository.updateOrderStatus).not.toHaveBeenCalled();
+    expect(ordersRepository.transitionStatusIfCurrent).not.toHaveBeenCalled();
   });
 
-  it('allows a delivery partner to advance to OUT_FOR_DELIVERY once a pickup photo exists (and the OTP is verified)', async () => {
+  it('allows a delivery partner to advance to OUT_FOR_DELIVERY once a pickup photo exists, with no pickup OTP', async () => {
     prisma.deliveryProofPhoto.findUnique.mockResolvedValue({ id: 'photo-1' });
 
     const result = await service.updateOrderStatus(
@@ -116,14 +124,17 @@ describe('OrdersService.updateOrderStatus — pickup-photo gate (OUT_FOR_DELIVER
     );
 
     expect(result.status).toBe(OrderStatus.OUT_FOR_DELIVERY);
-    expect(ordersRepository.updateOrderStatus).toHaveBeenCalledWith(
+    expect(ordersRepository.transitionStatusIfCurrent).toHaveBeenCalledWith(
       'order-1',
+      OrderStatus.READY_FOR_PICKUP,
       OrderStatus.OUT_FOR_DELIVERY,
     );
+    // The pickup OTP is no longer part of the pickup gate at all.
+    expect(prisma.deliveryProofOtp.findUnique).not.toHaveBeenCalled();
   });
 
-  it('still rejects without a photo even if a malicious client also fabricates a verified OTP response', async () => {
-    prisma.deliveryProofOtp.findUnique.mockResolvedValue(VERIFIED_PICKUP_OTP);
+  it('still rejects without a photo even if a verified pickup OTP row exists from before the revision', async () => {
+    prisma.deliveryProofOtp.findUnique.mockResolvedValue(VERIFIED_OTP);
     prisma.deliveryProofPhoto.findUnique.mockResolvedValue(null);
 
     await expect(
@@ -145,6 +156,23 @@ describe('OrdersService.updateOrderStatus — pickup-photo gate (OUT_FOR_DELIVER
     );
 
     expect(result.status).toBe(OrderStatus.OUT_FOR_DELIVERY);
+  });
+
+  it('still requires a verified delivery OTP before a delivery partner can mark DELIVERED', async () => {
+    ordersRepository.findOrderById.mockResolvedValue(
+      buildOrder({ status: OrderStatus.OUT_FOR_DELIVERY }),
+    );
+    prisma.deliveryProofOtp.findUnique.mockResolvedValue(null);
+
+    await expect(
+      service.updateOrderStatus(
+        'order-1',
+        { status: OrderStatus.DELIVERED },
+        RIDER,
+      ),
+    ).rejects.toThrow(/verified delivery OTP is required/);
+
+    expect(ordersRepository.transitionStatusIfCurrent).not.toHaveBeenCalled();
   });
 
   it('does not consult the photo gate for statuses that do not require one (e.g. CONFIRMED)', async () => {

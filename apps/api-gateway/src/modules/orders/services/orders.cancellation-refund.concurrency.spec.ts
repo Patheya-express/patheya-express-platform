@@ -279,6 +279,27 @@ describe('OrdersService cancellation — refund/coupon concurrency (real databas
   // ---------------------------------------------------------------------------------------
   // TEST 1 — two concurrent cancellation requests for the same PAID order
   // ---------------------------------------------------------------------------------------
+  /** Every rejection must be a clean stale-transition refusal, never an unexpected error. */
+  function expectOnlyStaleTransitionRejections(
+    results: PromiseSettledResult<unknown>[],
+  ): void {
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        expect(
+          result.reason instanceof ConflictException ||
+            result.reason instanceof BadRequestException,
+        ).toBe(true);
+      }
+    }
+  }
+
+  function expectExactlyOneWinner(
+    results: PromiseSettledResult<unknown>[],
+  ): void {
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expectOnlyStaleTransitionRejections(results);
+  }
+
   it('TEST 1: two concurrent cancellation requests for the same PAID order result in one cancellation and at most one refund', async () => {
     const customerId = await createCustomer();
     const orderId = await createOrder(customerId);
@@ -298,9 +319,11 @@ describe('OrdersService cancellation — refund/coupon concurrency (real databas
       ),
     ]);
 
-    // Both cancellation requests succeed from the caller's point of view — CANCELLED is idempotent
-    // to write, and handleCancellationSideEffects never lets a lost refund race fail the caller.
-    expect(results.every((r) => r.status === 'fulfilled')).toBe(true);
+    // 2026-10-12: updateOrderStatus is compare-and-set, so exactly one cancellation wins. The other
+    // is refused — 409 if it lost the conditional write, or 400 if it read the order only after
+    // the winner had already committed CANCELLED (CANCELLED -> CANCELLED is not a valid
+    // transition). Previously both "succeeded" via a blind, idempotent re-write.
+    expectExactlyOneWinner(results);
 
     const finalOrder = await prisma.order.findUniqueOrThrow({
       where: { id: orderId },
@@ -334,8 +357,8 @@ describe('OrdersService cancellation — refund/coupon concurrency (real databas
       service.refundOrder(orderId, {}, adminId),
     ]);
 
-    // The cancellation call always succeeds (its own status write is unconditional); the direct
-    // refundOrder call is the one that can legitimately lose the exactly-once claim and reject.
+    // The cancellation call always succeeds (nothing else changes the order status here); the
+    // direct refundOrder call is the one that can legitimately lose the exactly-once claim.
     const [cancelResult, refundResult] = results;
     expect(cancelResult.status).toBe('fulfilled');
     if (refundResult.status === 'rejected') {
@@ -380,11 +403,15 @@ describe('OrdersService cancellation — refund/coupon concurrency (real databas
       ),
     ]);
 
-    // ordersRepository.updateOrderStatus is a plain unconditional write (pre-existing, separately
-    // tracked limitation — not something this fix re-implements), so exactly which of these two
-    // valid transitions "wins" the last write is not deterministic. Both calls are expected to
-    // resolve — the loser's status write still lands, it's just overwritten milliseconds later.
-    expect(results.every((r) => r.status === 'fulfilled')).toBe(true);
+    // 2026-10-12: the status write is now compare-and-set (it used to be a blind write where the
+    // loser's status landed and was overwritten milliseconds later). Which transition commits
+    // first is still not deterministic, but a request can no longer overwrite a status it didn't
+    // validate against: a loser is refused with 409 (lost the conditional write) or 400 (read
+    // after the winner committed and the transition is no longer valid). Both may also succeed
+    // in sequence: if PREPARING commits first, the cancellation can then read PREPARING, from
+    // which cancelling is still a valid transition.
+    expect(results.some((r) => r.status === 'fulfilled')).toBe(true);
+    expectOnlyStaleTransitionRejections(results);
 
     const finalOrder = await prisma.order.findUniqueOrThrow({
       where: { id: orderId },

@@ -264,6 +264,47 @@ export class OrdersRepository extends BaseRepository {
   }
 
   /**
+   * Compare-and-set status transition — the write only applies if the order is still in
+   * `expectedStatus` (the status the caller validated the transition against). Returns null when
+   * it no longer is, i.e. a concurrent request (a second pickup tap, a cancellation, an admin
+   * override, a duplicate delivery confirmation) already moved the order on. The plain
+   * `updateOrderStatus` above is a blind write: two requests that both read READY_FOR_PICKUP
+   * could both "succeed", and a stale request could overwrite a newer status (e.g. turn a
+   * DELIVERED order back into CANCELLED). Same conditional-updateMany shape as
+   * transitionIfPending below and claimPaymentStatusTransition.
+   */
+  async transitionStatusIfCurrent(
+    orderId: string,
+    expectedStatus: OrderStatus,
+    nextStatus: OrderStatus,
+  ) {
+    const result = await this.prisma.order.updateMany({
+      where: {
+        id: orderId,
+        status: expectedStatus,
+      },
+
+      data: {
+        status: nextStatus,
+
+        ...(nextStatus === OrderStatus.DELIVERED
+          ? { deliveredAt: new Date() }
+          : {}),
+      },
+    });
+
+    if (result.count === 0) {
+      return null;
+    }
+
+    return this.prisma.order.findUniqueOrThrow({
+      where: {
+        id: orderId,
+      },
+    });
+  }
+
+  /**
    * Atomic compare-and-swap transition: only succeeds if the order is still PENDING at the
    * moment of the update. Used by the order-acceptance-timeout job so a timeout firing at the
    * same moment a restaurant manually accepts/rejects can never double-apply — exactly one of

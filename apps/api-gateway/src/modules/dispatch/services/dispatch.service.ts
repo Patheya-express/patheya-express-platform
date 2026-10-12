@@ -30,6 +30,7 @@ import { AuditService } from '../../audit/services/audit.service';
 import { MetricsService } from '../../metrics/metrics.service';
 
 import { DeliveryPartnerAssignedEvent } from '../events/delivery-partner-assigned.event';
+import { DeliveryAssignmentOfferedEvent } from '../events/delivery-assignment-offered.event';
 
 /** Order statuses a fresh dispatch assignment may still be created for — anything else means
  *  the order moved on (or was cancelled) since `order.ready` fired, so assignment is a no-op,
@@ -38,6 +39,43 @@ import { DeliveryPartnerAssignedEvent } from '../events/delivery-partner-assigne
 const DISPATCHABLE_ORDER_STATUSES: OrderStatus[] = [
   OrderStatus.READY_FOR_PICKUP,
 ];
+
+const TERMINAL_ORDER_STATUSES: OrderStatus[] = [
+  OrderStatus.DELIVERED,
+  OrderStatus.CANCELLED,
+];
+
+/**
+ * Data minimization for DispatchService.getAssignments — the customer's phone number is only
+ * needed to hand over an order this partner has accepted and is still delivering. Offers that are
+ * still pending, were rejected/expired, or whose order is already delivered/cancelled come back
+ * with `phone: null` (the DTO already declares it optional).
+ */
+function withMinimizedCustomerContact<
+  T extends {
+    status: AssignmentStatus;
+    order: {
+      status: OrderStatus;
+      customer: { phone: string | null } | null;
+    } | null;
+  },
+>(assignment: T): T {
+  const order = assignment.order;
+
+  const canSeeContact =
+    assignment.status === AssignmentStatus.ACCEPTED &&
+    !!order &&
+    !TERMINAL_ORDER_STATUSES.includes(order.status);
+
+  if (canSeeContact || !order?.customer) {
+    return assignment;
+  }
+
+  return {
+    ...assignment,
+    order: { ...order, customer: { ...order.customer, phone: null } },
+  };
+}
 
 /**
  * Enterprise Dispatch Engine Enhancement — every dispatch timing knob is environment-configurable
@@ -673,6 +711,17 @@ export class DispatchService {
       DISPATCH_ASSIGNMENT_TIMEOUT_SECONDS * 1000,
     );
 
+    // Background/closed-app alert for the partner (DeliveryAssignmentPushListener). Published
+    // only after the assignment row is committed; the Socket.IO emit above covers an open app.
+    await this.eventBus.publish(
+      'delivery.assignment.offered',
+      new DeliveryAssignmentOfferedEvent(
+        assignment.id,
+        orderId,
+        partner.userId,
+      ),
+    );
+
     if (order) {
       await this.eventBus.publish(
         'delivery.partner.assigned',
@@ -1056,11 +1105,13 @@ export class DispatchService {
       throw new NotFoundException('Delivery partner not found');
     }
 
-    const assignments = await this.dispatchRepository.findPartnerAssignments(
-      partner.id,
+    const assignments = (
+      await this.dispatchRepository.findPartnerAssignments(
+        partner.id,
 
-      status,
-    );
+        status,
+      )
+    ).map(withMinimizedCustomerContact);
 
     return assignments.map((assignment: any) => ({
       ...assignment,

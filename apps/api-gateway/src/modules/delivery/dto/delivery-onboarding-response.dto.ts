@@ -23,6 +23,11 @@ export class DeliveryOnboardingResponseDto {
   })
   progressPercent: number;
   @ApiPropertyOptional() termsAcceptedAt?: Date;
+  @ApiPropertyOptional({
+    description:
+      'When the partner consented to the background verification check (step 11).',
+  })
+  backgroundCheckConsentAt?: Date;
   @ApiPropertyOptional() submittedAt?: Date;
   @ApiPropertyOptional() decidedAt?: Date;
   @ApiPropertyOptional({ type: [DeliveryOnboardingChangeItemDto] })

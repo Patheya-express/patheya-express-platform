@@ -143,11 +143,15 @@ export class DeliveryController {
     return this.deliveryService.getAllForAdmin(query);
   }
 
-  @UseGuards(JwtAuthGuard)
+  // Only accounts created through POST /auth/register/delivery-partner may create a partner
+  // profile — previously any authenticated role (e.g. a customer) could attach one to itself.
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.DELIVERY_PARTNER)
   @Post('onboard')
   @ApiOperation({
     summary: 'Onboard delivery partner',
-    description: 'Register the authenticated user as a delivery partner.',
+    description:
+      'Register the authenticated DELIVERY_PARTNER user as a delivery partner.',
   })
   @ApiBody({
     type: CreateDeliveryPartnerDto,

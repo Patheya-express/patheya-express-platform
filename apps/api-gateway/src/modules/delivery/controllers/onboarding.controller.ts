@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 
 import {
+  ApiBody,
   ApiBearerAuth,
   ApiOkResponse,
   ApiOperation,
@@ -25,11 +26,13 @@ import { OnboardingService } from '../services/onboarding.service';
 import { SubmitDeliveryOnboardingDto } from '../dto/submit-delivery-onboarding.dto';
 import { RequestDeliveryOnboardingChangesDto } from '../dto/request-delivery-onboarding-changes.dto';
 import { DeliveryOnboardingResponseDto } from '../dto/delivery-onboarding-response.dto';
+import { RecordBackgroundCheckConsentDto } from '../dto/record-background-check-consent.dto';
 
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../../auth/guards/roles.guard';
 import { Roles } from '../../auth/decorators/roles.decorator';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '../../../shared/authorization/order-access.util';
 
 @ApiTags('Delivery Onboarding')
 @ApiBearerAuth('JWT-auth')
@@ -48,9 +51,9 @@ export class DeliveryOnboardingController {
   @ApiOperation({
     summary: 'Mark a wizard step complete',
     description:
-      "Records wizard progress only — the step's actual data is saved via the existing " +
-      'dedicated endpoint for that section (profile, vehicles, documents, bank account) ' +
-      'before this is called.',
+      "Records wizard progress. The step's data must already be saved via the dedicated " +
+      'endpoint for that section (profile, vehicles, documents, bank account, background-check ' +
+      'consent) — the backend verifies it exists and returns 400 otherwise.',
   })
   @ApiParam({ name: 'step', description: '1-12' })
   @ApiOkResponse({ type: DeliveryOnboardingResponseDto })
@@ -60,6 +63,25 @@ export class DeliveryOnboardingController {
     @Param('step', ParseIntPipe) step: number,
   ) {
     return this.onboardingService.completeStep(user.userId, step);
+  }
+
+  @ApiOperation({
+    summary: 'Record background-check consent (wizard step 11)',
+    description:
+      'Stores when the partner consented to the background verification check. Idempotent — ' +
+      'the first consent timestamp is kept.',
+  })
+  @ApiBody({ type: RecordBackgroundCheckConsentDto })
+  @ApiOkResponse({ type: DeliveryOnboardingResponseDto })
+  @Post('background-check-consent')
+  recordBackgroundCheckConsent(
+    @CurrentUser() user: AuthenticatedUser,
+    @Body() dto: RecordBackgroundCheckConsentDto,
+  ) {
+    return this.onboardingService.recordBackgroundCheckConsent(
+      user.userId,
+      dto.consent,
+    );
   }
 
   @ApiOperation({

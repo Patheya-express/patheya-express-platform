@@ -165,18 +165,22 @@ const DELIVERY_PARTNER_ONLY_STATUSES: OrderStatus[] = [
  * flip OUT_FOR_DELIVERY/DELIVERED with zero customer-side confirmation. ProofService.verify()
  * marks the OTP VERIFIED *before* calling into this same updateOrderStatus method, so the proof
  * flow itself always satisfies this check by construction.
+ *
+ * 2026-10-11 pickup revision — OUT_FOR_DELIVERY no longer requires a pickup OTP. That code was
+ * sent to the customer, who isn't at the restaurant; the product decision is that pickup is
+ * gated by the parcel photo alone (REQUIRED_PHOTO_TYPE_FOR_STATUS below), which itself can only
+ * be uploaded after the backend-validated restaurant arrival (ProofService.uploadPickupPhoto).
  */
 const REQUIRED_PROOF_TYPE_FOR_STATUS: Partial<
   Record<OrderStatus, DeliveryProofType>
 > = {
-  [OrderStatus.OUT_FOR_DELIVERY]: DeliveryProofType.PICKUP,
   [OrderStatus.DELIVERED]: DeliveryProofType.DELIVERY,
 };
 
 /**
- * Pickup-photo extension of the proof-gate above — a delivery partner must have uploaded a
- * DeliveryProofPhoto (see ProofService.uploadPickupPhoto) before the order may advance to
- * OUT_FOR_DELIVERY, on top of (not instead of) the existing verified-pickup-OTP requirement.
+ * Pickup-photo gate — a delivery partner must have uploaded a DeliveryProofPhoto (see
+ * ProofService.uploadPickupPhoto) before the order may advance to OUT_FOR_DELIVERY. Since the
+ * 2026-10-11 pickup revision this is the only pickup gate (see REQUIRED_PROOF_TYPE_FOR_STATUS).
  * Checked in the exact same choke point (updateOrderStatus) as REQUIRED_PROOF_TYPE_FOR_STATUS, so
  * every existing and future caller of the status pipeline is covered — a client cannot reach
  * OUT_FOR_DELIVERY by calling any status endpoint, generic or shortcut, without the photo
@@ -1290,6 +1294,31 @@ export class OrdersService {
     };
   }
 
+  /** 409 for a compare-and-set transition that lost to a concurrent update — tells the caller
+   *  what the order is now so the client can refresh instead of retrying blindly. */
+  private async staleTransitionError(
+    orderId: string,
+    expectedStatus: OrderStatus,
+    nextStatus: OrderStatus,
+  ): Promise<ConflictException> {
+    const current = await this.ordersRepository.findOrderOwnership(orderId);
+
+    this.logger.warn(
+      {
+        event: 'order_status_transition_conflict',
+        orderId,
+        expectedStatus,
+        nextStatus,
+        currentStatus: current?.status,
+      },
+      'OrdersService',
+    );
+
+    return new ConflictException(
+      `This order was updated by someone else and is now ${current?.status ?? 'unavailable'}. Refresh and try again.`,
+    );
+  }
+
   /**
    * The single order-status transition path. Validates the transition, writes the
    * OrderStatusHistory entry, publishes `order.status.changed` for every transition (not just
@@ -1328,11 +1357,19 @@ export class OrdersService {
 
     await this.assertPhotoVerifiedForStatus(orderId, dto.status, user);
 
-    const updatedOrder = await this.ordersRepository.updateOrderStatus(
+    // Compare-and-set against the status every check above was evaluated for. If a concurrent
+    // request moved the order on in the meantime (duplicate pickup/delivery confirmation,
+    // cancellation, admin override), this write matches nothing and NO side effect below runs —
+    // no status history, no events, no realtime emit, no partner release.
+    const updatedOrder = await this.ordersRepository.transitionStatusIfCurrent(
       orderId,
-
+      order.status,
       dto.status,
     );
+
+    if (!updatedOrder) {
+      throw await this.staleTransitionError(orderId, order.status, dto.status);
+    }
 
     // Production Readiness Stage C: neither depends on the other's result.
     await Promise.all([
@@ -1585,10 +1622,21 @@ export class OrdersService {
       );
     }
 
-    const updatedOrder = await this.ordersRepository.updateOrderStatus(
+    // Compare-and-set: an order delivered (or cancelled) between the terminal-status check above
+    // and this write must not be overwritten.
+    const updatedOrder = await this.ordersRepository.transitionStatusIfCurrent(
       orderId,
+      order.status,
       OrderStatus.CANCELLED,
     );
+
+    if (!updatedOrder) {
+      throw await this.staleTransitionError(
+        orderId,
+        order.status,
+        OrderStatus.CANCELLED,
+      );
+    }
 
     await this.ordersRepository.createStatusHistory({
       orderId,
@@ -1628,7 +1676,21 @@ export class OrdersService {
       );
     }
 
-    const updatedOrder = await this.ordersRepository.markDelivered(orderId);
+    // Compare-and-set: a cancellation landing between the check above and this write must not be
+    // turned into DELIVERED.
+    const updatedOrder = await this.ordersRepository.transitionStatusIfCurrent(
+      orderId,
+      order.status,
+      OrderStatus.DELIVERED,
+    );
+
+    if (!updatedOrder) {
+      throw await this.staleTransitionError(
+        orderId,
+        order.status,
+        OrderStatus.DELIVERED,
+      );
+    }
 
     await this.ordersRepository.createStatusHistory({
       orderId,

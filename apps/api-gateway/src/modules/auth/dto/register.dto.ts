@@ -1,6 +1,16 @@
-import { IsEmail, IsOptional, IsString, MinLength } from 'class-validator';
+import {
+  IsEmail,
+  IsOptional,
+  IsString,
+  Matches,
+  MinLength,
+} from 'class-validator';
 
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+
+/** Rejects empty and whitespace-only names — every registration form already requires both
+ *  names, so this keeps the backend authoritative rather than trusting that client check. */
+const NOT_BLANK = /\S/;
 
 export class RegisterDto {
   @ApiProperty({
@@ -8,6 +18,7 @@ export class RegisterDto {
     description: 'First name',
   })
   @IsString()
+  @Matches(NOT_BLANK, { message: 'First name is required' })
   firstName: string;
 
   @ApiProperty({
@@ -15,6 +26,7 @@ export class RegisterDto {
     description: 'Last name',
   })
   @IsString()
+  @Matches(NOT_BLANK, { message: 'Last name is required' })
   lastName: string;
 
   @ApiProperty({
