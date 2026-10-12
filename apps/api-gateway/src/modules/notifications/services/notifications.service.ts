@@ -1,4 +1,5 @@
 import {
+  Inject,
   Injectable,
   NotFoundException,
   BadRequestException,
@@ -14,6 +15,17 @@ import {
 import { NotificationsRepository } from '../repositories/notifications.repository';
 import { QueueService } from '../../../infrastructure/queues/queue.service';
 import { RealtimeService } from '../../realtime/services/realtime.service';
+import {
+  PUSH_DISPATCHER,
+  type PushDispatcher,
+  type PushMessage,
+  type PushSendResult,
+} from '../push/push-provider';
+import { MetricsService } from '../../metrics/metrics.service';
+import { AppLoggerService } from '../../../infrastructure/logger/logger.service';
+
+/** Metadata keys that steer delivery and must not be sent to the device as data. */
+const PUSH_CONTROL_KEYS = new Set(['dedupeKey', 'androidChannelId']);
 
 import { GetAdminNotificationsQueryDto } from '../dto/get-admin-notifications-query.dto';
 import { PaginatedAdminNotificationsResponseDto } from '../dto/paginated-admin-notifications-response.dto';
@@ -120,6 +132,9 @@ const PUSH_PREFERENCE_BY_TYPE: Record<NotificationType, PushPreferenceKey> = {
   // 2026-09-16 business-workflow revision — sent to the customer on rider arrival; same
   // order-lifecycle category as the OTP/verification events above.
   RIDER_ARRIVED_AT_RESTAURANT: 'orderUpdatesPush',
+  // 2026-10-12 — delivery-partner assignment offer push; operational order traffic, same
+  // category (and default-on) as the other order-lifecycle notifications.
+  DELIVERY_ASSIGNMENT_OFFERED: 'orderUpdatesPush',
 };
 
 /**
@@ -141,7 +156,222 @@ export class NotificationsService {
     private readonly notificationsRepository: NotificationsRepository,
     private readonly queueService: QueueService,
     private readonly realtimeService: RealtimeService,
+    @Inject(PUSH_DISPATCHER)
+    private readonly pushDispatcher: PushDispatcher,
+    private readonly metrics: MetricsService,
+    private readonly logger: AppLoggerService,
   ) {}
+
+  /**
+   * Queues one logical PUSH notification. Idempotent per `dedupeKey`: a repeated trigger for the
+   * same logical event (a redelivered event, a retried job) finds the existing row and does not
+   * queue a second send — the BullMQ jobId is the same key, so even a concurrent duplicate add is
+   * collapsed by the queue. The row starts PENDING; only deliverPushNotification records the
+   * outcome. Respects the recipient's push preference like createNotification.
+   */
+  async queuePushNotification(params: {
+    userId: string;
+    type: NotificationType;
+    message: PushMessage;
+    dedupeKey: string;
+  }): Promise<Notification | null> {
+    const { userId, type, message, dedupeKey } = params;
+
+    if (!(await this.isPushAllowed(userId, type))) {
+      return null;
+    }
+
+    const existing =
+      await this.notificationsRepository.findNotificationByDedupeKey(
+        userId,
+        dedupeKey,
+      );
+
+    if (existing) {
+      return existing;
+    }
+
+    const notification = await this.notificationsRepository.createNotification({
+      userId,
+      type,
+      title: message.title,
+      message: message.body,
+      channel: NotificationChannel.PUSH,
+      metadata: {
+        ...message.data,
+        dedupeKey,
+        ...(message.androidChannelId
+          ? { androidChannelId: message.androidChannelId }
+          : {}),
+      },
+    });
+
+    await this.queueService.addNotificationJob(
+      { type: 'send-push', notificationId: notification.id },
+      { jobId: `push-${dedupeKey}` },
+    );
+
+    return notification;
+  }
+
+  /**
+   * Sends a queued PUSH notification to every device registered for its user and records the
+   * outcome on the row. SENT means a provider *accepted* the message for at least one device —
+   * it is never recorded when nothing was handed to a provider. Permanently invalid tokens are
+   * deleted. A transient provider failure with no device accepted throws, so the BullMQ job's
+   * retry/backoff applies.
+   */
+  async deliverPushNotification(id: string): Promise<void> {
+    const notification =
+      await this.notificationsRepository.findNotificationById(id);
+
+    if (
+      !notification ||
+      notification.channel !== NotificationChannel.PUSH ||
+      notification.status === NotificationStatus.SENT ||
+      notification.status === NotificationStatus.READ
+    ) {
+      return;
+    }
+
+    if (!this.pushDispatcher.isConfigured()) {
+      await this.recordPushOutcome(id, notification.type, {
+        status: NotificationStatus.FAILED,
+        errorMessage: 'Push provider not configured',
+      });
+      return;
+    }
+
+    const targets = await this.notificationsRepository.findPushTokensForUser(
+      notification.userId,
+    );
+
+    if (targets.length === 0) {
+      await this.recordPushOutcome(id, notification.type, {
+        status: NotificationStatus.FAILED,
+        errorMessage: 'No registered device for this user',
+      });
+      return;
+    }
+
+    const metadata = (notification.metadata ?? {}) as Record<string, unknown>;
+    const data = Object.fromEntries(
+      Object.entries(metadata)
+        .filter(([key]) => !PUSH_CONTROL_KEYS.has(key))
+        .map(([key, value]) => [key, String(value)]),
+    );
+    const androidChannelId =
+      typeof metadata['androidChannelId'] === 'string'
+        ? metadata['androidChannelId']
+        : undefined;
+
+    let results: PushSendResult[];
+    try {
+      results = await this.pushDispatcher.send(targets, {
+        title: notification.title,
+        body: notification.message,
+        data,
+        androidChannelId,
+      });
+    } catch (error) {
+      await this.recordPushOutcome(id, notification.type, {
+        status: NotificationStatus.FAILED,
+        errorMessage:
+          error instanceof Error ? error.message : 'Push provider error',
+      });
+      throw error;
+    }
+
+    const platformByToken = new Map(
+      targets.map((target) => [target.token, target.platform]),
+    );
+    for (const result of results) {
+      this.metrics.recordPushDeliveryOutcome(
+        platformByToken.get(result.token) ?? 'unknown',
+        result.outcome,
+      );
+    }
+
+    const invalidTokens = results
+      .filter((result) => result.outcome === 'invalid-token')
+      .map((result) => result.token);
+
+    if (invalidTokens.length > 0) {
+      await this.notificationsRepository.deletePushTokens(invalidTokens);
+    }
+
+    const counts = {
+      accepted: results.filter((r) => r.outcome === 'accepted').length,
+      invalid: invalidTokens.length,
+      failed: results.filter((r) => r.outcome === 'failed').length,
+      skipped: results.filter((r) => r.outcome === 'skipped').length,
+    };
+
+    if (counts.accepted > 0) {
+      await this.recordPushOutcome(
+        id,
+        notification.type,
+        {
+          status: NotificationStatus.SENT,
+          sentAt: new Date(),
+          errorMessage: null,
+        },
+        counts,
+      );
+      return;
+    }
+
+    const transient = results.find((result) => result.outcome === 'failed');
+
+    await this.recordPushOutcome(
+      id,
+      notification.type,
+      {
+        status: NotificationStatus.FAILED,
+        errorMessage: transient
+          ? (transient.error ?? 'Push delivery failed')
+          : counts.skipped > 0
+            ? 'No push provider configured for the registered devices'
+            : 'All registered device tokens were invalid',
+      },
+      counts,
+    );
+
+    if (transient) {
+      throw new Error(transient.error ?? 'Push delivery failed');
+    }
+  }
+
+  /** Persists a push attempt's outcome and logs it (ids and counts only — never tokens). */
+  private async recordPushOutcome(
+    id: string,
+    type: NotificationType,
+    outcome: {
+      status: NotificationStatus;
+      errorMessage?: string | null;
+      sentAt?: Date | null;
+    },
+    counts?: Record<string, number>,
+  ): Promise<void> {
+    await this.notificationsRepository.recordDeliveryAttempt(id, outcome);
+
+    this.logger.log(
+      {
+        event: 'push_delivery_attempt',
+        notificationId: id,
+        notificationType: type,
+        status: outcome.status,
+        reason: outcome.errorMessage ?? undefined,
+        ...counts,
+      },
+      'NotificationsService',
+    );
+  }
+
+  /** Removes the caller's own device token (logout). Other users' tokens are never touched. */
+  async unregisterPushToken(userId: string, token: string): Promise<void> {
+    await this.notificationsRepository.deletePushTokenForUser(userId, token);
+  }
 
   /**
    * Respects the recipient's NotificationPreference before creating an IN_APP row — there is no
@@ -392,10 +622,12 @@ export class NotificationsService {
   }
 
   /**
-   * The single generic delivery step NotificationProcessor runs for a retry job. No channel
-   * providers (email/SMS/push) exist yet in this codebase, so there is nothing to branch on;
-   * a successful generic redelivery is recorded the same way for every channel. Wiring real
-   * providers per channel is separate, future work — not part of this retry mechanism.
+   * The delivery step NotificationProcessor runs for an admin retry job. 2026-10-12: this used to
+   * record SENT for every channel without sending anything (no email/SMS/push providers exist),
+   * so a "retried" notification looked delivered when nothing had happened. Now:
+   *  - PUSH goes through deliverPushNotification (real provider seam; FAILED while unconfigured);
+   *  - IN_APP is re-emitted over the realtime socket — the in-app channel's actual delivery path;
+   *  - EMAIL/SMS/WHATSAPP have no provider, so the attempt is recorded as FAILED, not SENT.
    */
   async deliverNotification(id: string): Promise<void> {
     try {
@@ -405,6 +637,25 @@ export class NotificationsService {
       if (!notification) {
         return;
       }
+
+      if (notification.channel === NotificationChannel.PUSH) {
+        await this.deliverPushNotification(id);
+        return;
+      }
+
+      if (notification.channel !== NotificationChannel.IN_APP) {
+        await this.notificationsRepository.recordDeliveryAttempt(id, {
+          status: NotificationStatus.FAILED,
+          errorMessage: `No ${notification.channel} provider is configured`,
+        });
+        return;
+      }
+
+      this.realtimeService.emitToUser(
+        notification.userId,
+        'notification',
+        toNotificationResponse(notification),
+      );
 
       await this.notificationsRepository.recordDeliveryAttempt(id, {
         status: NotificationStatus.SENT,

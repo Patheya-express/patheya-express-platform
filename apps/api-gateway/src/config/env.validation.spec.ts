@@ -65,6 +65,21 @@ describe('envValidationSchema', () => {
       });
       expect(error).toBeUndefined();
     });
+
+    it('empty push-provider placeholders (as copied from .env.example) mean "not configured", not a boot failure', () => {
+      const { error } = validate({
+        ...VALID_DEVELOPMENT_ENV,
+        FCM_PROJECT_ID: '',
+        FCM_CLIENT_EMAIL: '',
+        FCM_PRIVATE_KEY: '',
+        APNS_KEY_ID: '',
+        APNS_TEAM_ID: '',
+        APNS_BUNDLE_ID: '',
+        APNS_PRIVATE_KEY: '',
+        APNS_ENVIRONMENT: '',
+      });
+      expect(error).toBeUndefined();
+    });
   });
 
   describe('missing required secrets', () => {
