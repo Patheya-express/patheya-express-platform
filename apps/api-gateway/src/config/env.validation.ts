@@ -204,7 +204,10 @@ export const envValidationSchema = Joi.object({
   APNS_TEAM_ID: Joi.string().allow('').optional(),
   APNS_BUNDLE_ID: Joi.string().allow('').optional(),
   APNS_PRIVATE_KEY: Joi.string().allow('').optional(),
-  APNS_ENVIRONMENT: Joi.string().valid('production', 'development').allow('').optional(),
+  APNS_ENVIRONMENT: Joi.string()
+    .valid('production', 'development')
+    .allow('')
+    .optional(),
 
   // CORS allowlist (LH1-09) — required in production: main.ts's buildCorsOriginValidator fails
   // closed (safe) without these, but that means every credentialed browser request is rejected,
