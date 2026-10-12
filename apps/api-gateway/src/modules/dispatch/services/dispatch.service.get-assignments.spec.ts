@@ -141,4 +141,61 @@ describe('DispatchService.getAssignments — pickup-location fallback', () => {
 
     expect(result.order.pickupPhotoUploaded).toBe(true);
   });
+
+  describe('customer phone minimization', () => {
+    function withAssignmentStatus(
+      status: AssignmentStatus,
+      orderOverrides: Record<string, unknown> = {},
+    ) {
+      return { ...buildAssignment(orderOverrides), status };
+    }
+
+    async function firstCustomer(): Promise<{
+      firstName: string;
+      phone: string | null;
+    }> {
+      const results = (await service.getAssignments('user-1')) as Array<{
+        order: { customer: { firstName: string; phone: string | null } };
+      }>;
+      return results[0].order.customer;
+    }
+
+    it('includes the phone on an accepted assignment whose order is still in progress', async () => {
+      repository.findPartnerAssignments.mockResolvedValue([
+        withAssignmentStatus(AssignmentStatus.ACCEPTED, {
+          status: 'OUT_FOR_DELIVERY',
+        }),
+      ]);
+
+      expect((await firstCustomer()).phone).toBe('9999999999');
+    });
+
+    it.each([
+      AssignmentStatus.PENDING,
+      AssignmentStatus.REJECTED,
+      AssignmentStatus.EXPIRED,
+    ])('omits the phone on a %s assignment', async (status) => {
+      repository.findPartnerAssignments.mockResolvedValue([
+        withAssignmentStatus(status),
+      ]);
+
+      const customer = await firstCustomer();
+
+      expect(customer.phone).toBeNull();
+      expect(customer.firstName).toBe('Siddu');
+    });
+
+    it.each(['DELIVERED', 'CANCELLED'])(
+      'omits the phone once the order is %s',
+      async (orderStatus) => {
+        repository.findPartnerAssignments.mockResolvedValue([
+          withAssignmentStatus(AssignmentStatus.ACCEPTED, {
+            status: orderStatus,
+          }),
+        ]);
+
+        expect((await firstCustomer()).phone).toBeNull();
+      },
+    );
+  });
 });

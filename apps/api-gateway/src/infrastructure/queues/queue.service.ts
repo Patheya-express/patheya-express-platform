@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 
 import { InjectQueue } from '@nestjs/bullmq';
 
-import { Queue } from 'bullmq';
+import { Queue, type JobsOptions } from 'bullmq';
 
 @Injectable()
 export class QueueService {
@@ -26,11 +26,15 @@ export class QueueService {
     private readonly ordersQueue: Queue,
   ) {}
 
-  async addNotificationJob(data: any) {
+  /** `opts.jobId` makes the add idempotent: BullMQ ignores a second add with the same id while
+   *  the first job still exists (used for one-push-per-assignment de-duplication). */
+  async addNotificationJob(data: any, opts?: Pick<JobsOptions, 'jobId'>) {
     return this.notificationQueue.add(
       'send-notification',
 
       data,
+
+      opts,
     );
   }
   /**

@@ -11,6 +11,8 @@ import {
 
 import { FileInterceptor } from '@nestjs/platform-express';
 
+import { Throttle } from '@nestjs/throttler';
+
 import {
   ApiBearerAuth,
   ApiBody,
@@ -53,64 +55,19 @@ import { RestaurantArrivalResponseDto } from '../dto/restaurant-arrival-response
 export class ProofController {
   constructor(private readonly proofService: ProofService) {}
 
-  @Post('pickup/generate')
-  @ApiOperation({
-    summary: 'Generate (or regenerate) the pickup OTP',
-    description:
-      'Sends a fresh 6-digit code to the customer. Calling this again before verification overwrites the previous code and resets the attempt count — this is also how a partner regenerates an expired or exhausted OTP. Only valid while the order is READY_FOR_PICKUP.',
-  })
-  @ApiParam({ name: 'orderId' })
-  @ApiOkResponse({ type: ProofOtpGeneratedResponseDto })
-  @ApiForbiddenResponse({ description: 'Not the assigned delivery partner' })
-  @ApiUnauthorizedResponse({ description: 'Unauthorized' })
-  generatePickupOtp(
-    @Param('orderId') orderId: string,
-    @CurrentUser() user: any,
-  ) {
-    return this.proofService.generatePickupOtp(orderId, user);
-  }
-
-  @Post('pickup/verify')
-  @ApiOperation({
-    summary: 'Verify the pickup OTP',
-    description:
-      'On success, advances the order to OUT_FOR_DELIVERY and emits pickup.verified.',
-  })
-  @ApiParam({ name: 'orderId' })
-  @ApiBody({ type: VerifyProofOtpDto })
-  @ApiOkResponse({ type: ProofOtpStatusResponseDto })
-  @ApiConflictResponse({ description: 'Already verified' })
-  @ApiForbiddenResponse({
-    description: 'Not the assigned delivery partner, or attempts exceeded',
-  })
-  @ApiUnauthorizedResponse({ description: 'Unauthorized' })
-  verifyPickupOtp(
-    @Param('orderId') orderId: string,
-    @Body() dto: VerifyProofOtpDto,
-    @CurrentUser() user: any,
-  ) {
-    return this.proofService.verifyPickupOtp(orderId, dto.code, user);
-  }
-
-  @Get('pickup/status')
-  @ApiOperation({ summary: 'Get the current pickup OTP status' })
-  @ApiParam({ name: 'orderId' })
-  @ApiOkResponse({ type: ProofOtpStatusResponseDto })
-  @ApiNotFoundResponse({ description: 'No pickup OTP generated yet' })
-  @ApiUnauthorizedResponse({ description: 'Unauthorized' })
-  getPickupStatus(@Param('orderId') orderId: string, @CurrentUser() user: any) {
-    return this.proofService.getProofStatus(
-      orderId,
-      DeliveryProofType.PICKUP,
-      user,
-    );
-  }
+  // 2026-10-11 pickup revision — the pickup OTP routes (pickup/generate, pickup/verify,
+  // pickup/status) were removed: pickup is gated by the parcel photo alone and completes through
+  // PATCH /delivery/orders/:orderId/status { status: OUT_FOR_DELIVERY }, which enforces the photo
+  // in OrdersService.updateOrderStatus.
 
   @Post('delivery/generate')
+  // Per-IP backstop only — the real limits are per order and enforced in ProofService/
+  // ProofRepository.issueOtp (60 s cooldown, 5 codes per order), which also hold across IPs.
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
   @ApiOperation({
     summary: 'Generate (or regenerate) the delivery OTP',
     description:
-      'Sends a fresh 6-digit code to the customer. Calling this again before verification overwrites the previous code and resets the attempt count. Only valid while the order is OUT_FOR_DELIVERY.',
+      'Sends a fresh 6-digit code to the customer. Calling this again before verification replaces the previous code and resets the attempt count, but only after a 60-second cooldown and at most 5 codes per order (429 otherwise). A verified code is never replaced. Only valid while the order is OUT_FOR_DELIVERY.',
   })
   @ApiParam({ name: 'orderId' })
   @ApiOkResponse({ type: ProofOtpGeneratedResponseDto })
@@ -124,6 +81,8 @@ export class ProofController {
   }
 
   @Post('delivery/verify')
+  // Per-IP backstop on top of the per-code attempt cap (5) and per-order issue cap.
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
   @ApiOperation({
     summary: 'Verify the delivery OTP',
     description:
@@ -166,7 +125,7 @@ export class ProofController {
   @ApiOperation({
     summary: 'Upload the mandatory pickup-parcel photo',
     description:
-      'Write-once — a second upload for the same order is rejected. Only valid while the order is READY_FOR_PICKUP. This photo is required before OUT_FOR_DELIVERY can be reached.',
+      'Write-once — a second upload for the same order is rejected. Only valid while the order is READY_FOR_PICKUP and after the rider has marked arrival at the restaurant. This photo is required before OUT_FOR_DELIVERY can be reached; it is reference-only and needs no customer approval. Accepts JPEG, PNG or WebP up to 5MB.',
   })
   @ApiParam({ name: 'orderId' })
   @ApiConsumes('multipart/form-data')

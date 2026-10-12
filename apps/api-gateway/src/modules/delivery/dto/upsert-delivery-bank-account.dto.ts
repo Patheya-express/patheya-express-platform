@@ -5,10 +5,13 @@ import { IsOptional, IsString, Matches, MinLength } from 'class-validator';
 export class UpsertDeliveryBankAccountDto {
   @ApiProperty({ example: 'Hari Haran' })
   @IsString()
+  // Blank/whitespace-only values were accepted; the apps already require both names.
+  @Matches(/\S/, { message: 'Account holder name is required' })
   accountHolderName: string;
 
   @ApiProperty({ example: 'HDFC Bank' })
   @IsString()
+  @Matches(/\S/, { message: 'Bank name is required' })
   bankName: string;
 
   @ApiPropertyOptional({ example: 'Secundrabad Branch' })

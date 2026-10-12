@@ -64,18 +64,63 @@ export class NotificationsRepository {
     });
   }
 
-  async savePushToken(data: any) {
+  async savePushToken(data: {
+    userId: string;
+    token: string;
+    platform: string;
+  }) {
     return this.prisma.pushToken.upsert({
       where: {
         token: data.token,
       },
 
+      // A device token identifies an app install, not a person: when a different account signs
+      // in on the same device and registers the same token, it must move to that account.
+      // Previously only `platform` was updated, so the token stayed bound to the first user and
+      // that user's pushes (e.g. delivery assignments) kept reaching the new user's device.
       update: {
         platform: data.platform,
+        userId: data.userId,
       },
 
       create: data,
     });
+  }
+
+  findPushTokensForUser(userId: string) {
+    return this.prisma.pushToken.findMany({
+      where: { userId },
+      select: { token: true, platform: true },
+    });
+  }
+
+  /** Scoped to the owner: a user can only remove their own registration. */
+  deletePushTokenForUser(userId: string, token: string) {
+    return this.prisma.pushToken.deleteMany({
+      where: { userId, token },
+    });
+  }
+
+  /** Removes tokens a provider reported as permanently invalid. */
+  deletePushTokens(tokens: string[]) {
+    return this.prisma.pushToken.deleteMany({
+      where: { token: { in: tokens } },
+    });
+  }
+
+  /** Idempotency lookup for logical notifications keyed by `metadata.dedupeKey` (e.g. one push
+   *  per assignment offer). */
+  findNotificationByDedupeKey(userId: string, dedupeKey: string) {
+    return this.prisma.notification.findFirst({
+      where: {
+        userId,
+        metadata: { path: ['dedupeKey'], equals: dedupeKey },
+      },
+    });
+  }
+
+  findNotificationById(id: string) {
+    return this.prisma.notification.findUnique({ where: { id } });
   }
 
   async findPreference(userId: string) {

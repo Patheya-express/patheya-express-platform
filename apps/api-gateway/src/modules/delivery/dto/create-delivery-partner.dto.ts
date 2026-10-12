@@ -1,4 +1,4 @@
-import { IsEnum, IsOptional, IsString } from 'class-validator';
+import { IsEnum, IsOptional, IsString, Matches } from 'class-validator';
 
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
@@ -18,6 +18,9 @@ export class CreateDeliveryPartnerDto {
     description: 'Vehicle registration number',
   })
   @IsString()
+  // Rejects empty/whitespace-only values; no stricter format is enforced because no
+  // registration-number format rule exists anywhere in the platform yet.
+  @Matches(/\S/, { message: 'Vehicle number is required' })
   vehicleNumber: string;
 
   @ApiPropertyOptional({

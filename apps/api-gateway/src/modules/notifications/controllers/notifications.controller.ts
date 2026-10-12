@@ -4,6 +4,9 @@ import {
   Patch,
   Param,
   Post,
+  Delete,
+  HttpCode,
+  HttpStatus,
   Body,
   Query,
   UseGuards,
@@ -19,6 +22,7 @@ import {
   ApiOkResponse,
   ApiCreatedResponse,
   ApiUnauthorizedResponse,
+  ApiNoContentResponse,
   ApiNotFoundResponse,
   ApiBadRequestResponse,
 } from '@nestjs/swagger';
@@ -39,6 +43,8 @@ import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 import { NotificationsService } from '../services/notifications.service';
 
 import { RegisterPushTokenDto } from '../dto/register-push-token.dto';
+import { UnregisterPushTokenDto } from '../dto/unregister-push-token.dto';
+import type { AuthenticatedUser } from '../../../shared/authorization/order-access.util';
 
 import { NotificationResponseDto } from '../dto/notification-response.dto';
 
@@ -249,6 +255,33 @@ export class NotificationsController {
 
       dto.platform,
     );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete('push-token')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary: 'Unregister push notification token',
+    description:
+      "Removes the caller's own device token (call on logout so the device stops receiving this account's pushes). Idempotent; another user's token is never affected.",
+  })
+  @ApiBody({
+    type: UnregisterPushTokenDto,
+  })
+  @ApiNoContentResponse({
+    description: 'Push token removed (or was not registered)',
+  })
+  @ApiUnauthorizedResponse({
+    description: 'Unauthorized',
+  })
+  async unregisterPushToken(
+    @CurrentUser()
+    user: AuthenticatedUser,
+
+    @Body()
+    dto: UnregisterPushTokenDto,
+  ): Promise<void> {
+    await this.notificationsService.unregisterPushToken(user.userId, dto.token);
   }
 
   @ApiOperation({

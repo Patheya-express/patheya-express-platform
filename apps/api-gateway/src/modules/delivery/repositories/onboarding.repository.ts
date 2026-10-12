@@ -31,6 +31,41 @@ export class OnboardingRepository extends BaseRepository {
     });
   }
 
+  /** Everything the wizard steps persist, in one read — the evidence OnboardingService checks
+   *  before a step may be marked complete (see onboarding-step-requirements.ts). */
+  findStepEvidence(deliveryPartnerId: string) {
+    return this.prisma.deliveryPartner.findUnique({
+      where: { id: deliveryPartnerId },
+      select: {
+        dateOfBirth: true,
+        gender: true,
+        languagesSpoken: true,
+        currentAddressLine1: true,
+        currentCity: true,
+        currentState: true,
+        currentPostalCode: true,
+        currentAddressLatitude: true,
+        currentAddressLongitude: true,
+        vehicles: { where: { isActive: true }, select: { id: true } },
+        documents: { select: { documentType: true } },
+        bankAccount: { select: { deliveryPartnerId: true } },
+        onboarding: { select: { backgroundCheckConsentAt: true } },
+      },
+    });
+  }
+
+  /** Records background-check consent once; a repeat call keeps the original timestamp. */
+  async recordBackgroundCheckConsent(deliveryPartnerId: string) {
+    await this.findOrCreate(deliveryPartnerId);
+
+    await this.prisma.deliveryOnboarding.updateMany({
+      where: { deliveryPartnerId, backgroundCheckConsentAt: null },
+      data: { backgroundCheckConsentAt: new Date() },
+    });
+
+    return this.findOrCreate(deliveryPartnerId);
+  }
+
   async markStepComplete(deliveryPartnerId: string, step: number) {
     const current = await this.findOrCreate(deliveryPartnerId);
 

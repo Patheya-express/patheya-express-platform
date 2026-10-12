@@ -65,6 +65,21 @@ describe('envValidationSchema', () => {
       });
       expect(error).toBeUndefined();
     });
+
+    it('empty push-provider placeholders (as copied from .env.example) mean "not configured", not a boot failure', () => {
+      const { error } = validate({
+        ...VALID_DEVELOPMENT_ENV,
+        FCM_PROJECT_ID: '',
+        FCM_CLIENT_EMAIL: '',
+        FCM_PRIVATE_KEY: '',
+        APNS_KEY_ID: '',
+        APNS_TEAM_ID: '',
+        APNS_BUNDLE_ID: '',
+        APNS_PRIVATE_KEY: '',
+        APNS_ENVIRONMENT: '',
+      });
+      expect(error).toBeUndefined();
+    });
   });
 
   describe('missing required secrets', () => {
@@ -288,12 +303,18 @@ describe('envValidationSchema', () => {
     // docker-compose.yml's `${LOG_TO_FILE:-true}` interpolation passes that string through
     // unchanged — this must keep validating successfully without weakening the schema itself.
     it('accepts the exact string "true" shipped by infrastructure/docker/.env.compose.example', () => {
-      const { error } = validate({ ...VALID_DEVELOPMENT_ENV, LOG_TO_FILE: 'true' });
+      const { error } = validate({
+        ...VALID_DEVELOPMENT_ENV,
+        LOG_TO_FILE: 'true',
+      });
       expect(error).toBeUndefined();
     });
 
     it('accepts the exact string "false"', () => {
-      const { error } = validate({ ...VALID_DEVELOPMENT_ENV, LOG_TO_FILE: 'false' });
+      const { error } = validate({
+        ...VALID_DEVELOPMENT_ENV,
+        LOG_TO_FILE: 'false',
+      });
       expect(error).toBeUndefined();
     });
 

@@ -16,6 +16,10 @@ import { OnboardingRepository } from '../repositories/onboarding.repository';
 import { SubmitDeliveryOnboardingDto } from '../dto/submit-delivery-onboarding.dto';
 import { RequestDeliveryOnboardingChangesDto } from '../dto/request-delivery-onboarding-changes.dto';
 import { DELIVERY_ONBOARDING_TOTAL_STEPS } from '../dto/delivery-onboarding-response.dto';
+import {
+  VERIFIABLE_ONBOARDING_STEPS,
+  missingOnboardingStepRequirement,
+} from './onboarding-step-requirements';
 
 import { AuditService } from '../../audit/services/audit.service';
 import { RealtimeService } from '../../realtime/services/realtime.service';
@@ -36,6 +40,7 @@ function toResponse(onboarding: {
   currentStep: number;
   completedSteps: number[];
   termsAcceptedAt: Date | null;
+  backgroundCheckConsentAt: Date | null;
   submittedAt: Date | null;
   decidedAt: Date | null;
   changesRequested: unknown;
@@ -49,6 +54,7 @@ function toResponse(onboarding: {
         100,
     ),
     termsAcceptedAt: onboarding.termsAcceptedAt ?? undefined,
+    backgroundCheckConsentAt: onboarding.backgroundCheckConsentAt ?? undefined,
     submittedAt: onboarding.submittedAt ?? undefined,
     decidedAt: onboarding.decidedAt ?? undefined,
     changesRequested: (onboarding.changesRequested as never) ?? undefined,
@@ -83,12 +89,47 @@ export class OnboardingService {
     return partner;
   }
 
+  private async requireStepEvidence(deliveryPartnerId: string) {
+    const evidence =
+      await this.onboardingRepository.findStepEvidence(deliveryPartnerId);
+
+    if (!evidence) {
+      throw new NotFoundException('Delivery partner not found');
+    }
+
+    return evidence;
+  }
+
   async getState(userId: string) {
     const partner = await this.requirePartner(userId);
 
     const onboarding = await this.onboardingRepository.findOrCreate(partner.id);
 
     return toResponse(onboarding);
+  }
+
+  /** Wizard step 11 — stores the partner's explicit consent to the background check (audited). */
+  async recordBackgroundCheckConsent(userId: string, consent: boolean) {
+    // The DTO already requires `true`; re-checked so no caller can record consent without it.
+    if (consent !== true) {
+      throw new BadRequestException('Consent must be given to record it');
+    }
+
+    const partner = await this.requirePartner(userId);
+
+    const updated =
+      await this.onboardingRepository.recordBackgroundCheckConsent(partner.id);
+
+    await this.auditService.log(
+      userId,
+      'DeliveryOnboarding',
+      partner.id,
+      AuditAction.UPDATE,
+      null,
+      { backgroundCheckConsentAt: updated.backgroundCheckConsentAt },
+    );
+
+    return toResponse(updated);
   }
 
   async completeStep(userId: string, step: number) {
@@ -98,6 +139,17 @@ export class OnboardingService {
       throw new BadRequestException(
         `step must be between 1 and ${DELIVERY_ONBOARDING_TOTAL_STEPS}`,
       );
+    }
+
+    // The backend no longer takes the client's word that a step is done — the data the step
+    // collects must actually exist (see onboarding-step-requirements.ts).
+    const problem = missingOnboardingStepRequirement(
+      step,
+      await this.requireStepEvidence(partner.id),
+    );
+
+    if (problem) {
+      throw new BadRequestException(`Step ${step} is not complete: ${problem}`);
     }
 
     const updated = await this.onboardingRepository.markStepComplete(
@@ -129,6 +181,20 @@ export class OnboardingService {
     if (missingSteps.length > 0) {
       throw new BadRequestException(
         `Complete steps ${missingSteps.join(', ')} before submitting the application`,
+      );
+    }
+
+    // Re-checked at submission: data can disappear after a step was marked complete (e.g. a
+    // document removed from the Documents page), and a step marked complete before this check
+    // existed must still be backed by real data.
+    const evidence = await this.requireStepEvidence(partner.id);
+    const unmetSteps = VERIFIABLE_ONBOARDING_STEPS.filter(
+      (step) => missingOnboardingStepRequirement(step, evidence) !== null,
+    );
+
+    if (unmetSteps.length > 0) {
+      throw new BadRequestException(
+        `Steps ${unmetSteps.join(', ')} are missing required details — update them before submitting the application`,
       );
     }
 

@@ -28,6 +28,10 @@ import { AuditService } from '../../audit/services/audit.service';
 
 import { AppLoggerService } from '../../../infrastructure/logger/logger.service';
 
+import { EventBusService } from '../../../core/events/event-bus.service';
+
+import { DeliveryAssignmentOfferedEvent } from '../../dispatch/events/delivery-assignment-offered.event';
+
 import { GetAvailableDeliveryPartnersQueryDto } from '../dto/get-available-delivery-partners-query.dto';
 import { PaginatedAvailableDeliveryPartnersResponseDto } from '../dto/paginated-available-delivery-partners-response.dto';
 import { AvailableDeliveryPartnerResponseDto } from '../dto/available-delivery-partner-response.dto';
@@ -66,6 +70,8 @@ export class AdminDispatchService {
     private readonly auditService: AuditService,
 
     private readonly logger: AppLoggerService,
+
+    private readonly eventBus: EventBusService,
   ) {}
 
   async getAvailablePartners(
@@ -312,6 +318,16 @@ export class AdminDispatchService {
       );
 
       await this.queueService.addAssignmentExpiryJob(assignment.id);
+
+      // Same background/closed-app partner alert as automatic dispatch.
+      await this.eventBus.publish(
+        'delivery.assignment.offered',
+        new DeliveryAssignmentOfferedEvent(
+          assignment.id,
+          orderId,
+          partner.userId,
+        ),
+      );
 
       return assignment;
     } catch (error) {

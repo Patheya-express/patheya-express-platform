@@ -2,6 +2,8 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -43,6 +45,20 @@ const PICKUP_PHOTO_FOLDER = 'delivery-proof/pickup';
 
 const OTP_EXPIRY_MINUTES = 10;
 const MAX_ATTEMPTS = 5;
+
+/**
+ * 2026-10-12 OTP hardening. No product rule existed for either value; these are the
+ * recommended defaults (documented in the Phase 2 report):
+ *  - 60 s between codes — long enough to stop accidental double taps and code flooding, short
+ *    enough that a customer who missed the notification gets a new code quickly;
+ *  - 5 codes per order — with MAX_ATTEMPTS guesses each, at most 25 guesses against a 1-in-a-
+ *    million code (~0.0025%) for the whole delivery. Previously regeneration was unlimited and
+ *    each one reset the attempt counter, so the 5-attempt cap bounded nothing overall.
+ * Enforced for delivery partners only; admins keep their support-override path (they can also
+ * force-complete an order) but can never overwrite an already-verified code.
+ */
+const OTP_RESEND_COOLDOWN_SECONDS = 60;
+const OTP_MAX_ISSUES_PER_ORDER = 5;
 
 /**
  * 2026-09-16 business-workflow revision — the single source of truth for the restaurant-arrival
@@ -101,20 +117,11 @@ export class ProofService {
     private readonly prisma: PrismaService,
   ) {}
 
-  async generatePickupOtp(orderId: string, user: AuthenticatedUser) {
-    return this.generate(orderId, DeliveryProofType.PICKUP, user);
-  }
-
+  // 2026-10-11 pickup revision — there is no pickup OTP any more (it was sent to the customer, who
+  // isn't at the restaurant). Pickup is gated by the parcel photo alone; see
+  // OrdersService.REQUIRED_PROOF_TYPE_FOR_STATUS. Only the delivery OTP remains.
   async generateDeliveryOtp(orderId: string, user: AuthenticatedUser) {
     return this.generate(orderId, DeliveryProofType.DELIVERY, user);
-  }
-
-  async verifyPickupOtp(
-    orderId: string,
-    code: string,
-    user: AuthenticatedUser,
-  ) {
-    return this.verify(orderId, DeliveryProofType.PICKUP, code, user);
   }
 
   async verifyDeliveryOtp(
@@ -151,7 +158,13 @@ export class ProofService {
    * evidence (see ProofRepository.createPhoto's doc comment) — a rider who wants to retake the
    * photo does so client-side, before submitting. This row is what
    * OrdersService.assertPhotoVerifiedForStatus checks before allowing OUT_FOR_DELIVERY, so it is
-   * the authoritative pickup-completion gate, not merely advisory.
+   * the authoritative pickup-completion gate, not merely advisory. The photo is reference-only:
+   * nobody (customer included) has to approve it.
+   *
+   * 2026-10-11 pickup revision — the rider must have marked arrival (the backend-validated 100m
+   * geofence, markRestaurantArrival) before the photo is accepted, so the server enforces the
+   * full arrive → photo → pickup order rather than relying on the app's button sequence. Admins
+   * keep the same support-override bypass assertAssignedPartner already gives them.
    */
   async uploadPickupPhoto(
     orderId: string,
@@ -166,6 +179,26 @@ export class ProofService {
       throw new BadRequestException(
         `A pickup photo can only be uploaded while the order is ${REQUIRED_ORDER_STATUS[DeliveryProofType.PICKUP]} (currently ${order.status})`,
       );
+    }
+
+    if (user.role === UserRole.DELIVERY_PARTNER) {
+      const assignment =
+        await this.proofRepository.findActiveAssignmentForOrder(
+          orderId,
+          user.userId,
+        );
+
+      if (!assignment) {
+        throw new ForbiddenException(
+          'No active assignment for this order belongs to you',
+        );
+      }
+
+      if (!assignment.arrivedAtRestaurantAt) {
+        throw new BadRequestException(
+          'Mark your arrival at the restaurant before uploading the parcel photo',
+        );
+      }
     }
 
     const existing = await this.proofRepository.findPhoto(
@@ -395,13 +428,27 @@ export class ProofService {
     const otpHash = await this.passwordService.hashPassword(code);
     const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60_000);
 
-    const otp = await this.proofRepository.upsertOtp(
+    const result = await this.proofRepository.issueOtp({
       orderId,
       type,
       otpHash,
       expiresAt,
-      MAX_ATTEMPTS,
-    );
+      maxAttempts: MAX_ATTEMPTS,
+      limits:
+        user.role === UserRole.DELIVERY_PARTNER
+          ? {
+              cooldownMs: OTP_RESEND_COOLDOWN_SECONDS * 1000,
+              maxGenerations: OTP_MAX_ISSUES_PER_ORDER,
+            }
+          : undefined,
+    });
+
+    if (!result.issued) {
+      // Nothing was sent to the customer for a refused request.
+      throw this.otpNotIssuedError(type, result.reason, result.existing);
+    }
+
+    const { otp } = result;
 
     await this.auditService.log(
       user.userId,
@@ -430,6 +477,37 @@ export class ProofService {
     };
   }
 
+  /** Explains why no new code was issued. The existing code (if any) stays valid. */
+  private otpNotIssuedError(
+    type: DeliveryProofType,
+    reason: 'verified' | 'limit' | 'cooldown',
+    existing: { lastGeneratedAt: Date },
+  ): HttpException {
+    const label = type.toLowerCase();
+
+    if (reason === 'verified') {
+      return new ConflictException(`This ${label} has already been verified`);
+    }
+
+    if (reason === 'limit') {
+      return new HttpException(
+        `The maximum of ${OTP_MAX_ISSUES_PER_ORDER} ${label} codes has been sent for this order. Contact support to complete it.`,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    const elapsedMs = Date.now() - existing.lastGeneratedAt.getTime();
+    const retryAfterSeconds = Math.max(
+      1,
+      Math.ceil((OTP_RESEND_COOLDOWN_SECONDS * 1000 - elapsedMs) / 1000),
+    );
+
+    return new HttpException(
+      `A ${label} code was already sent to the customer. You can request a new one in ${retryAfterSeconds} seconds.`,
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
+  }
+
   private async verify(
     orderId: string,
     type: DeliveryProofType,
@@ -440,24 +518,12 @@ export class ProofService {
 
     this.assertAssignedPartner(order, user);
 
-    // Correctness/atomicity fix — must run before markVerified() below, not after. verify()'s
-    // OTP-verified write and the order-status transition it triggers are two separate steps (see
-    // this method's tail); OrdersService.assertPhotoVerifiedForStatus (the actual authoritative
-    // gate, checked again inside updateOrderStatus) would otherwise let the OTP get marked
-    // VERIFIED first and only then discover the missing photo, leaving the OTP permanently
-    // "already verified" while the order never advanced — a real bug found during live testing of
-    // this exact sequence, not a hypothetical.
-    if (type === DeliveryProofType.PICKUP) {
-      const photo = await this.proofRepository.findPhoto(
-        orderId,
-        DeliveryProofType.PICKUP,
+    // Fail fast on a cancelled/already-delivered order instead of consuming an attempt or marking
+    // the OTP verified for a transition updateOrderStatus would then refuse.
+    if (order.status !== REQUIRED_ORDER_STATUS[type]) {
+      throw new BadRequestException(
+        `A ${type.toLowerCase()} OTP can only be verified while the order is ${REQUIRED_ORDER_STATUS[type]} (currently ${order.status})`,
       );
-
-      if (!photo) {
-        throw new ForbiddenException(
-          `A pickup photo is required before this order can advance to ${OrderStatus.OUT_FOR_DELIVERY}`,
-        );
-      }
     }
 
     const otp = await this.proofRepository.findOtp(orderId, type);
@@ -502,13 +568,14 @@ export class ProofService {
     );
 
     if (!isMatch) {
-      const nextAttempts = otp.attempts + 1;
-      const exceeded = nextAttempts >= otp.maxAttempts;
-
-      const updated = await this.proofRepository.incrementAttempts(
+      // Atomic, cap-respecting increment — see ProofRepository.recordFailedAttempt. null means a
+      // concurrent request already used the last attempt (or verified/regenerated the code).
+      const updated = await this.proofRepository.recordFailedAttempt(
         otp.id,
-        exceeded ? DeliveryProofOtpStatus.EXCEEDED : undefined,
+        otp.maxAttempts,
       );
+      const exceeded =
+        !updated || updated.status === DeliveryProofOtpStatus.EXCEEDED;
 
       await this.auditService.log(
         user.userId,
@@ -516,7 +583,12 @@ export class ProofService {
         otp.id,
         AuditAction.REJECT,
         undefined,
-        { orderId, type, attempts: updated.attempts, exceeded },
+        {
+          orderId,
+          type,
+          attempts: updated?.attempts ?? otp.maxAttempts,
+          exceeded,
+        },
       );
 
       if (exceeded) {
@@ -530,7 +602,24 @@ export class ProofService {
       );
     }
 
-    await this.proofRepository.markVerified(otp.id);
+    // Only one concurrent correct submission may claim the verification; the loser gets the same
+    // "already verified" answer a sequential retry would.
+    const claimed = await this.proofRepository.markVerifiedIfPending(otp.id);
+
+    if (!claimed) {
+      throw new ConflictException(
+        `This ${type.toLowerCase()} has already been verified`,
+      );
+    }
+
+    const updatedOrder = await this.ordersService
+      .updateOrderStatus(orderId, { status: TARGET_ORDER_STATUS[type] }, user)
+      .catch(async (error: unknown) => {
+        // The order did not advance (e.g. cancelled between the status check above and here) —
+        // release the OTP so it isn't left permanently "already verified" against that order.
+        await this.proofRepository.revertVerification(otp.id);
+        throw error;
+      });
 
     await this.auditService.log(
       user.userId,
@@ -539,12 +628,6 @@ export class ProofService {
       AuditAction.APPROVE,
       undefined,
       { orderId, type },
-    );
-
-    const updatedOrder = await this.ordersService.updateOrderStatus(
-      orderId,
-      { status: TARGET_ORDER_STATUS[type] },
-      user,
     );
 
     this.realtimeService.emitToOrder(orderId, REALTIME_VERIFIED_EVENT[type], {

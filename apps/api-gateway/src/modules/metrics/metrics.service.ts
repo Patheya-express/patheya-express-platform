@@ -187,6 +187,15 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
     registers: [this.registry],
   });
 
+  /** 2026-10-12 — push delivery outcomes per device token (accepted / invalid-token / failed /
+   *  skipped), per platform. 'accepted' means the provider accepted it, not that it was displayed. */
+  private readonly pushDeliveryTotal = new Counter({
+    name: 'patheya_push_delivery_total',
+    help: 'Push notification delivery outcomes per device token',
+    labelNames: ['platform', 'outcome'],
+    registers: [this.registry],
+  });
+
   private readonly dispatchRedispatchTotal = new Counter({
     name: 'patheya_dispatch_redispatch_total',
     help: 'Total redispatch attempts (an assignment was rejected or expired, triggering reassignment)',
@@ -932,6 +941,10 @@ export class MetricsService implements OnModuleInit, OnModuleDestroy {
   }
 
   /** Called by DispatchService.acceptAssignment() on a successful accept. */
+  recordPushDeliveryOutcome(platform: string, outcome: string): void {
+    this.pushDeliveryTotal.inc({ platform, outcome });
+  }
+
   recordDispatchPartnerAccept(): void {
     this.dispatchPartnerAcceptTotal.inc();
     this.dispatchCompletedTotal.inc();

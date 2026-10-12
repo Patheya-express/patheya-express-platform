@@ -8,6 +8,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  Matches,
   Max,
   Min,
 } from 'class-validator';
@@ -19,6 +20,8 @@ export class CreateVehicleDto {
 
   @ApiProperty({ example: 'KA01AB1234' })
   @IsString()
+  // Rejects blank values only — no registration-number format rule exists in the platform.
+  @Matches(/\S/, { message: 'Registration number is required' })
   registrationNumber: string;
 
   @ApiPropertyOptional({ example: 'Honda' })

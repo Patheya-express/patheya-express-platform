@@ -190,6 +190,25 @@ export const envValidationSchema = Joi.object({
   SMTP_PASS: Joi.string().optional(),
   SMTP_FROM: Joi.string().optional(),
 
+  // Firebase Cloud Messaging service account (push notifications, e.g. delivery-assignment
+  // offers). Optional (empty = unset, as in .env.example): without all three, pushes are recorded
+  // as FAILED with "Push provider not configured" and nothing is sent — see
+  // NotificationsCoreModule's PUSH_PROVIDER binding.
+  FCM_PROJECT_ID: Joi.string().allow('').optional(),
+  FCM_CLIENT_EMAIL: Joi.string().email().allow('').optional(),
+  FCM_PRIVATE_KEY: Joi.string().allow('').optional(),
+
+  // Apple Push Notification service (.p8 token auth) for iOS devices — the iOS app registers raw
+  // APNs device tokens, which FCM can't deliver to. Optional, same FAILED-not-SENT behaviour.
+  APNS_KEY_ID: Joi.string().allow('').optional(),
+  APNS_TEAM_ID: Joi.string().allow('').optional(),
+  APNS_BUNDLE_ID: Joi.string().allow('').optional(),
+  APNS_PRIVATE_KEY: Joi.string().allow('').optional(),
+  APNS_ENVIRONMENT: Joi.string()
+    .valid('production', 'development')
+    .allow('')
+    .optional(),
+
   // CORS allowlist (LH1-09) — required in production: main.ts's buildCorsOriginValidator fails
   // closed (safe) without these, but that means every credentialed browser request is rejected,
   // i.e. the deployed API is unusable from any of its own frontends. Optional outside production

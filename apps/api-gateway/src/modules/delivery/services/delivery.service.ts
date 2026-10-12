@@ -12,6 +12,7 @@ import {
   AuditAction,
   DeliveryPartnerStatus,
   OrderStatus,
+  Prisma,
   UserStatus,
 } from '@prisma/client';
 
@@ -113,15 +114,28 @@ export class DeliveryService {
       throw new ConflictException('Delivery partner already exists');
     }
 
-    const partner = await this.deliveryRepository.createDeliveryPartner({
-      userId,
+    const partner = await this.deliveryRepository
+      .createDeliveryPartner({
+        userId,
 
-      vehicleType: dto.vehicleType,
+        vehicleType: dto.vehicleType,
 
-      vehicleNumber: dto.vehicleNumber,
+        vehicleNumber: dto.vehicleNumber,
 
-      licenseNumber: dto.licenseNumber,
-    });
+        licenseNumber: dto.licenseNumber,
+      })
+      .catch((error: unknown) => {
+        // DeliveryPartner.userId is unique: a concurrent duplicate request (double tap, client
+        // retry) that passed the check above loses here and gets the same 409, not a 500.
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2002'
+        ) {
+          throw new ConflictException('Delivery partner already exists');
+        }
+
+        throw error;
+      });
 
     await this.eventBus.publish('delivery.created', {
       deliveryPartnerId: partner.id,

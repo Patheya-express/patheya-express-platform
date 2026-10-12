@@ -2,12 +2,22 @@ import { ApiPropertyOptional } from '@nestjs/swagger';
 
 import { FuelType } from '@prisma/client';
 
-import { IsEnum, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import {
+  IsEnum,
+  IsInt,
+  IsOptional,
+  IsString,
+  Matches,
+  Max,
+  Min,
+} from 'class-validator';
 
 export class UpdateVehicleDto {
   @ApiPropertyOptional({ example: 'KA01AB1234' })
   @IsOptional()
   @IsString()
+  // Optional on update, but when sent it must not be blank (same rule as CreateVehicleDto).
+  @Matches(/\S/, { message: 'Registration number is required' })
   registrationNumber?: string;
 
   @ApiPropertyOptional({ example: 'Honda' })

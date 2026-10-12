@@ -4,7 +4,17 @@ import {
   AssignmentStatus,
   DeliveryProofOtpStatus,
   DeliveryProofType,
+  Prisma,
+  type DeliveryProofOtp,
 } from '@prisma/client';
+
+export type IssueOtpResult =
+  | { issued: true; otp: DeliveryProofOtp }
+  | {
+      issued: false;
+      reason: 'verified' | 'limit' | 'cooldown';
+      existing: DeliveryProofOtp;
+    };
 
 import { PrismaService } from '../../../infrastructure/database/prisma.service';
 
@@ -78,42 +88,141 @@ export class ProofRepository {
     });
   }
 
-  /** Generate and regenerate are the same operation — overwrites any existing row for this (orderId, type), resetting attempts/status. */
-  upsertOtp(
-    orderId: string,
-    type: DeliveryProofType,
-    otpHash: string,
-    expiresAt: Date,
-    maxAttempts: number,
-  ) {
-    return this.prisma.deliveryProofOtp.upsert({
-      where: { orderId_type: { orderId, type } },
-      create: {
-        orderId,
-        type,
-        otpHash,
-        expiresAt,
-        maxAttempts,
+  /**
+   * Issues (or re-issues) the OTP for this (orderId, type) atomically, enforcing the resend
+   * cooldown and the per-order issue cap when `limits` is given. A re-issue replaces the code
+   * and resets the attempt counter, but only through a conditional update whose WHERE clause
+   * re-checks — at write time, under the row lock — that:
+   *   - the current code was not already VERIFIED (a successful verification is never undone),
+   *   - fewer than `maxGenerations` codes have been issued, and
+   *   - the last code was issued at least `cooldownMs` ago.
+   * So concurrent "resend" taps can issue at most one code. Returns the issued row, or the
+   * reason nothing was issued (with the existing row, so the caller can explain/compute a wait).
+   */
+  async issueOtp(params: {
+    orderId: string;
+    type: DeliveryProofType;
+    otpHash: string;
+    expiresAt: Date;
+    maxAttempts: number;
+    limits?: { cooldownMs: number; maxGenerations: number };
+  }): Promise<IssueOtpResult> {
+    const { orderId, type, otpHash, expiresAt, maxAttempts, limits } = params;
+    const now = new Date();
+
+    const existing = await this.findOtp(orderId, type);
+
+    if (!existing) {
+      try {
+        const otp = await this.prisma.deliveryProofOtp.create({
+          data: {
+            orderId,
+            type,
+            otpHash,
+            expiresAt,
+            maxAttempts,
+            generationCount: 1,
+            lastGeneratedAt: now,
+          },
+        });
+        return { issued: true, otp };
+      } catch (error) {
+        // A concurrent first request created the row a moment ago — that request issued the
+        // code; this one is, by definition, inside the cooldown window.
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2002'
+        ) {
+          const winner = await this.findOtp(orderId, type);
+          if (winner) {
+            return { issued: false, reason: 'cooldown', existing: winner };
+          }
+        }
+        throw error;
+      }
+    }
+
+    const claim = await this.prisma.deliveryProofOtp.updateMany({
+      where: {
+        id: existing.id,
+        status: { not: DeliveryProofOtpStatus.VERIFIED },
+        ...(limits
+          ? {
+              generationCount: { lt: limits.maxGenerations },
+              lastGeneratedAt: {
+                lte: new Date(now.getTime() - limits.cooldownMs),
+              },
+            }
+          : {}),
       },
-      update: {
+      data: {
         otpHash,
         expiresAt,
         maxAttempts,
         attempts: 0,
         status: DeliveryProofOtpStatus.PENDING,
         verifiedAt: null,
+        generationCount: { increment: 1 },
+        lastGeneratedAt: now,
       },
     });
+
+    const current = await this.prisma.deliveryProofOtp.findUniqueOrThrow({
+      where: { id: existing.id },
+    });
+
+    if (claim.count > 0) {
+      return { issued: true, otp: current };
+    }
+
+    if (current.status === DeliveryProofOtpStatus.VERIFIED) {
+      return { issued: false, reason: 'verified', existing: current };
+    }
+
+    if (limits && current.generationCount >= limits.maxGenerations) {
+      return { issued: false, reason: 'limit', existing: current };
+    }
+
+    return { issued: false, reason: 'cooldown', existing: current };
   }
 
-  incrementAttempts(id: string, status?: DeliveryProofOtpStatus) {
-    return this.prisma.deliveryProofOtp.update({
-      where: { id },
-      data: {
-        attempts: { increment: 1 },
-        ...(status ? { status } : {}),
+  /**
+   * Records one failed attempt atomically and returns the row as it stands afterwards, or null if
+   * the OTP was no longer PENDING with attempts to spare (another request exhausted, verified or
+   * regenerated it first). The previous read-then-`increment` let concurrent wrong guesses all
+   * compute their "next attempt" from the same stale count, so none of them ever flipped the row
+   * to EXCEEDED and a burst could test far more than `maxAttempts` codes. The conditional
+   * `attempts < maxAttempts` claim makes the cap hold under concurrency; the follow-up update marks
+   * EXCEEDED once the cap is reached.
+   */
+  async recordFailedAttempt(id: string, maxAttempts: number) {
+    const claim = await this.prisma.deliveryProofOtp.updateMany({
+      where: {
+        id,
+        status: DeliveryProofOtpStatus.PENDING,
+        attempts: { lt: maxAttempts },
       },
+      data: { attempts: { increment: 1 } },
     });
+
+    if (claim.count === 0) {
+      return null;
+    }
+
+    const updated = await this.prisma.deliveryProofOtp.findUniqueOrThrow({
+      where: { id },
+    });
+
+    if (updated.attempts >= maxAttempts) {
+      await this.prisma.deliveryProofOtp.updateMany({
+        where: { id, status: DeliveryProofOtpStatus.PENDING },
+        data: { status: DeliveryProofOtpStatus.EXCEEDED },
+      });
+
+      return { ...updated, status: DeliveryProofOtpStatus.EXCEEDED };
+    }
+
+    return updated;
   }
 
   markStatus(id: string, status: DeliveryProofOtpStatus) {
@@ -123,13 +232,29 @@ export class ProofRepository {
     });
   }
 
-  markVerified(id: string) {
-    return this.prisma.deliveryProofOtp.update({
-      where: { id },
+  /**
+   * Claims the PENDING → VERIFIED transition atomically. Returns false when another request
+   * already verified (or exhausted/regenerated) this OTP, so two concurrent correct submissions
+   * can never both go on to advance the order.
+   */
+  async markVerifiedIfPending(id: string): Promise<boolean> {
+    const claim = await this.prisma.deliveryProofOtp.updateMany({
+      where: { id, status: DeliveryProofOtpStatus.PENDING },
       data: {
         status: DeliveryProofOtpStatus.VERIFIED,
         verifiedAt: new Date(),
       },
+    });
+
+    return claim.count > 0;
+  }
+
+  /** Undoes markVerifiedIfPending when the order transition it was meant to unlock failed, so the
+   *  OTP isn't left "already verified" against an order that never advanced. */
+  revertVerification(id: string) {
+    return this.prisma.deliveryProofOtp.updateMany({
+      where: { id, status: DeliveryProofOtpStatus.VERIFIED },
+      data: { status: DeliveryProofOtpStatus.PENDING, verifiedAt: null },
     });
   }
 }

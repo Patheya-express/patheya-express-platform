@@ -2,6 +2,8 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   NotFoundException,
 } from '@nestjs/common';
 import {
@@ -56,10 +58,11 @@ describe('ProofService', () => {
   let service: ProofService;
   let proofRepository: {
     findOtp: jest.Mock;
-    upsertOtp: jest.Mock;
-    incrementAttempts: jest.Mock;
+    issueOtp: jest.Mock;
+    recordFailedAttempt: jest.Mock;
     markStatus: jest.Mock;
-    markVerified: jest.Mock;
+    markVerifiedIfPending: jest.Mock;
+    revertVerification: jest.Mock;
     findPhoto: jest.Mock;
     createPhoto: jest.Mock;
     findActiveAssignmentForOrder: jest.Mock;
@@ -81,10 +84,11 @@ describe('ProofService', () => {
   beforeEach(() => {
     proofRepository = {
       findOtp: jest.fn(),
-      upsertOtp: jest.fn(),
-      incrementAttempts: jest.fn(),
+      issueOtp: jest.fn(),
+      recordFailedAttempt: jest.fn(),
       markStatus: jest.fn(),
-      markVerified: jest.fn(),
+      markVerifiedIfPending: jest.fn().mockResolvedValue(true),
+      revertVerification: jest.fn().mockResolvedValue({ count: 1 }),
       findPhoto: jest.fn().mockResolvedValue(null),
       createPhoto: jest.fn(),
       findActiveAssignmentForOrder: jest
@@ -142,6 +146,36 @@ describe('ProofService', () => {
   }
 
   describe('uploadPickupPhoto', () => {
+    beforeEach(() => {
+      proofRepository.findActiveAssignmentForOrder.mockResolvedValue({
+        id: 'assignment-1',
+        arrivedAtRestaurantAt: new Date(),
+      });
+    });
+
+    it('rejects a rider who has not marked arrival at the restaurant yet (arrive → photo → pickup)', async () => {
+      proofRepository.findActiveAssignmentForOrder.mockResolvedValue({
+        id: 'assignment-1',
+        arrivedAtRestaurantAt: null,
+      });
+
+      await expect(
+        service.uploadPickupPhoto('order-1', buildFile(), RIDER),
+      ).rejects.toThrow(/Mark your arrival/);
+
+      expect(storageService.uploadWithMetadata).not.toHaveBeenCalled();
+    });
+
+    it('rejects when the rider has no active accepted assignment for the order', async () => {
+      proofRepository.findActiveAssignmentForOrder.mockResolvedValue(null);
+
+      await expect(
+        service.uploadPickupPhoto('order-1', buildFile(), RIDER),
+      ).rejects.toThrow(ForbiddenException);
+
+      expect(storageService.uploadWithMetadata).not.toHaveBeenCalled();
+    });
+
     it('rejects a rider who is not the assigned partner', async () => {
       await expect(
         service.uploadPickupPhoto('order-1', buildFile(), OTHER_RIDER),
@@ -408,16 +442,15 @@ describe('ProofService', () => {
     });
 
     it('generates a delivery OTP with no confirmation of any kind on record', async () => {
-      proofRepository.upsertOtp.mockResolvedValue({
-        id: 'otp-1',
-        expiresAt: new Date(),
-        maxAttempts: 5,
+      proofRepository.issueOtp.mockResolvedValue({
+        issued: true,
+        otp: { id: 'otp-1', expiresAt: new Date(), maxAttempts: 5 },
       });
 
       const result = await service.generateDeliveryOtp('order-1', RIDER);
 
       expect(result.type).toBe(DeliveryProofType.DELIVERY);
-      expect(proofRepository.upsertOtp).toHaveBeenCalled();
+      expect(proofRepository.issueOtp).toHaveBeenCalled();
     });
 
     it('verifies a delivery OTP with no confirmation of any kind on record', async () => {
@@ -431,8 +464,6 @@ describe('ProofService', () => {
         orderId: 'order-1',
         type: DeliveryProofType.DELIVERY,
       });
-      proofRepository.markVerified.mockResolvedValue(undefined);
-
       const result = await service.verifyDeliveryOtp(
         'order-1',
         '123456',
@@ -448,55 +479,263 @@ describe('ProofService', () => {
     });
   });
 
-  describe('verifyPickupOtp — photo-required pre-check (live-testing regression)', () => {
-    /**
-     * Found during live testing of this exact revision: verify() used to call
-     * proofRepository.markVerified() (flips the OTP row to VERIFIED) *before*
-     * OrdersService.updateOrderStatus() ran assertPhotoVerifiedForStatus. Without a photo, that
-     * update threw — but the OTP had already been marked VERIFIED, so the order was stuck at
-     * READY_FOR_PICKUP forever while every subsequent verify attempt (even after uploading the
-     * photo) failed with "already verified", with no way to progress. The fix checks the photo
-     * before touching the OTP row at all.
-     */
+  describe('pickup OTP removed (2026-10-11 pickup revision)', () => {
+    it('no longer exposes pickup OTP generation or verification', () => {
+      const surface = service as unknown as Record<string, unknown>;
+
+      expect(surface['generatePickupOtp']).toBeUndefined();
+      expect(surface['verifyPickupOtp']).toBeUndefined();
+    });
+  });
+
+  describe('verifyDeliveryOtp — state, attempt-limit and concurrency guards', () => {
+    const PENDING_OTP = {
+      id: 'otp-1',
+      status: 'PENDING',
+      attempts: 0,
+      maxAttempts: 5,
+      expiresAt: new Date(Date.now() + 60_000),
+      otpHash: 'hashed',
+      orderId: 'order-1',
+      type: DeliveryProofType.DELIVERY,
+    };
+
     beforeEach(() => {
       ordersService.getOrderOwnership.mockResolvedValue(
-        buildOrder({ status: OrderStatus.READY_FOR_PICKUP }),
+        buildOrder({ status: OrderStatus.OUT_FOR_DELIVERY }),
       );
+      proofRepository.findOtp.mockResolvedValue(PENDING_OTP);
     });
 
-    it('rejects before marking the OTP verified when no pickup photo exists yet', async () => {
-      proofRepository.findPhoto.mockResolvedValue(null);
+    it('rejects verification once the order is no longer OUT_FOR_DELIVERY, without touching the OTP', async () => {
+      ordersService.getOrderOwnership.mockResolvedValue(
+        buildOrder({ status: OrderStatus.CANCELLED }),
+      );
 
       await expect(
-        service.verifyPickupOtp('order-1', '123456', RIDER),
-      ).rejects.toThrow(ForbiddenException);
+        service.verifyDeliveryOtp('order-1', '123456', RIDER),
+      ).rejects.toThrow(BadRequestException);
 
       expect(proofRepository.findOtp).not.toHaveBeenCalled();
-      expect(proofRepository.markVerified).not.toHaveBeenCalled();
+      expect(proofRepository.markVerifiedIfPending).not.toHaveBeenCalled();
+    });
+
+    it('rejects a partner who is not assigned to the order', async () => {
+      await expect(
+        service.verifyDeliveryOtp('order-1', '123456', OTHER_RIDER),
+      ).rejects.toThrow(ForbiddenException);
+
       expect(ordersService.updateOrderStatus).not.toHaveBeenCalled();
     });
 
-    it('succeeds once the pickup photo exists', async () => {
-      proofRepository.findPhoto.mockResolvedValue({ id: 'photo-1' });
-      proofRepository.findOtp.mockResolvedValue({
-        id: 'otp-1',
-        status: 'PENDING',
-        attempts: 0,
-        maxAttempts: 5,
-        expiresAt: new Date(Date.now() + 60_000),
-        otpHash: 'hashed',
-        orderId: 'order-1',
-        type: DeliveryProofType.PICKUP,
+    it('records a wrong code atomically and reports the attempts left', async () => {
+      passwordService.comparePassword.mockResolvedValue(false);
+      proofRepository.recordFailedAttempt.mockResolvedValue({
+        ...PENDING_OTP,
+        attempts: 1,
       });
-      proofRepository.markVerified.mockResolvedValue(undefined);
-      ordersService.updateOrderStatus.mockResolvedValue(
+
+      await expect(
+        service.verifyDeliveryOtp('order-1', '000000', RIDER),
+      ).rejects.toThrow(/4 attempt\(s\) remaining/);
+
+      expect(proofRepository.recordFailedAttempt).toHaveBeenCalledWith(
+        'otp-1',
+        5,
+      );
+      expect(ordersService.updateOrderStatus).not.toHaveBeenCalled();
+    });
+
+    it('treats the attempt that reaches the cap as exhausted', async () => {
+      passwordService.comparePassword.mockResolvedValue(false);
+      proofRepository.recordFailedAttempt.mockResolvedValue({
+        ...PENDING_OTP,
+        attempts: 5,
+        status: 'EXCEEDED',
+      });
+
+      await expect(
+        service.verifyDeliveryOtp('order-1', '000000', RIDER),
+      ).rejects.toThrow(/Maximum verification attempts exceeded/);
+    });
+
+    it('treats a wrong code as exhausted when a concurrent request already used the last attempt', async () => {
+      passwordService.comparePassword.mockResolvedValue(false);
+      proofRepository.recordFailedAttempt.mockResolvedValue(null);
+
+      await expect(
+        service.verifyDeliveryOtp('order-1', '000000', RIDER),
+      ).rejects.toThrow(/Maximum verification attempts exceeded/);
+    });
+
+    it('rejects an expired code', async () => {
+      proofRepository.findOtp.mockResolvedValue({
+        ...PENDING_OTP,
+        expiresAt: new Date(Date.now() - 1_000),
+      });
+
+      await expect(
+        service.verifyDeliveryOtp('order-1', '123456', RIDER),
+      ).rejects.toThrow(/expired/);
+
+      expect(ordersService.updateOrderStatus).not.toHaveBeenCalled();
+    });
+
+    it('lets only one concurrent correct submission advance the order', async () => {
+      proofRepository.markVerifiedIfPending.mockResolvedValue(false);
+
+      await expect(
+        service.verifyDeliveryOtp('order-1', '123456', RIDER),
+      ).rejects.toThrow(ConflictException);
+
+      expect(ordersService.updateOrderStatus).not.toHaveBeenCalled();
+    });
+
+    it('rejects a replay after the delivery was already verified', async () => {
+      proofRepository.findOtp.mockResolvedValue({
+        ...PENDING_OTP,
+        status: 'VERIFIED',
+      });
+
+      await expect(
+        service.verifyDeliveryOtp('order-1', '123456', RIDER),
+      ).rejects.toThrow(ConflictException);
+
+      expect(ordersService.updateOrderStatus).not.toHaveBeenCalled();
+    });
+
+    it('releases the verification if the order transition fails, so the OTP is not stuck', async () => {
+      const failure = new BadRequestException('Invalid status transition');
+      ordersService.updateOrderStatus.mockRejectedValue(failure);
+
+      await expect(
+        service.verifyDeliveryOtp('order-1', '123456', RIDER),
+      ).rejects.toBe(failure);
+
+      expect(proofRepository.revertVerification).toHaveBeenCalledWith('otp-1');
+      expect(notificationsService.createNotification).not.toHaveBeenCalled();
+    });
+  });
+  describe('generateDeliveryOtp — resend cooldown and issue cap (2026-10-12)', () => {
+    beforeEach(() => {
+      ordersService.getOrderOwnership.mockResolvedValue(
         buildOrder({ status: OrderStatus.OUT_FOR_DELIVERY }),
       );
+    });
 
-      const result = await service.verifyPickupOtp('order-1', '123456', RIDER);
+    it('applies the 60 s cooldown and 5-code cap to the assigned delivery partner', async () => {
+      proofRepository.issueOtp.mockResolvedValue({
+        issued: true,
+        otp: { id: 'otp-1', expiresAt: new Date(), maxAttempts: 5 },
+      });
 
-      expect(result.orderStatus).toBe(OrderStatus.OUT_FOR_DELIVERY);
-      expect(proofRepository.markVerified).toHaveBeenCalledWith('otp-1');
+      await service.generateDeliveryOtp('order-1', RIDER);
+
+      expect(proofRepository.issueOtp).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderId: 'order-1',
+          type: DeliveryProofType.DELIVERY,
+          maxAttempts: 5,
+          limits: { cooldownMs: 60_000, maxGenerations: 5 },
+        }),
+      );
+      expect(notificationsService.createNotification).toHaveBeenCalledTimes(1);
+    });
+
+    it('never puts the plaintext code anywhere but the customer notification', async () => {
+      proofRepository.issueOtp.mockResolvedValue({
+        issued: true,
+        otp: { id: 'otp-1', expiresAt: new Date(), maxAttempts: 5 },
+      });
+
+      const result = await service.generateDeliveryOtp('order-1', RIDER);
+      const [issued] = proofRepository.issueOtp.mock.calls[0] as [
+        { otpHash: string },
+      ];
+      const auditPayload = (auditService.log.mock.calls[0] as unknown[])[5];
+      const [notifiedUserId] = notificationsService.createNotification.mock
+        .calls[0] as [string];
+
+      expect(issued.otpHash).toBe('hashed');
+      expect(JSON.stringify(result)).not.toMatch(/\d{6}/);
+      expect(auditPayload).not.toHaveProperty('code');
+      expect(notifiedUserId).toBe('customer-1');
+    });
+
+    it('refuses a resend inside the cooldown with 429 and the wait, without notifying the customer', async () => {
+      proofRepository.issueOtp.mockResolvedValue({
+        issued: false,
+        reason: 'cooldown',
+        existing: { lastGeneratedAt: new Date(Date.now() - 20_000) },
+      });
+
+      const error = await service
+        .generateDeliveryOtp('order-1', RIDER)
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(HttpException);
+      expect((error as HttpException).getStatus()).toBe(
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+      expect((error as HttpException).message).toMatch(
+        /request a new one in (39|40) seconds/,
+      );
+      expect(notificationsService.createNotification).not.toHaveBeenCalled();
+      expect(auditService.log).not.toHaveBeenCalled();
+    });
+
+    it('refuses once the per-order cap is reached with 429', async () => {
+      proofRepository.issueOtp.mockResolvedValue({
+        issued: false,
+        reason: 'limit',
+        existing: { lastGeneratedAt: new Date(Date.now() - 600_000) },
+      });
+
+      const error = await service
+        .generateDeliveryOtp('order-1', RIDER)
+        .catch((caught: unknown) => caught);
+
+      expect((error as HttpException).getStatus()).toBe(
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+      expect((error as HttpException).message).toMatch(/maximum of 5/);
+      expect(notificationsService.createNotification).not.toHaveBeenCalled();
+    });
+
+    it('never replaces an already-verified code', async () => {
+      proofRepository.issueOtp.mockResolvedValue({
+        issued: false,
+        reason: 'verified',
+        existing: { lastGeneratedAt: new Date() },
+      });
+
+      await expect(
+        service.generateDeliveryOtp('order-1', RIDER),
+      ).rejects.toThrow(ConflictException);
+      expect(notificationsService.createNotification).not.toHaveBeenCalled();
+    });
+
+    it('lets an admin issue a code without the partner limits (support override)', async () => {
+      proofRepository.issueOtp.mockResolvedValue({
+        issued: true,
+        otp: { id: 'otp-1', expiresAt: new Date(), maxAttempts: 5 },
+      });
+
+      await service.generateDeliveryOtp('order-1', {
+        userId: 'admin-1',
+        role: UserRole.ADMIN,
+      });
+
+      expect(proofRepository.issueOtp).toHaveBeenCalledWith(
+        expect.objectContaining({ limits: undefined }),
+      );
+    });
+
+    it('refuses a partner who is not assigned to the order', async () => {
+      await expect(
+        service.generateDeliveryOtp('order-1', OTHER_RIDER),
+      ).rejects.toThrow(ForbiddenException);
+      expect(proofRepository.issueOtp).not.toHaveBeenCalled();
     });
   });
 });

@@ -32,6 +32,17 @@ export class NotificationProcessor extends WorkerHost {
   }
 
   async process(job: Job<NotificationJobData>) {
+    // 2026-10-12 — PUSH delivery (e.g. delivery-assignment offers). A thrown transient provider
+    // error propagates so the queue's attempts/backoff retry it; the outcome of every attempt is
+    // recorded on the Notification row by deliverPushNotification.
+    if (job.data?.type === 'send-push' && job.data.notificationId) {
+      await this.notificationsService.deliverPushNotification(
+        job.data.notificationId,
+      );
+
+      return true;
+    }
+
     if (job.data?.type === 'retry-notification' && job.data.notificationId) {
       await this.notificationsService.deliverNotification(
         job.data.notificationId,
